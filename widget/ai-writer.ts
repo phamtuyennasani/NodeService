@@ -134,17 +134,25 @@ function mount(config: Config) {
   const ui = document.createElement('template');
   ui.innerHTML = `
     <button type="button" class="primary launch">Viết bài AI</button>
-    <dialog aria-labelledby="ai-title">
-      <header><h2 id="ai-title">Viết bài AI</h2><button type="button" class="close" aria-label="Đóng">&times;</button></header>
-      <form class="requirements">
-        <label class="model-label">Model<input name="model" placeholder="gpt-4.1" maxlength="160" required></label>
-        <label>Từ khóa<input name="keyword" maxlength="500" required></label>
-        <div class="grid">
-          <label>Giọng văn<input name="tone" maxlength="240" required></label>
-          <label>Phong cách viết<input name="style" maxlength="500" required></label>
+    <dialog aria-labelledby="ai-title" aria-describedby="ai-subtitle">
+      <header class="modal-header">
+        <div class="heading-group">
+          <span class="eyebrow">AI CONTENT STUDIO</span>
+          <h2 id="ai-title">Viết bài AI</h2>
+          <p id="ai-subtitle">Tạo bản nháp theo đúng giọng điệu của thương hiệu.</p>
         </div>
-        <label>Độ dài (từ)<input name="length" type="number" min="1" max="25000" step="1" required></label>
-        <button type="submit" class="primary submit">Viết ngay</button>
+        <button type="button" class="close" aria-label="Đóng"><span aria-hidden="true">&times;</span></button>
+      </header>
+      <form class="requirements">
+        <div class="form-intro"><span class="step-mark">01</span><div><strong>Định hướng bài viết</strong><small>Chọn model và mô tả nội dung cần triển khai.</small></div></div>
+        <label class="model-label field">Model<input name="model" placeholder="gpt-4.1" maxlength="160" required></label>
+        <label class="field">Từ khóa<input name="keyword" maxlength="500" placeholder="Ví dụ: máy lọc nước gia đình" required></label>
+        <div class="grid">
+          <label class="field">Giọng văn<input name="tone" maxlength="240" placeholder="Thân thiện" required></label>
+          <label class="field">Phong cách viết<input name="style" maxlength="500" placeholder="Hướng dẫn" required></label>
+        </div>
+        <label class="field length-field">Độ dài <span>(số từ)</span><input name="length" type="number" min="1" max="25000" step="1" required></label>
+        <div class="form-actions"><small>Nội dung sẽ được xem trước trước khi điền vào form.</small><button type="submit" class="primary submit"><span>Viết ngay</span><span class="button-arrow" aria-hidden="true">→</span></button></div>
       </form>
       <p class="status" role="status" aria-live="polite" hidden></p>
       <section class="preview" aria-label="Xem trước bài viết" hidden>
