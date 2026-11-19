@@ -1,4 +1,4 @@
-# CRM viết bài AI
+# NodeService
 
 Dịch vụ Node.js nhận yêu cầu viết ngay, lên lịch và viết lại từ các website Laravel. CRM tiếng Việt dùng React, Ant Design và Recharts, mở tại trang gốc. Fastify phục vụ API. PostgreSQL lưu khách hàng, website, hạn mức, bài viết, lần gọi AI và lượt giao webhook.
 
@@ -155,4 +155,3 @@ npm test
 ```
 
 Kiểm thử dùng PostgreSQL tạm, phản hồi AI giả lập và trình duyệt Chromium.
-# NodeService

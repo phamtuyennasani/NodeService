@@ -1,0 +1,133 @@
+@import '@fontsource-variable/bricolage-grotesque';
+
+:root {
+  color-scheme: light;
+  --canvas: #f7f7f2;
+  --surface: #fff;
+  --text: #202820;
+  --muted: #616a60;
+  --line: #dedfd4;
+  --accent: #2b5845;
+  --accent-subtle: #e8eede;
+  --amber: #efb84d;
+  --radius: 14px;
+  --display-font: 'Bricolage Grotesque Variable', Inter, system-ui, sans-serif;
+  font-family: Inter, system-ui, sans-serif;
+  color: var(--text);
+  background: var(--canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* { box-sizing: border-box; }
+body { min-width: 320px; margin: 0; }
+button, input, select { font: inherit; }
+a { color: var(--accent); }
+:where(button, a, summary):focus-visible { outline: 2px solid #376b50; outline-offset: 3px; }
+h1, h2, h3, p { margin-top: 0; }
+h3 { font-size: 15px; }
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.mono { overflow-wrap: anywhere; font-size: .92em; }
+.muted { color: var(--muted); }
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+  margin-bottom: 25px;
+}
+.page-heading h1 {
+  margin: 0;
+  font: 650 clamp(30px, 3.1vw, 46px)/1.16 var(--display-font);
+  letter-spacing: -.052em;
+  text-wrap: balance;
+}
+.page-heading p { margin: 7px 0 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
+.heading-actions, .filter-bar, .table-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.panel {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.panel-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.panel-heading h2 { margin: 0; font: 650 21px/1.3 var(--display-font); letter-spacing: -.035em; }
+.chart-unit { color: var(--muted); font-size: 12px; font-weight: 500; }
+.empty-state.ant-empty { margin: 0; padding: 26px 12px; }
+.empty-state.ant-empty .ant-empty-image { height: auto; margin: 0 0 9px; }
+.empty-state .empty-symbol {
+  display: inline-grid; place-items: center; width: 40px; height: 40px;
+  border: 1px solid var(--line); border-radius: 12px; color: #71816b; background: #f4f5ee; font-size: 18px;
+}
+.empty-state.ant-empty .ant-empty-description { color: var(--muted); font-size: 13px; }
+.page-loading { display: grid; min-height: 160px; place-items: center; }
+.resource-error { margin-bottom: 16px; }
+
+.table-panel { overflow: clip; padding: 0; }
+.table-panel .panel-heading { padding: 18px 20px 0; }
+.table-toolbar { padding: 16px 18px; border-bottom: 1px solid var(--line); }
+.table-toolbar .ant-input-affix-wrapper { width: 274px; max-width: 100%; }
+.table-toolbar .ant-select { min-width: 150px; }
+.table-toolbar .ant-picker { width: 246px; max-width: 100%; }
+.table-panel :is(.ant-spin-nested-loading, .ant-spin-container, .ant-table-wrapper, .ant-table, .ant-table-container) { min-width: 0; border-radius: inherit; }
+.table-panel .ant-table-content { border-radius: inherit; scrollbar-width: thin; }
+.table-panel .ant-table-tbody > tr:last-child > td { border-bottom-color: transparent; }
+.table-panel .ant-table-thead > tr > th { font-size: 12px; white-space: nowrap; }
+.table-panel .ant-table-tbody > tr > td { font-size: 13px; }
+.table-panel .ant-table-pagination { padding-inline: 16px; }
+.table-link { max-width: 100%; border: 0; border-radius: 3px; padding: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.table-link:hover strong { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.contact-name { display: flex; align-items: center; gap: 12px; }
+:is(.contact-name, .table-identity) :is(strong, small) { display: block; }
+:is(.contact-name, .table-identity) strong { font-weight: 600; }
+:is(.contact-name, .table-identity) small { margin-top: 3px; color: var(--muted); }
+.table-pagination { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+
+.status-tag {
+  --status-ink: #555f54;
+  --status-bg: #ecede8;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: 99px; background: var(--status-bg);
+  color: var(--status-ink); font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap;
+}
+.status-tag[data-tone='waiting'] { --status-bg: #eaf0f4; --status-ink: #3e6073; }
+.status-tag[data-tone='active'] { --status-bg: #fff0ce; --status-ink: #7d510e; }
+.status-tag[data-tone='success'] { --status-bg: #e7efe1; --status-ink: #365d3e; }
+.status-tag[data-tone='error'] { --status-bg: #fae9e4; --status-ink: #9a4234; }
+.status-dot { flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 15px; }
+.form-grid > *, .ant-form-item-control { min-width: 0; }
+.form-grid :is(.ant-input-number, .ant-picker) { width: 100%; }
+.ant-form-vertical .ant-form-item-label > label { font-weight: 600; }
+.ant-drawer .ant-drawer-title, .ant-modal .ant-modal-title { font-family: var(--display-font); font-weight: 650; letter-spacing: -.035em; overflow-wrap: anywhere; }
+.ant-drawer .ant-drawer-title { font-size: 21px; }
+.ant-drawer .ant-drawer-body { overscroll-behavior: contain; }
+.ant-modal .ant-modal-footer { margin-top: 22px; }
+.ant-descriptions .ant-descriptions-item-content { overflow-wrap: anywhere; }
+.profile-description { margin-bottom: 20px; }
+.drawer-actions { margin-top: 16px; }
+.code-block { max-width: 100%; padding: 16px; border: 1px solid #dbe0d3; border-radius: 9px; background: #f4f6ee; color: #2d4936; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (max-width: 600px) {
+  .page-heading { gap: 12px; margin-bottom: 20px; }
+  .page-heading p { font-size: 13px; }
+  .table-toolbar { padding: 12px; }
+  .table-toolbar :is(.ant-input-affix-wrapper, .ant-picker) { width: 100%; }
+  .table-pagination { justify-content: space-between; padding: 12px; }
+  .ant-drawer .ant-drawer-header { padding: 16px; }
+  .ant-drawer .ant-drawer-body { padding: 16px; }
+  .ant-modal .ant-modal-container { padding: 18px; }
+}
+
+@media (max-width: 460px) {
+  .form-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash .dash-metric { transition: none; }
+}
