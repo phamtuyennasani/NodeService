@@ -147,7 +147,7 @@ export function Providers() {
       onCancel={() => { if (busy !== 'editor') setEditor(undefined); }}>
       <Form form={form} layout="vertical" onFinish={save} disabled={busy === 'editor'}>
         <Form.Item label="Mã model" name="model" extra={editor?.model ? undefined : 'Dùng đúng mã model trong API của nhà cung cấp.'}
-          rules={[{ required: true, whitespace: true, message: 'Nhập mã model.' }, { pattern: /^[a-zA-Z0-9._-]+$/, message: 'Dùng chữ cái, chữ số, dấu chấm, gạch nối hoặc gạch dưới.' }]}>
+          rules={[{ required: true, whitespace: true, message: 'Nhập mã model.' }, { pattern: /^[a-zA-Z0-9._/-]+$/, message: 'Dùng chữ cái, chữ số, dấu chấm, gạch chéo, gạch nối hoặc gạch dưới.' }]}>
           <Input disabled={Boolean(editor?.model)} maxLength={160} autoComplete="off" spellCheck={false} />
         </Form.Item>
         <Form.Item label="Tên hiển thị" name="display_name" rules={[{ required: true, whitespace: true, message: 'Nhập tên hiển thị.' }]}>

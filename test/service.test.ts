@@ -144,6 +144,7 @@ test('CRM, website API, queue, pricing and webhook work against PostgreSQL', { t
   assert.equal(providerCatalog[0].models.find((item: { model: string }) => item.model === writing.model).enabled, true);
   await crm('POST', '/providers/anthropic/models', 201, { model: 'claude-test', display_name: 'Claude test' });
   await crm('POST', '/providers/xai/models', 201, { model: 'grok-test', display_name: 'Grok test' });
+  await crm('POST', '/providers/openai-compatible/models', 201, { model: 'bee/gemini-3.8-flash', display_name: 'Gemini 3.8 Flash' });
   await crm('POST', '/providers/openai/models', 409, { model: 'grok-test' });
   const onboard = async (id: string, name: string) => {
     const site = await crm('POST', '/websites', 201, { customer_id: id, name, domain: name + '.example.com', webhook_url: webhookUrl });

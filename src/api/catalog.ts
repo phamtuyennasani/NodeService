@@ -4,7 +4,7 @@ import type { Provider } from '../config.js'
 import type { Database } from '../db.js'
 import { ApiError } from './errors.js'
 
-export const modelIdSchema = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9._-]+$/)
+export const modelIdSchema = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9._/-]+$/)
 
 interface AvailableModel {
   provider: Provider

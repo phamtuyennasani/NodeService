@@ -5,7 +5,7 @@ CREATE TABLE ai_providers (
 );
 
 CREATE TABLE ai_models (
-  model text PRIMARY KEY CHECK (model ~ '^[A-Za-z0-9._-]{1,160}$'),
+  model text PRIMARY KEY CHECK (model ~ '^[A-Za-z0-9._/-]{1,160}$'),
   provider text NOT NULL REFERENCES ai_providers(provider),
   display_name text NOT NULL CHECK (length(trim(display_name)) BETWEEN 1 AND 160),
   enabled boolean NOT NULL DEFAULT true
@@ -28,7 +28,7 @@ WITH granted AS (
     WHEN model LIKE 'grok-%' THEN 'xai'
     WHEN model ~ '^(gpt-|chatgpt-|o[1-9](-|$))' THEN 'openai'
   END AS provider
-  FROM granted WHERE model ~ '^[A-Za-z0-9._-]{1,160}$'
+  FROM granted WHERE model ~ '^[A-Za-z0-9._/-]{1,160}$'
 )
 INSERT INTO ai_models(provider, model, display_name, enabled)
 SELECT provider, model, model, true FROM mapped WHERE provider IS NOT NULL
