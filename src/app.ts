@@ -25,7 +25,11 @@ export async function buildApp(db: Database, config: Config, logger = true) {
   const webRoot = resolve('dist/web');
   const widgetRoot = resolve('dist/widget');
   if (existsSync(webRoot)) {
-    await app.register(serveStatic, { root: webRoot, prefix: '/', wildcard: false });
+    // Keep the static wildcard enabled so Vite's hashed JS and CSS assets are
+    // served alongside the SPA entry point. The previous `wildcard: false`
+    // setting served `/` but returned 404 for every `/assets/*` request,
+    // leaving the CRM root empty after the HTML loaded.
+    await app.register(serveStatic, { root: webRoot, prefix: '/' });
   }
   if (existsSync(widgetRoot)) {
     await app.register(serveStatic, {
