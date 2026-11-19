@@ -1,4 +1,4 @@
-export const providers = ['openai', 'anthropic', 'xai'] as const;
+export const providers = ['openai', 'anthropic', 'xai', 'openai-compatible'] as const;
 export type Provider = typeof providers[number];
 
 export interface ProviderLimit {
@@ -52,11 +52,17 @@ export function loadConfig() {
     workerPollMs: positive('WORKER_POLL_MS', 500),
     aiTimeoutMs,
     leaseMs,
-    providerLimits: { openai: limit('OPENAI'), anthropic: limit('ANTHROPIC'), xai: limit('XAI') },
+    providerLimits: {
+      openai: limit('OPENAI'),
+      anthropic: limit('ANTHROPIC'),
+      xai: limit('XAI'),
+      'openai-compatible': limit('OPENAI_COMPATIBLE'),
+    },
     serviceKeys: {
       openai: process.env.OPENAI_API_KEY || undefined,
       anthropic: process.env.ANTHROPIC_API_KEY || undefined,
       xai: process.env.XAI_API_KEY || undefined,
+      'openai-compatible': undefined,
     },
   };
 }

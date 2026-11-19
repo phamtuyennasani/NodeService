@@ -96,6 +96,8 @@
 .record-provider-detail .panel-heading h2 { font-size: 21px; letter-spacing: -.04em; }
 .record-provider-key, .record-provider-toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .record-provider-key { margin: 0; }
+.record-provider-endpoint { margin: 8px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.record-provider-endpoint .mono { color: var(--text); margin-left: 6px; }
 .record-provider-note { margin-top: 16px; }
 .record-models-heading {
   display: flex;

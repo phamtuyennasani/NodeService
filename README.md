@@ -12,7 +12,7 @@ cp .env.example .env
 openssl rand -base64 32
 ```
 
-Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ PostgreSQL vào `DATABASE_URL` và URL CRM vào `APP_ORIGIN`. Tài khoản PostgreSQL cần quyền tạo bảng trong cơ sở dữ liệu của ứng dụng. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho các gói dùng key dịch vụ.
+Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ PostgreSQL vào `DATABASE_URL` và URL CRM vào `APP_ORIGIN`. Tài khoản PostgreSQL cần quyền tạo bảng trong cơ sở dữ liệu của ứng dụng. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho các gói dùng key dịch vụ. Provider **OpenAI Compatible** được cấu hình trong CRM bằng `Base URL` và API key, nên không ghi key vào `.env`.
 
 ```sh
 npm run migrate
@@ -21,7 +21,7 @@ npm run build
 npm start
 ```
 
-Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthropic hoặc xAI để thêm mã model, đặt tên hiển thị và bật các model muốn cung cấp. Ở bản cài mới, GPT-4.1 được bật sẵn. Sau đó cấu hình **Khách hàng**, **Website** và **Bảng giá model**. Trong hồ sơ website, dùng **Cấp token** và **Cấp khóa ký** để lấy hai giá trị cho Laravel. Thêm model vào danh sách cho phép khi cấu hình gói dịch vụ. [CRM tại localhost:3210](http://localhost:3210/)
+Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthropic, xAI hoặc **OpenAI Compatible** để thêm mã model, đặt tên hiển thị và bật các model muốn cung cấp. Với OpenAI Compatible, mở **Cấu hình kết nối**, nhập Base URL của API tương thích OpenAI, ví dụ `https://api.example.com/v1`, và API key. Ở bản cài mới, GPT-4.1 được bật sẵn. Sau đó cấu hình **Khách hàng**, **Website** và **Bảng giá model**. Trong hồ sơ website, dùng **Cấp token** và **Cấp khóa ký** để lấy hai giá trị cho Laravel. Thêm model vào danh sách cho phép khi cấu hình gói dịch vụ. [CRM tại localhost:3210](http://localhost:3210/)
 
 `npm start` chạy CRM, API, worker viết và worker giao bài trong cùng tiến trình. Khi triển khai thành các tiến trình độc lập, khởi chạy các lệnh sau và dùng chung `.env`. Chạy từ thư mục dự án để dịch vụ tìm được bản build và các migration.
 

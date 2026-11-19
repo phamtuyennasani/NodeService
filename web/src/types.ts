@@ -13,6 +13,8 @@ export interface CatalogProvider {
   provider: string;
   display_name: string;
   service_key_configured: boolean;
+  base_url?: string | null;
+  api_key_configured?: boolean;
   enabled: boolean;
   models: CatalogModel[];
 }

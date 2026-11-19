@@ -35,7 +35,7 @@ async function unusedPort() {
 }
 
 function gateway(input: GenerateInput) {
-  const expected = { openai: 'api.openai.com', anthropic: 'api.anthropic.com', xai: 'api.x.ai' };
+  const expected: Record<string, string> = { openai: 'api.openai.com', anthropic: 'api.anthropic.com', xai: 'api.x.ai', 'openai-compatible': 'compatible.example.com' };
   return generateArticle(input, async (url, options) => {
     const body = JSON.parse(String(options?.body));
     assert.equal(new URL(String(url)).hostname, expected[input.provider]);
@@ -52,6 +52,31 @@ function gateway(input: GenerateInput) {
     return Response.json({ output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(article) }] }], usage });
   });
 }
+
+test('OpenAI-compatible provider uses configured base URL and chat completions format', async () => {
+  const input: GenerateInput = {
+    provider: 'openai-compatible', key: 'compatible-key', baseUrl: 'https://llm.example.test/v1', model: 'qwen-max',
+    keyword: 'máy lọc nước', tone: 'Thân thiện', style: 'Hướng dẫn', length: 800,
+    instructions: null, source: null, signal: AbortSignal.timeout(5_000),
+  }
+  const result = await generateArticle(input, async (url, options) => {
+    assert.equal(String(url), 'https://llm.example.test/v1/chat/completions')
+    assert.equal(new Headers(options?.headers).get('authorization'), 'Bearer compatible-key')
+    const body = JSON.parse(String(options?.body))
+    assert.equal(body.model, 'qwen-max')
+    assert.equal(body.messages[0].role, 'system')
+    assert.equal(body.messages[1].role, 'user')
+    assert.deepEqual(body.response_format, { type: 'json_object' })
+    return Response.json({
+      id: 'compatible-response', model: 'qwen-max',
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(article) } }],
+      usage: { prompt_tokens: 900, completion_tokens: 100 },
+    })
+  })
+  assert.deepEqual(result.article, article)
+  assert.equal(result.responseId, 'compatible-response')
+  assert.deepEqual(result.usage, { input: 900, output: 100, cachedInput: 0, reasoning: undefined, costTicks: undefined })
+})
 
 test('CRM, website API, queue, pricing and webhook work against PostgreSQL', { timeout: 30_000 }, async context => {
   const directory = await mkdtemp(join(tmpdir(), 'content-service-test-'));
@@ -76,8 +101,8 @@ test('CRM, website API, queue, pricing and webhook work against PostgreSQL', { t
     encryptionKey: randomBytes(32), origin: 'http://localhost:3210', production: false,
     secureCookies: false, allowLocalWebhooks: true, host: '127.0.0.1', port: 3210, poolSize: 12,
     workerConcurrency: 5, webhookConcurrency: 5, workerPollMs: 20, aiTimeoutMs: 5_000, leaseMs: 12_000,
-    providerLimits: { openai: providerLimit, anthropic: providerLimit, xai: providerLimit },
-    serviceKeys: { openai: 'fake-service-key', anthropic: undefined, xai: undefined },
+    providerLimits: { openai: providerLimit, anthropic: providerLimit, xai: providerLimit, 'openai-compatible': providerLimit },
+    serviceKeys: { openai: 'fake-service-key', anthropic: undefined, xai: undefined, 'openai-compatible': undefined },
   };
   const db = connect(config.databaseUrl);
   closeService = () => db.end();
@@ -115,7 +140,7 @@ test('CRM, website API, queue, pricing and webhook work against PostgreSQL', { t
     return response.body ? response.json() : undefined;
   };
   const providerCatalog = (await crm('GET', '/providers', 200)).data;
-  assert.deepEqual(providerCatalog.map((item: { provider: string }) => item.provider), ['openai', 'anthropic', 'xai']);
+  assert.deepEqual(providerCatalog.map((item: { provider: string }) => item.provider), ['openai', 'anthropic', 'xai', 'openai-compatible']);
   assert.equal(providerCatalog[0].models.find((item: { model: string }) => item.model === writing.model).enabled, true);
   await crm('POST', '/providers/anthropic/models', 201, { model: 'claude-test', display_name: 'Claude test' });
   await crm('POST', '/providers/xai/models', 201, { model: 'grok-test', display_name: 'Grok test' });

@@ -70,12 +70,7 @@ function requestFingerprint(input: unknown, config: Config) {
 }
 
 function encryptedKeyFor(writing: Writing, customer: Package, config: Config, provider: Provider, previousKey?: string | null) {
-  if (customer.key_mode === 'service') {
-    if (!config.serviceKeys[provider]) {
-      throw new ApiError(422, 'service_key_unavailable', 'Nhà cung cấp này chưa được cấu hình key dịch vụ.')
-    }
-    return null
-  }
+  if (customer.key_mode === 'service') return null
   const encrypted = writing.keyAI ? seal(writing.keyAI, config.encryptionKey) : previousKey
   if (!encrypted) throw new ApiError(400, 'key_required', 'Cần gửi keyAI cho chế độ dùng key riêng.')
   return encrypted
@@ -125,6 +120,18 @@ async function createJob(
     const availableAt = scheduledAt ?? now
     assertPackage(customer, availableAt, writing.model, writing.length)
     const provider = await requireAvailableModel(client, writing.model)
+    const { rows: [providerSettings] } = await client.query<{ base_url: string | null, encrypted_api_key: string | null }>(
+      'SELECT base_url,encrypted_api_key FROM ai_providers WHERE provider=$1', [provider],
+    )
+    if (provider === 'openai-compatible' && !providerSettings?.base_url) {
+      throw new ApiError(422, 'provider_not_configured', 'OpenAI Compatible chưa được cấu hình Base URL trong CRM.')
+    }
+    const serviceConfigured = provider === 'openai-compatible'
+      ? Boolean(providerSettings?.encrypted_api_key && providerSettings?.base_url)
+      : Boolean(config.serviceKeys[provider])
+    if (customer.key_mode === 'service' && !serviceConfigured) {
+      throw new ApiError(422, 'service_key_unavailable', 'Nhà cung cấp này chưa được cấu hình key dịch vụ.')
+    }
     const encrypted = encryptedKeyFor(writing, customer, config, provider)
     const { rows: [job] } = await client.query<JobSummary>(`
       INSERT INTO jobs(site_id,customer_id,client_request_id,request_hash,mode,source_article_id,
@@ -196,7 +203,14 @@ async function siteCatalog(db: Database, config: Config, request: FastifyRequest
   if (!customer) throw notFound()
   const service = customer.key_mode === 'service'
   const models = await listAvailableModels(db, service ? customer.allowed_models : undefined)
-  return { customer, models: service ? models.filter(model => config.serviceKeys[model.provider]) : models }
+  const { rows: configured } = await db.query<{ provider: Provider, base_url: string | null, encrypted_api_key: string | null }>(
+    'SELECT provider,base_url,encrypted_api_key FROM ai_providers WHERE enabled',
+  )
+  const ready = new Set(configured.filter(row => {
+    if (row.provider === 'openai-compatible') return Boolean(row.base_url) && (!service || Boolean(row.encrypted_api_key))
+    return !service || Boolean(config.serviceKeys[row.provider])
+  }).map(row => row.provider))
+  return { customer, models: models.filter(model => ready.has(model.provider)) }
 }
 
 export function registerPublic(app: FastifyInstance, db: Database, config: Config) {
@@ -302,6 +316,18 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
       const writing = { ...job, ...patch }
       assertPackage(customer, when, writing.model, writing.length)
       const provider = writing.model === job.model ? job.provider : await requireAvailableModel(client, writing.model)
+      const { rows: [providerSettings] } = await client.query<{ base_url: string | null, encrypted_api_key: string | null }>(
+        'SELECT base_url,encrypted_api_key FROM ai_providers WHERE provider=$1', [provider],
+      )
+      if (provider === 'openai-compatible' && !providerSettings?.base_url) {
+        throw new ApiError(422, 'provider_not_configured', 'OpenAI Compatible chưa được cấu hình Base URL trong CRM.')
+      }
+      if (customer.key_mode === 'service') {
+        const ready = provider === 'openai-compatible'
+          ? Boolean(providerSettings?.encrypted_api_key && providerSettings?.base_url)
+          : Boolean(config.serviceKeys[provider])
+        if (!ready) throw new ApiError(422, 'service_key_unavailable', 'Nhà cung cấp này chưa được cấu hình key dịch vụ.')
+      }
       const oldKey = provider === job.provider ? job.encrypted_key : null
       const encrypted = encryptedKeyFor(writing, customer, config, provider, oldKey)
       const quota = job.quota_day && job.quota_month ? { quota_day: job.quota_day, quota_month: job.quota_month } : undefined

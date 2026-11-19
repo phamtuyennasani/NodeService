@@ -1,7 +1,7 @@
 import sanitizeHtml from 'sanitize-html'
 import { z } from 'zod'
 
-export type Provider = 'openai' | 'anthropic' | 'xai'
+export type Provider = 'openai' | 'anthropic' | 'xai' | 'openai-compatible'
 
 export interface Usage {
   input?: number
@@ -28,6 +28,7 @@ export interface GenerateInput {
   provider: Provider
   key: string
   model: string
+  baseUrl?: string
   keyword: string
   tone: string
   style: string
@@ -93,7 +94,15 @@ const endpoint = {
   openai: 'https://api.openai.com/v1/responses',
   anthropic: 'https://api.anthropic.com/v1/messages',
   xai: 'https://api.x.ai/v1/responses',
-} satisfies Record<Provider, string>
+} satisfies Record<Exclude<Provider, 'openai-compatible'>, string>
+
+function compatibleEndpoint(baseUrl: string | undefined): string {
+  if (!baseUrl) throw new WorkerError('AI_ENDPOINT_UNAVAILABLE', 'Nhà cung cấp OpenAI Compatible chưa có Base URL.', false)
+  const base = new URL(baseUrl)
+  const path = base.pathname.replace(/\/+$/, '')
+  base.pathname = path.endsWith('/chat/completions') ? path : path + '/chat/completions'
+  return base.toString()
+}
 
 const providerArticleSchema = z.toJSONSchema(articleSchema, {
   target: 'draft-7', io: 'input', unrepresentable: 'any',
@@ -107,10 +116,21 @@ function requestOf(input: GenerateInput) {
   if (input.provider === 'anthropic') {
     headers['anthropic-version'] = '2023-06-01'
     headers['x-api-key'] = input.key
-    return { headers, body: { model, max_tokens: maxTokens, system: systemPrompt, messages: [{ role: 'user', content: prompt }] } }
+    return { endpoint: endpoint.anthropic, headers, body: { model, max_tokens: maxTokens, system: systemPrompt, messages: [{ role: 'user', content: prompt }] } }
   }
   headers.authorization = 'Bearer ' + input.key
+  if (input.provider === 'openai-compatible') {
+    return {
+      endpoint: compatibleEndpoint(input.baseUrl), headers, body: {
+        model,
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }],
+        max_tokens: maxTokens,
+        response_format: { type: 'json_object' },
+      },
+    }
+  }
   return {
+    endpoint: endpoint[input.provider],
     headers,
     body: {
       model,
@@ -163,6 +183,13 @@ function outputText(provider: Provider, response: UnknownObject): string {
     const blocks: unknown[] = Array.isArray(response.content) ? response.content : []
     return blocks.map(object).flatMap(block => block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('')
   }
+  if (provider === 'openai-compatible') {
+    const choices = Array.isArray(response.choices) ? response.choices : []
+    const message = object(object(choices[0]).message)
+    if (typeof message.content === 'string') return message.content
+    const parts = Array.isArray(message.content) ? message.content.map(object) : []
+    return parts.flatMap(part => typeof part.text === 'string' ? [part.text] : []).join('')
+  }
   if (typeof response.output_text === 'string') return response.output_text
   const items: unknown[] = Array.isArray(response.output) ? response.output : []
   return items.flatMap(item => {
@@ -212,7 +239,7 @@ export async function generateArticle(input: GenerateInput, fetcher: typeof fetc
   const request = requestOf(input)
   let response: Response
   try {
-    response = await fetcher(endpoint[input.provider], {
+    response = await fetcher(request.endpoint, {
       method: 'POST',
       body: JSON.stringify(request.body),
       headers: request.headers,

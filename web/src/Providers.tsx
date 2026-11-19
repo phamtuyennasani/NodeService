@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, App, Button, Form, Input, Modal, Skeleton, Switch, Table } from 'antd';
+import { Alert, App, Button, Form, Input, Modal, Skeleton, Space, Switch, Table } from 'antd';
 import { AnthropicFilled, CheckOutlined, EditOutlined, KeyOutlined, OpenAIOutlined, PlusOutlined } from '@ant-design/icons';
 import { mutate, useResource } from './api';
 import { EmptyState, PageHeading, Panel, ResourceError } from './shared';
@@ -8,7 +8,7 @@ import './records.css';
 
 function ProviderMark({ provider }: { provider: CatalogProvider }) {
   return <span className={'record-provider-mark mark-' + provider.provider} aria-hidden="true">
-    {provider.provider === 'openai' ? <OpenAIOutlined /> : provider.provider === 'anthropic' ? <AnthropicFilled /> : provider.provider === 'xai' ? 'xAI' : provider.display_name.charAt(0)}
+    {provider.provider === 'openai' ? <OpenAIOutlined /> : provider.provider === 'anthropic' ? <AnthropicFilled /> : provider.provider === 'xai' ? 'xAI' : 'API'}
   </span>;
 }
 
@@ -16,8 +16,10 @@ export function Providers() {
   const catalog = useResource<Collection<CatalogProvider>>('/providers');
   const [selection, setSelection] = useState('openai');
   const [editor, setEditor] = useState<{ provider: CatalogProvider; model?: CatalogModel }>();
+  const [providerEditor, setProviderEditor] = useState<CatalogProvider>();
   const [busy, setBusy] = useState<string>();
   const [form] = Form.useForm<CatalogModel>();
+  const [providerForm] = Form.useForm<{ base_url?: string; api_key?: string }>();
   const { message } = App.useApp();
   const providers = catalog.data?.data ?? [];
   const selected = providers.find((item) => item.provider === selection) ?? providers[0];
@@ -63,6 +65,30 @@ export function Providers() {
     }
   }
 
+  function editProvider(provider: CatalogProvider) {
+    setProviderEditor(provider);
+    providerForm.resetFields();
+    providerForm.setFieldsValue({ base_url: provider.base_url ?? '', api_key: undefined });
+  }
+
+  async function saveProvider(values: { base_url?: string; api_key?: string }) {
+    if (!providerEditor) return;
+    const body: { base_url?: string; api_key?: string } = {};
+    if (providerEditor.provider === 'openai-compatible') body.base_url = values.base_url?.trim();
+    if (values.api_key?.trim()) body.api_key = values.api_key.trim();
+    setBusy('provider-editor');
+    try {
+      await mutate('/providers/' + providerEditor.provider, 'PATCH', body);
+      catalog.reload();
+      setProviderEditor(undefined);
+      message.success('Đã lưu cấu hình nhà cung cấp.');
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   return <>
     <PageHeading title="Nhà cung cấp AI" description="Chọn những model mà website khách hàng có thể sử dụng để viết bài." />
     <ResourceError error={catalog.error} onRetry={catalog.reload} />
@@ -87,7 +113,15 @@ export function Providers() {
         <Switch checked={selected.enabled} loading={busy === 'provider/' + selected.provider} disabled={Boolean(busy) || catalog.loading}
           aria-label={'Cho phép cung cấp ' + selected.display_name} onChange={(value) => void setEnabled(selected, value)} />
       </label>}>
-        <p className="record-provider-key"><KeyOutlined /> Key dịch vụ {selected.service_key_configured ? 'đã cấu hình' : 'chưa cấu hình'}</p>
+        <Space className="record-provider-key" size={8} wrap>
+          <span><KeyOutlined /> {selected.provider === 'openai-compatible' ? 'API key' : 'Key dịch vụ'} {selected.provider === 'openai-compatible'
+            ? (selected.api_key_configured ? 'đã cấu hình' : 'chưa cấu hình')
+            : (selected.service_key_configured ? 'đã cấu hình' : 'chưa cấu hình')}</span>
+          {selected.provider === 'openai-compatible' && <Button size="small" onClick={() => editProvider(selected)}>Cấu hình kết nối</Button>}
+        </Space>
+        {selected.provider === 'openai-compatible' && <p className="record-provider-endpoint">
+          Base URL <span className="mono">{selected.base_url || 'Chưa cấu hình'}</span>
+        </p>}
         {!selected.enabled && <Alert className="record-provider-note" type="info" showIcon
           title="Bật nhà cung cấp để các model đã chọn xuất hiện trên website khách hàng." />}
         <div className="record-models-heading"><h3>Danh sách model <span>{selected.models.length}</span></h3>
@@ -120,6 +154,23 @@ export function Providers() {
           <Input maxLength={160} />
         </Form.Item>
         {!editor?.model && <Form.Item label="Bật model" name="enabled" valuePropName="checked"><Switch /></Form.Item>}
+      </Form>
+    </Modal>
+    <Modal open={Boolean(providerEditor)} forceRender title={'Cấu hình kết nối · ' + (providerEditor?.display_name ?? '')}
+      okText="Lưu cấu hình" cancelText="Hủy" onOk={() => providerForm.submit()} confirmLoading={busy === 'provider-editor'}
+      onCancel={() => { if (busy !== 'provider-editor') setProviderEditor(undefined); }}>
+      <Form form={providerForm} layout="vertical" onFinish={saveProvider} disabled={busy === 'provider-editor'}>
+        <Form.Item label="Base URL" name="base_url" extra="Địa chỉ API tương thích OpenAI, ví dụ https://api.example.com/v1"
+          rules={providerEditor?.provider === 'openai-compatible' ? [
+            { required: true, whitespace: true, message: 'Nhập Base URL.' },
+            { type: 'url', message: 'Base URL phải là một URL hợp lệ.' },
+          ] : undefined}>
+          <Input placeholder="https://api.example.com/v1" maxLength={500} autoComplete="url" />
+        </Form.Item>
+        <Form.Item label="API key" name="api_key" extra={providerEditor?.api_key_configured ? 'Để trống để giữ API key hiện tại.' : 'API key dùng để gọi nhà cung cấp này.'}
+          rules={providerEditor?.api_key_configured ? undefined : [{ required: true, whitespace: true, message: 'Nhập API key.' }]}>
+          <Input.Password placeholder={providerEditor?.api_key_configured ? 'Đã có key, không cần nhập lại' : 'Nhập API key'} maxLength={500} autoComplete="new-password" />
+        </Form.Item>
       </Form>
     </Modal>
   </>;

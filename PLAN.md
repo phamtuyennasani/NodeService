@@ -24,7 +24,7 @@ Giao diện dùng font Inter hỗ trợ tiếng Việt, nền sáng, thanh đi�
 
 | Mục | Dữ liệu cần thấy | Thao tác của chủ dịch vụ |
 | --- | --- | --- |
-| Nhà cung cấp AI | OpenAI, Anthropic và xAI, trạng thái mở cung cấp, tình trạng key dịch vụ và danh sách model của từng nhà cung cấp. | Thêm mã model, đặt tên hiển thị và bật/tắt từng model hoặc cả nhà cung cấp. Gói khách hàng chọn các model từ danh mục này. |
+| Nhà cung cấp AI | OpenAI, Anthropic, xAI và OpenAI Compatible, trạng thái mở cung cấp, tình trạng key dịch vụ và danh sách model của từng nhà cung cấp. OpenAI Compatible lưu Base URL và API key đã mã hóa trong CRM. | Thêm mã model, đặt tên hiển thị và bật/tắt từng model hoặc cả nhà cung cấp. Gói khách hàng chọn các model từ danh mục này. |
 | Bảng giá model | Nhà cung cấp, model, đơn vị tiền, đơn giá theo loại sử dụng, nguồn công bố và thời điểm bắt đầu hiệu lực của từng phiên bản. | Nhập giá từ bảng giá chính thức cho model có API không cung cấp đơn giá. Khi nhà cung cấp đổi giá, thêm phiên bản mới và xem được lịch sử các phiên bản. |
 | Tài khoản | Tên đăng nhập và phiên làm việc của người vận hành. | Đăng nhập, đăng xuất và đổi mật khẩu. Lưu mật khẩu dưới dạng băm. |
 | Tổng quan | Tổng khách, tổng website, sản lượng theo thời gian, bài đã giao qua webhook, lịch sắp đến hạn, yêu cầu lỗi viết và bài lỗi giao. | Chọn hôm nay, tháng này hoặc khoảng ngày. Bấm vào một số liệu để mở danh sách chi tiết với cùng bộ lọc. |
@@ -43,7 +43,7 @@ Giao diện dùng font Inter hỗ trợ tiếng Việt, nền sáng, thanh đi�
 | Xác thực yêu cầu | Xác định website bằng Bearer token, suy ra khách hàng và giới hạn quyền tra cứu trong website đó. Token đã thu hồi hết hiệu lực với các lệnh gọi tiếp theo. |
 | Tiếp nhận | Kiểm tra model, từ khóa, giọng văn, phong cách và độ dài. Chế độ key riêng yêu cầu thêm `keyAI`. Với gói dùng key dịch vụ, kiểm tra quyền và giữ lượt trước khi nhận việc. Kiểm tra giờ hẹn và múi giờ với lịch viết. Cấp `job_id` sau khi lưu thành công. Dùng mã yêu cầu của Laravel để nhận biết lần gửi lặp. |
 | Điều phối lịch | Nhận việc viết ngay từ widget hoặc giữ việc đến giờ đã hẹn. Khôi phục lịch chờ sau khi dịch vụ khởi động lại. Lưu thời điểm thực tế để CRM có thể đối chiếu với giờ hẹn. |
-| Gọi AI | Tra nhà cung cấp OpenAI, Anthropic hoặc xAI theo mã model trong danh mục CRM. Dùng key và yêu cầu viết của đúng job, kiểm tra cấu trúc kết quả rồi lưu bài. Ghi nhà cung cấp, model, thời gian xử lý và lỗi. Khi provider trả số token đầu vào và đầu ra, có thể lưu để đối chiếu mức sử dụng. |
+| Gọi AI | Tra nhà cung cấp OpenAI, Anthropic, xAI hoặc OpenAI Compatible theo mã model trong danh mục CRM. OpenAI Compatible gọi chuẩn Chat Completions tại Base URL đã cấu hình. Dùng key và yêu cầu viết của đúng job, kiểm tra cấu trúc kết quả rồi lưu bài. Ghi nhà cung cấp, model, thời gian xử lý và lỗi. Khi provider trả số token đầu vào và đầu ra, có thể lưu để đối chiếu mức sử dụng. |
 | Trả kết quả | Job theo lịch tạo sự kiện webhook có chữ ký, gửi bài hoặc thông báo lỗi đến Laravel. Job widget cung cấp trạng thái và kết quả cho modal xem trước. |
 | Xử lý lỗi | Phân biệt lỗi đầu vào, AI key bị từ chối, lỗi tạm thời của nhà cung cấp, kết quả thiếu trường và lỗi giao webhook. Lưu giai đoạn lỗi, thời điểm và trạng thái thử lại. CRM chỉ hiển thị thông tin cần để xử lý, che các giá trị xác thực. |
 

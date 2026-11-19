@@ -29,6 +29,8 @@ interface Job {
   source_article_id: string | null
   attempt_count: number
   lease_token: string | null
+  base_url: string | null
+  provider_encrypted_api_key: string | null
 }
 
 interface Claim {
@@ -82,7 +84,8 @@ async function transition(
 
 async function recoverExpiredWriter(client: PoolClient, provider: Provider) {
   const { rows: [expired] } = await client.query<Job>(`
-    SELECT j.* FROM jobs j
+    SELECT j.*,p.base_url,p.encrypted_api_key AS provider_encrypted_api_key FROM jobs j
+    JOIN ai_providers p ON p.provider=j.provider
     WHERE j.provider=$1 AND j.status='writing' AND j.lease_expires_at<=now()
     ORDER BY j.lease_expires_at,j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED
   `, [provider])
@@ -108,7 +111,10 @@ async function lockRateWindow(client: PoolClient, scope: string) {
 
 function keyFor(job: Job, config: Config) {
   try {
-    const key = job.key_mode === 'service' ? config.serviceKeys[job.provider]
+    const key = job.key_mode === 'service'
+      ? job.provider === 'openai-compatible'
+        ? job.provider_encrypted_api_key && unseal(job.provider_encrypted_api_key, config.encryptionKey)
+        : config.serviceKeys[job.provider]
       : job.encrypted_key && unseal(job.encrypted_key, config.encryptionKey)
     if (!key) throw new Error('Missing key')
     return key
@@ -128,7 +134,8 @@ async function claimWriter(db: Database, config: Config, provider: Provider): Pr
     if (running >= limits.concurrency) return false
 
     const { rows: [job] } = await client.query<Job>(`
-      SELECT j.* FROM jobs j
+      SELECT j.*,p.base_url,p.encrypted_api_key AS provider_encrypted_api_key FROM jobs j
+      JOIN ai_providers p ON p.provider=j.provider
       LEFT JOIN LATERAL (
         SELECT started_at FROM jobs
         WHERE customer_id=j.customer_id AND started_at IS NOT NULL
@@ -165,6 +172,7 @@ async function claimWriter(db: Database, config: Config, provider: Provider): Pr
     const input = {
       provider, key, model: job.model, keyword: job.keyword, tone: job.tone,
       style: job.style, length: job.length, instructions: job.instructions, source,
+      baseUrl: job.base_url ?? undefined,
     }
     // Reserve completion capacity and estimate the prompt size before dispatch.
     const promptBytes = Buffer.byteLength(JSON.stringify({
@@ -177,7 +185,7 @@ async function claimWriter(db: Database, config: Config, provider: Provider): Pr
       return true
     }
 
-    const scope = job.key_mode === 'service' || key === config.serviceKeys[provider] ? provider
+    const scope = job.key_mode === 'service' ? provider
       : provider + ':' + createHmac('sha256', config.encryptionKey).update(key).digest('hex')
     const window = scope === provider ? providerWindow : await lockRateWindow(client, scope)
     const windowEnd = window.window_started_at.getTime() + 60_000
