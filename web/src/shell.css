@@ -130,7 +130,7 @@
   gap: 12px;
   min-height: 64px;
   padding-block: 8px;
-  padding-inline: max(var(--shell-inset), calc((100% - 1600px) / 2 + var(--shell-inset)));
+  padding-inline: var(--shell-inset);
   border-bottom: 1px solid var(--shell-line);
   color: #666e61;
   background: #fafaf5;
@@ -145,8 +145,6 @@
 .crm-crumb .crm-menu-toggle { display: none; }
 .crm-page {
   width: 100%;
-  max-width: 1600px;
-  margin-inline: auto;
   padding: 29px var(--shell-inset) 44px;
   outline: none;
   animation: crm-enter .22s ease-out;
