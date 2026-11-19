@@ -21,6 +21,8 @@ npm run build
 npm start
 ```
 
+Khi phát triển, dùng `npm run dev:watch` để theo dõi mã nguồn, tự chạy lại build và khởi động lại dịch vụ sau mỗi thay đổi.
+
 Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthropic, xAI hoặc **OpenAI Compatible** để thêm mã model, đặt tên hiển thị và bật các model muốn cung cấp. Với OpenAI Compatible, mở **Cấu hình kết nối**, nhập Base URL của API tương thích OpenAI, ví dụ `https://api.example.com/v1`, và API key. Ở bản cài mới, GPT-4.1 được bật sẵn. Sau đó cấu hình **Khách hàng**, **Website** và **Bảng giá model**. Trong hồ sơ website, dùng **Cấp token** và **Cấp khóa ký** để lấy hai giá trị cho Laravel. Thêm model vào danh sách cho phép khi cấu hình gói dịch vụ. [CRM tại localhost:3210](http://localhost:3210/)
 
 `npm start` chạy CRM, API, worker viết và worker giao bài trong cùng tiến trình. Khi triển khai thành các tiến trình độc lập, khởi chạy các lệnh sau và dùng chung `.env`. Chạy từ thư mục dự án để dịch vụ tìm được bản build và các migration.
