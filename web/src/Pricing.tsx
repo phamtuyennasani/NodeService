@@ -3,24 +3,14 @@ import { App, Button, Descriptions, Drawer, Form, Grid, Input, InputNumber, Moda
 import { ExportOutlined, PlusOutlined, SearchOutlined, SyncOutlined } from '@ant-design/icons';
 import type dayjs from 'dayjs';
 import { mutate, useResource, useSearchValue, withQuery } from './api';
-import { CursorPagination, datetime, displayVietnamTime, EmptyState, PageHeading, Panel, ResourceError, submitVietnamTime, usd } from './shared';
+import { CursorPagination, datetime, displayVietnamTime, EmptyState, PageHeading, Panel, ResourceError, submitVietnamTime, vnd } from './shared';
 import type { CatalogProvider, Collection, Price } from './types';
 import { DateTimeField } from './DateTimeField';
 import './records.css';
 
 type PriceDraft = Omit<Price, 'id' | 'effective_at'> & { effective_at: dayjs.Dayjs };
 const standardFields: { key: keyof PriceDraft; label: string; required?: boolean }[] = [
-  { key: 'input_usd', label: 'Đầu vào', required: true },
-  { key: 'output_usd', label: 'Đầu ra', required: true },
-  { key: 'cached_input_usd', label: 'Đọc cache' },
-  { key: 'cache_write_5m_usd', label: 'Ghi cache 5 phút' },
-  { key: 'cache_write_1h_usd', label: 'Ghi cache 1 giờ' },
-  { key: 'request_usd', label: 'Phí riêng cho mỗi lượt gọi (USD)' },
-];
-const longFields: { key: keyof PriceDraft; label: string }[] = [
-  { key: 'long_context_input_usd', label: 'Đầu vào' },
-  { key: 'long_context_cached_input_usd', label: 'Đọc cache' },
-  { key: 'long_context_output_usd', label: 'Đầu ra' },
+  { key: 'total_vnd', label: 'Tổng token', required: true },
 ];
 
 export function Pricing() {
@@ -52,7 +42,7 @@ export function Pricing() {
   function open(price?: Price) {
     setCopiedPrice(price);
     form.resetFields();
-    form.setFieldsValue(price ? { ...price, effective_at: displayVietnamTime(new Date()) } : { provider, effective_at: displayVietnamTime(new Date()) });
+    form.setFieldsValue(price ? { ...price, total_vnd: price.total_vnd, effective_at: displayVietnamTime(new Date()) } : { provider, effective_at: displayVietnamTime(new Date()) });
     setEditing(true);
   }
 
@@ -95,7 +85,7 @@ export function Pricing() {
       <Button type="primary" icon={<PlusOutlined />} onClick={() => open()}>Thêm phiên bản giá</Button>
     </div>} />
     <ResourceError error={prices.error ?? providers.error} onRetry={() => { prices.reload(); providers.reload(); }} />
-    <Panel className="table-panel record-panel" title="Lịch sử đơn giá" extra={<span className="record-unit">USD / triệu token</span>}>
+    <Panel className="table-panel record-panel" title="Lịch sử đơn giá" extra={<span className="record-unit">VND / 1M token</span>}>
       <div className="table-toolbar">
         <Input prefix={<SearchOutlined />} aria-label="Lọc theo mã model" allowClear placeholder="Lọc theo mã model" value={model} onChange={(event) => { setModel(event.target.value); setCursor([]); }} />
         <Select aria-label="Nhà cung cấp" allowClear placeholder="Tất cả nhà cung cấp" value={provider} options={providerOptions} onChange={(value) => { setProvider(value); setCursor([]); }} />
@@ -105,9 +95,7 @@ export function Pricing() {
         columns={[
           { title: 'Model', key: 'model', render: (_, row) => <button className="table-link table-identity" onClick={() => setSelected(row)}><strong className="mono">{row.model}</strong><small>{providerNames[row.provider] ?? row.provider}</small></button> },
           { title: 'Hiệu lực từ', dataIndex: 'effective_at', responsive: ['md'], render: datetime },
-          { title: 'Đầu vào', dataIndex: 'input_usd', align: 'right', render: usd },
-          { title: 'Đọc cache', dataIndex: 'cached_input_usd', responsive: ['md'], align: 'right', render: usd },
-          { title: 'Đầu ra', dataIndex: 'output_usd', align: 'right', render: usd },
+          { title: 'Tổng token', dataIndex: 'total_vnd', align: 'right', render: vnd },
           { title: 'Nguồn', dataIndex: 'source_url', responsive: ['md'], render: (value) => value ? <a href={value} target="_blank" rel="noreferrer" className="record-source">Bảng giá gốc <ExportOutlined /></a> : '—' },
           { title: '', key: 'view', responsive: ['md'], render: (_, row) => <Button type="text" onClick={() => open(row)}>Tạo bản mới</Button> },
         ]} />
@@ -121,22 +109,17 @@ export function Pricing() {
           { key: 'effective', label: 'Hiệu lực từ', children: datetime(selected.effective_at) },
           { key: 'source', label: 'Nguồn', children: selected.source_url ? <a href={selected.source_url} target="_blank" rel="noreferrer">Bảng giá gốc</a> : '—' },
         ]} />
-        <h3>Đơn giá chuẩn (USD / triệu token)</h3>
+        <h3>Đơn giá tổng (VND / 1M token)</h3>
         <Descriptions column={1} size="small" className="profile-description" items={standardFields.map(({ key, label }) => ({
-          key, label, children: usd(selected[key as keyof Price]),
+          key, label, children: vnd(selected[key as keyof Price]),
         }))} />
-        {selected.long_context_threshold != null && <>
-          <h3>Giá trên {new Intl.NumberFormat('vi-VN').format(selected.long_context_threshold)} token đầu vào</h3>
-          <Descriptions column={1} size="small" items={longFields.map(({ key, label }) => ({
-            key, label, children: usd(selected[key as keyof Price]),
-          }))} />
-        </>}
       </>}
     </Drawer>
-    <Modal title="Thêm phiên bản giá" width={660} open={editing} onCancel={() => setEditing(false)} onOk={() => form.submit()}
+    <Modal className="pricing-modal" title="Thêm phiên bản giá" width={760} open={editing} onCancel={() => setEditing(false)} onOk={() => form.submit()}
       okText="Lưu phiên bản giá" confirmLoading={saving} forceRender>
       <Form form={form} layout="vertical" onFinish={save}>
-        <div className="form-grid">
+        <div className="pricing-section-heading"><div><strong>Thông tin phiên giá</strong><span>Chọn model và thời điểm bắt đầu áp dụng.</span></div></div>
+        <div className="pricing-meta-grid">
           <Form.Item name="provider" label="Nhà cung cấp" rules={[{ required: true, message: 'Chọn nhà cung cấp.' }]}><Select options={providerOptions} onChange={() => form.setFieldValue('model', undefined)} /></Form.Item>
           <Form.Item name="model" label="Model" rules={[{ required: true, message: 'Chọn model.' }]}>
             <Select disabled={!draftProvider} options={priceModels} showSearch={{ optionFilterProp: 'label' }} placeholder="Chọn model của nhà cung cấp" />
@@ -144,17 +127,10 @@ export function Pricing() {
           <Form.Item name="effective_at" label="Hiệu lực từ (giờ VN)" rules={[{ required: true, message: 'Chọn thời điểm hiệu lực.' }]}><DateTimeField seconds /></Form.Item>
           <Form.Item name="source_url" label="URL nguồn công bố" rules={[{ required: true, type: 'url', message: 'Nhập URL bảng giá công bố.' }, { pattern: /^https?:\/\//i, message: 'Dùng URL http hoặc https.' }]}><Input /></Form.Item>
         </div>
-        <h3>Đơn giá chuẩn (USD / triệu token)</h3>
-        <div className="form-grid">
-          {standardFields.map((field) => <Form.Item key={field.key} name={field.key} label={field.label} rules={field.required ? [{ required: true, message: 'Nhập đơn giá.' }] : undefined}><InputNumber min={0} stringMode step=".000001" /></Form.Item>)}
+        <div className="pricing-section-heading"><div><strong>Đơn giá chuẩn</strong><span>VND trên mỗi triệu token.</span></div></div>
+        <div className="price-field-grid">
+          {standardFields.map((field) => <Form.Item className="price-field" style={{ width: '100%' }} key={field.key} name={field.key} label={field.label} rules={field.required ? [{ required: true, message: 'Nhập đơn giá.' }] : undefined}><InputNumber className="price-input" style={{ width: '100%', display: 'flex' }} min={0} stringMode step="1000" addonAfter="₫" /></Form.Item>)}
         </div>
-        <details className="attempt-details">
-          <summary>Giá theo ngưỡng token đầu vào</summary>
-          <Form.Item name="long_context_threshold" label="Ngưỡng token"><InputNumber min={1} precision={0} /></Form.Item>
-          <div className="form-grid">
-            {longFields.map((field) => <Form.Item key={field.key} name={field.key} label={field.label}><InputNumber min={0} stringMode step=".000001" /></Form.Item>)}
-          </div>
-        </details>
       </Form>
     </Modal>
   </>;

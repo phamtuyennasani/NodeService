@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Alert, App, Button, Form, Input, Modal, Skeleton, Space, Switch, Table } from 'antd';
-import { AnthropicFilled, CheckOutlined, EditOutlined, KeyOutlined, OpenAIOutlined, PlusOutlined } from '@ant-design/icons';
+import { AnthropicFilled, CheckOutlined, DeleteOutlined, EditOutlined, KeyOutlined, OpenAIOutlined, PlusOutlined } from '@ant-design/icons';
 import { mutate, useResource } from './api';
 import { EmptyState, PageHeading, Panel, ResourceError } from './shared';
 import type { CatalogModel, CatalogProvider, Collection } from './types';
@@ -63,6 +63,30 @@ export function Providers() {
     } finally {
       setBusy(undefined);
     }
+  }
+
+  function removeModel(provider: CatalogProvider, model: CatalogModel) {
+    Modal.confirm({
+      title: 'Xóa model này?',
+      content: `Model ${model.model} sẽ bị xóa khỏi danh sách của ${provider.display_name}.`,
+      okText: 'Xóa model',
+      cancelText: 'Hủy',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        const key = 'delete-model/' + model.model;
+        setBusy(key);
+        try {
+          await mutate('/providers/' + provider.provider + '/models/' + encodeURIComponent(model.model), 'DELETE');
+          catalog.reload();
+          message.success('Đã xóa model.');
+        } catch (error) {
+          message.error((error as Error).message);
+          throw error;
+        } finally {
+          setBusy(undefined);
+        }
+      },
+    });
   }
 
   function editProvider(provider: CatalogProvider) {
@@ -136,9 +160,12 @@ export function Providers() {
             { title: 'Bật model', key: 'enabled', align: 'center', width: 85, render: (_, row) => <Switch checked={row.enabled}
               loading={busy === 'model/' + row.model} disabled={Boolean(busy) || catalog.loading}
               aria-label={'Bật model ' + row.model} onChange={(value) => void setEnabled(selected, value, row)} /> },
-            { title: '', key: 'edit', width: 56, align: 'right', render: (_, row) => <Button type="text" icon={<EditOutlined />}
+            { title: '', key: 'actions', width: 96, align: 'right', render: (_, row) => <Space size={2}><Button type="text" icon={<EditOutlined />}
               aria-label={'Chỉnh sửa ' + row.model} title="Chỉnh sửa tên hiển thị" disabled={Boolean(busy) || catalog.loading}
-              onClick={() => edit(selected, row)} /> },
+              onClick={() => edit(selected, row)} />
+              <Button type="text" danger icon={<DeleteOutlined />}
+              aria-label={'Xóa ' + row.model} title="Xóa model" loading={busy === 'delete-model/' + row.model} disabled={Boolean(busy) || catalog.loading}
+              onClick={() => removeModel(selected, row)} /></Space> },
           ]} />
       </Panel>
     </>}

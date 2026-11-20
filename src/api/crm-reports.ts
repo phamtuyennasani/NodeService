@@ -1,218 +1,65 @@
+import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import type { Config } from '../config.js'
 import { providers } from '../config.js'
-import type { Database } from '../db.js'
-import { ApiError, idSchema, notFound, periodSchema } from './errors.js'
+import { collection, type Database } from '../db.js'
+import { createJob, type Site } from './public.js'
+import { modelIdSchema } from './catalog.js'
+import { ApiError, idSchema, notFound, periodSchema, quantitySchema, timestampSchema } from './errors.js'
 import { pageOf, readCursor } from './public.js'
 
-const date = periodSchema.optional()
 const keys = z.object({ customer_id: idSchema.optional(), website_id: idSchema.optional() })
-const filtersSchema = keys.extend({ from: date, to: date }).refine(
-  ({ from, to }) => !from || !to || from <= to,
-  'Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.',
-)
-const listSchema = keys.extend({
-  from: date,
-  to: date,
-  limit: z.coerce.number().int().min(1).max(250).default(100),
-  cursor: z.string().max(512).optional(),
-  q: z.string().trim().max(160).optional(),
-})
-const jobsSchema = listSchema.extend({
-  status: z.enum(['scheduled', 'queued', 'writing', 'ready', 'completed', 'failed', 'canceled']).optional(),
-  source: z.enum(['scheduled', 'schedule', 'preview', 'widget', 'rewrite']).optional(),
-  provider: z.enum(providers).optional(),
-  key_mode: z.enum(['own', 'service']).optional(),
-  date_basis: z.literal('cost').optional(),
-})
-const deliveriesSchema = listSchema.extend({
-  status: z.enum(['pending', 'sending', 'delivered', 'failed']).optional(),
-  event: z.enum(['article.ready', 'article.failed']).optional(),
-})
+const listSchema = keys.extend({ from: periodSchema.optional(), to: periodSchema.optional(), limit: z.coerce.number().int().min(1).max(250).default(100), cursor: z.string().max(512).optional(), q: z.string().trim().max(160).optional() })
+const jobsSchema = listSchema.extend({ status: z.enum(['scheduled', 'queued', 'writing', 'ready', 'completed', 'failed', 'canceled']).optional(), source: z.enum(['scheduled', 'schedule', 'preview', 'widget', 'rewrite']).optional(), provider: z.enum(providers).optional(), key_mode: z.enum(['own', 'service']).optional(), date_basis: z.literal('cost').optional() })
+const deliveriesSchema = listSchema.extend({ status: z.enum(['pending', 'sending', 'delivered', 'failed']).optional(), event: z.enum(['article.ready', 'article.failed']).optional() })
 const idParams = z.object({ id: idSchema })
+const scheduleFields = z.object({ customer_id: idSchema.optional(), website_id: idSchema, model: modelIdSchema, keyword: z.string().trim().min(1).max(500), tone: z.string().trim().min(1).max(240), style: z.string().trim().min(1).max(500), length: quantitySchema, instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(), scheduled_at: timestampSchema }).strict()
+const dateStart = (date?: string) => date ? new Date(`${date}T00:00:00+07:00`) : undefined
+const dateEnd = (date?: string) => date ? new Date(new Date(`${date}T00:00:00+07:00`).getTime() + 86_400_000) : undefined
 
-const reportJob = `j.id,j.id AS job_id,j.customer_id,c.name AS customer_name,
-  j.site_id AS website_id,s.name AS website_name,j.mode,
-  CASE j.mode WHEN 'preview' THEN 'widget' ELSE j.mode END AS source,
-  CASE j.status WHEN 'ready' THEN 'completed' ELSE j.status END AS status,
-  j.keyword,j.provider,j.model,j.tone,j.style,j.length,j.key_mode,
-  j.created_at,j.scheduled_at,j.started_at,j.completed_at,j.source_article_id,
-  j.client_request_id AS idempotency_key,j.error_code,j.error_message`
-const jobTables = `jobs j JOIN sites s ON s.id=j.site_id JOIN customers c ON c.id=j.customer_id`
-const scope = `($1::uuid IS NULL OR j.customer_id=$1) AND ($2::uuid IS NULL OR j.site_id=$2)`
-
-const reportDelivery = `w.id,w.job_id,w.site_id AS website_id,s.name AS website_name,
-  j.customer_id,c.name AS customer_name,j.keyword,w.status,w.event AS event_type,
-  (SELECT count(*)::int FROM webhook_attempts h WHERE h.delivery_id=w.id) AS attempts,
-  w.attempt_count,w.http_status AS last_http_status,w.error AS last_error,w.next_attempt_at,
-  w.delivered_at,w.created_at`
-const deliveryTables = `webhook_deliveries w JOIN jobs j ON j.id=w.job_id
-  JOIN sites s ON s.id=w.site_id JOIN customers c ON c.id=j.customer_id`
-
-function dateRange(expression: string, start: number, end: number) {
-  return `($${start}::date IS NULL OR (${expression}) >= $${start}::date::timestamp AT TIME ZONE 'Asia/Ho_Chi_Minh')
-    AND ($${end}::date IS NULL OR (${expression}) < ($${end}::date+1)::timestamp AT TIME ZONE 'Asia/Ho_Chi_Minh')`
+async function joinedJobs(db: Database) {
+  const jobs = await collection<any>(db, 'jobs').find({}).toArray(); const sites = await collection<any>(db, 'sites').find({}).toArray(); const customers = await collection<any>(db, 'customers').find({}).toArray(); const siteMap = new Map(sites.map(site => [site._id, site])); const customerMap = new Map(customers.map(customer => [customer._id, customer]));
+  return jobs.map(job => ({ ...job, customer: customerMap.get(job.customer_id), site: siteMap.get(job.site_id) }))
 }
-
-function defaultPeriod(from?: string, to?: string) {
-  const day = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  const end = to ?? day
-  const start = from ?? new Date(Date.parse(end) - 13 * 86_400_000).toISOString().slice(0, 10)
-  const days = (Date.parse(end) - Date.parse(start)) / 86_400_000
-  if (days < 0 || days > 365) {
-    throw new ApiError(400, 'invalid_report_period', 'Chọn khoảng báo cáo tối đa 366 ngày.')
-  }
-  return [start, end]
+function reportJob(row: any) { return { id: row._id, job_id: row._id, customer_id: row.customer_id, customer_name: row.customer?.name ?? '', website_id: row.site_id, website_name: row.site?.name ?? '', mode: row.mode, source: row.mode === 'preview' ? 'widget' : row.mode, status: row.status === 'ready' ? 'completed' : row.status, keyword: row.keyword, provider: row.provider, model: row.model, tone: row.tone, style: row.style, length: row.length, key_mode: row.key_mode, created_at: row.created_at, scheduled_at: row.scheduled_at, started_at: row.started_at, completed_at: row.completed_at, source_article_id: row.source_article_id, idempotency_key: row.client_request_id, error_code: row.error_code, error_message: row.error_message }
 }
+function inRange(value: Date | null | undefined, from?: string, to?: string) { return (!from || (value && value >= dateStart(from)!)) && (!to || (value && value < dateEnd(to)!)) }
 
-export function registerReports(app: FastifyInstance, db: Database) {
+export function registerReports(app: FastifyInstance, db: Database, config: Config) {
+  app.post('/schedules', async (request, reply) => {
+    const fields = scheduleFields.parse(request.body)
+    const site = await collection<any>(db, 'sites').findOne({ _id: fields.website_id })
+    if (!site) throw notFound()
+    if (fields.customer_id && fields.customer_id !== site.customer_id) throw new ApiError(409, 'website_customer_mismatch', 'Website không thuộc khách hàng đã chọn.')
+    const clientId = typeof request.headers['idempotency-key'] === 'string' && request.headers['idempotency-key'].trim()
+      ? request.headers['idempotency-key'].trim()
+      : randomUUID()
+    const result = await createJob(db, config, {
+      id: site._id,
+      customer_id: site.customer_id,
+      token_hash: site.token_hash ?? null,
+      webhook_url: site.webhook_url ?? null,
+      webhook_secret: site.webhook_secret ?? null,
+    } satisfies Site, clientId, {
+      model: fields.model,
+      keyword: fields.keyword,
+      tone: fields.tone,
+      style: fields.style,
+      length: fields.length,
+      instructions: fields.instructions,
+      keyAI: fields.keyAI,
+    }, 'scheduled', fields.scheduled_at)
+    return reply.code(202).send(result)
+  })
   app.get('/dashboard', async request => {
-    const { customer_id, website_id, from, to } = filtersSchema.parse(request.query)
-    const [start, end] = defaultPeriod(from, to)
-    const values = [customer_id ?? null, website_id ?? null, start, end]
-    const { rows: [summary] } = await db.query(`
-      WITH days AS (
-        SELECT d::date AS date FROM generate_series($3::date::timestamp,$4::date::timestamp,interval '1 day') d
-      ), written AS (
-        SELECT (j.completed_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS date,count(*)::int AS articles
-        FROM jobs j WHERE ${scope} AND j.status='ready' AND ${dateRange('j.completed_at',3,4)}
-        GROUP BY 1
-      ), delivered AS (
-        SELECT (w.delivered_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS date,count(*)::int AS delivered
-        FROM webhook_deliveries w JOIN jobs j ON j.id=w.job_id
-        WHERE ${scope} AND w.status='delivered' AND w.event='article.ready' AND ${dateRange('w.delivered_at',3,4)}
-        GROUP BY 1
-      ), costs AS (
-        SELECT (a.requested_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS date,
-          sum(a.cost_usd) FILTER (WHERE j.key_mode='service') AS service_cost_usd,
-          sum(a.cost_usd) FILTER (WHERE j.key_mode='own') AS customer_cost_usd,
-          count(*) FILTER (WHERE a.cost_source='pending')::int AS unpriced_attempts
-        FROM ai_attempts a JOIN jobs j ON j.id=a.job_id
-        WHERE ${scope} AND ${dateRange('a.requested_at',3,4)}
-        GROUP BY 1
-      ), points AS (
-        SELECT d.date::text,coalesce(w.articles,0) AS articles,coalesce(l.delivered,0) AS delivered,
-          coalesce(c.service_cost_usd,0)::text AS service_cost_usd,
-          coalesce(c.customer_cost_usd,0)::text AS customer_cost_usd,
-          coalesce(c.unpriced_attempts,0) AS unpriced_attempts
-        FROM days d LEFT JOIN written w USING(date) LEFT JOIN delivered l USING(date) LEFT JOIN costs c USING(date)
-      )
-      SELECT
-        (SELECT count(*)::int FROM customers c WHERE ($1::uuid IS NULL OR c.id=$1)
-          AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM sites s WHERE s.id=$2 AND s.customer_id=c.id))) AS customers,
-        (SELECT count(*)::int FROM sites s WHERE ($1::uuid IS NULL OR s.customer_id=$1)
-          AND ($2::uuid IS NULL OR s.id=$2)) AS websites,
-        (SELECT count(*)::int FROM jobs j WHERE ${scope} AND j.status IN ('scheduled','queued','writing')) AS pending,
-        (SELECT count(*)::int FROM jobs j WHERE ${scope} AND j.status='failed'
-          AND ${dateRange('coalesce(j.completed_at,j.updated_at)',3,4)}) AS write_errors,
-        (SELECT count(*)::int FROM webhook_deliveries w JOIN jobs j ON j.id=w.job_id WHERE ${scope}
-          AND w.event='article.ready' AND w.status='failed' AND ${dateRange('w.updated_at',3,4)}) AS delivery_errors,
-        coalesce(sum(articles),0)::int AS articles,coalesce(sum(delivered),0)::int AS delivered,
-        coalesce(sum(service_cost_usd::numeric),0)::text AS service_cost_usd,
-        coalesce(sum(customer_cost_usd::numeric),0)::text AS customer_cost_usd,
-        coalesce(sum(unpriced_attempts),0)::int AS unpriced_attempts,
-        json_agg(p ORDER BY date) AS series
-      FROM points p
-    `, values)
-    const { series, ...metrics } = summary
-    const [upcoming, failures] = await Promise.all([
-      db.query(`
-        SELECT ${reportJob} FROM ${jobTables}
-        WHERE ${scope} AND j.status='scheduled'
-        ORDER BY j.scheduled_at,j.id LIMIT 6
-      `, values.slice(0, 2)),
-      db.query(`
-        SELECT ${reportJob} FROM ${jobTables}
-        WHERE ${scope} AND j.status='failed' AND ${dateRange('coalesce(j.completed_at,j.updated_at)',3,4)}
-        ORDER BY j.updated_at DESC,j.id DESC LIMIT 6
-      `, values),
-    ])
-    return { metrics, series, upcoming: upcoming.rows, failures: failures.rows }
-  })
-
-  app.get('/jobs', async request => {
-    const query = jobsSchema.parse(request.query)
-    filtersSchema.parse(query)
-    const [timestamp, cursorId] = readCursor(query.cursor)
-    const status = query.status === 'completed' ? 'ready' : query.status ?? null
-    const source = query.source === 'widget' ? 'preview' : query.source === 'schedule' ? 'scheduled' : query.source ?? null
-    const time = `CASE WHEN $5='ready' THEN j.completed_at WHEN $5='failed' THEN coalesce(j.completed_at,j.updated_at)
-      WHEN $5='scheduled' THEN j.scheduled_at ELSE j.created_at END`
-    const costScope = query.date_basis === 'cost' ? `AND ${dateRange('a.requested_at',3,4)}` : ''
-    const reportScope = query.date_basis === 'cost'
-      ? `EXISTS (SELECT 1 FROM ai_attempts a WHERE a.job_id=j.id ${costScope})`
-      : dateRange(time,3,4)
-    const { rows } = await db.query(`
-      SELECT ${reportJob},j.created_at::text AS cursor_at,j.id AS cursor_id,
-        (SELECT sum(a.cost_usd)::text FROM ai_attempts a WHERE a.job_id=j.id ${costScope}) AS cost_usd
-      FROM ${jobTables} WHERE ${scope} AND ${reportScope}
-        AND ($5::text IS NULL OR j.status=$5) AND ($6::text IS NULL OR j.mode=$6)
-        AND ($7::text IS NULL OR j.provider=$7) AND ($8::text IS NULL OR j.key_mode=$8)
-        AND ($9::text IS NULL OR strpos(lower(j.keyword || ' ' || j.id::text || ' ' || j.client_request_id),lower($9))>0)
-        AND ($10::timestamptz IS NULL OR (j.created_at,j.id)<($10,$11::uuid))
-      ORDER BY j.created_at DESC,j.id DESC LIMIT $12
-    `, [query.customer_id ?? null, query.website_id ?? null, query.from ?? null, query.to ?? null,
-      status, source, query.provider ?? null, query.key_mode ?? null, query.q || null, timestamp, cursorId, query.limit + 1])
-    return pageOf(rows, query.limit)
-  })
-
-  app.get('/jobs/:id', async request => {
-    const { id } = idParams.parse(request.params)
-    const { rows: [job] } = await db.query(`
-      SELECT ${reportJob}, j.result,j.instructions FROM ${jobTables} WHERE j.id=$1
-    `, [id])
-    if (!job) throw notFound()
-    const [attempts, deliveries] = await Promise.all([
-      db.query(`
-        SELECT id,provider,model,status,requested_at AS started_at,requested_at AS called_at,finished_at,provider_response_id,
-          (usage->>'input')::bigint AS input_tokens,(usage->>'output')::bigint AS output_tokens,
-          usage,pricing_id,pricing_snapshot,cost_usd::text,cost_source,error_code,error AS error_message
-        FROM ai_attempts WHERE job_id=$1 ORDER BY requested_at,id
-      `, [id]),
-      db.query(`SELECT ${reportDelivery} FROM ${deliveryTables} WHERE w.job_id=$1 ORDER BY w.created_at,w.id`, [id]),
-    ])
-    return { ...job, attempts: attempts.rows, deliveries: deliveries.rows }
-  })
-
-  app.get('/deliveries', async request => {
-    const query = deliveriesSchema.parse(request.query)
-    filtersSchema.parse(query)
-    const [timestamp, cursorId] = readCursor(query.cursor)
-    const time = `CASE WHEN $5='delivered' THEN w.delivered_at WHEN $5='failed' THEN w.updated_at ELSE w.created_at END`
-    const { rows } = await db.query(`
-      SELECT ${reportDelivery},w.created_at::text AS cursor_at,w.id AS cursor_id
-      FROM ${deliveryTables} WHERE ${scope} AND ${dateRange(time,3,4)}
-        AND ($5::text IS NULL OR w.status=$5) AND ($6::text IS NULL OR w.event=$6)
-        AND ($7::text IS NULL OR strpos(lower(w.job_id::text || ' ' || w.id::text || ' ' || s.name || ' ' || j.keyword),lower($7))>0)
-        AND ($8::timestamptz IS NULL OR (w.created_at,w.id)<($8,$9::uuid))
-      ORDER BY w.created_at DESC,w.id DESC LIMIT $10
-    `, [query.customer_id ?? null, query.website_id ?? null, query.from ?? null, query.to ?? null,
-      query.status ?? null, query.event ?? null, query.q || null, timestamp, cursorId, query.limit + 1])
-    return pageOf(rows, query.limit)
-  })
-
-  app.get('/deliveries/:id', async request => {
-    const { id } = idParams.parse(request.params)
-    const { rows: [delivery] } = await db.query(`
-      SELECT ${reportDelivery} FROM ${deliveryTables} WHERE w.id=$1
-    `, [id])
-    if (!delivery) throw notFound()
-    const { rows } = await db.query(`
-      SELECT id,attempted_at,finished_at,http_status,error FROM webhook_attempts WHERE delivery_id=$1
-      ORDER BY attempted_at DESC,id DESC
-    `, [id])
-    return { ...delivery, history: rows }
-  })
-
-  app.post('/deliveries/:id/retry', async (request, reply) => {
-    const { id } = idParams.parse(request.params)
-    const { rows: [delivery] } = await db.query(`
-      UPDATE webhook_deliveries SET status='pending',attempt_count=0,next_attempt_at=now(),updated_at=now()
-      WHERE id=$1 AND status='failed' RETURNING id,status
-    `, [id])
-    if (delivery) return reply.code(202).send(delivery)
-    const { rows: [current] } = await db.query('SELECT status FROM webhook_deliveries WHERE id=$1', [id])
-    if (!current) throw notFound()
-    throw new ApiError(409, 'delivery_not_retryable', 'Chỉ có thể yêu cầu gửi lại webhook đã báo lỗi.', current)
-  })
+    const filters = keys.extend({ from: periodSchema.optional(), to: periodSchema.optional() }).parse(request.query); const rows = (await joinedJobs(db)).filter(row => (!filters.customer_id || row.customer_id === filters.customer_id) && (!filters.website_id || row.site_id === filters.website_id) && inRange(row.completed_at ?? row.created_at, filters.from, filters.to)); const deliveries = await collection<any>(db, 'webhook_deliveries').find({}).toArray(); const attempts = await collection<any>(db, 'ai_attempts').find({}).toArray(); const from = dateStart(filters.from) ?? new Date(Date.now() - 13 * 86_400_000); const to = dateEnd(filters.to) ?? new Date(); const series: any[] = []; for (let cursor = new Date(from); cursor < to; cursor.setUTCDate(cursor.getUTCDate() + 1)) { const next = new Date(cursor.getTime() + 86_400_000); const day = cursor.toISOString().slice(0, 10); const dayJobs = rows.filter(row => row.completed_at && row.completed_at >= cursor && row.completed_at < next); const dayDeliveries = deliveries.filter(delivery => delivery.delivered_at && delivery.delivered_at >= cursor && delivery.delivered_at < next); series.push({ date: day, articles: dayJobs.length, delivered: dayDeliveries.length, service_cost_usd: 0, customer_cost_usd: 0, unpriced_attempts: attempts.filter(attempt => !attempt.cost_usd && attempt.requested_at >= cursor && attempt.requested_at < next).length }) } const ready = rows.filter(row => row.status === 'completed'); return { metrics: { customers: new Set(rows.map(row => row.customer_id)).size, websites: new Set(rows.map(row => row.site_id)).size, articles: ready.length, delivered: deliveries.filter(delivery => delivery.status === 'delivered').length, pending: rows.filter(row => ['scheduled', 'queued', 'writing'].includes(row.status)).length, write_errors: rows.filter(row => row.status === 'failed').length, delivery_errors: deliveries.filter(delivery => delivery.status === 'failed').length, service_cost_usd: 0, customer_cost_usd: 0, unpriced_attempts: attempts.filter(attempt => !attempt.cost_usd).length }, series, upcoming: rows.filter(row => row.status === 'scheduled').sort((a, b) => a.scheduled_at - b.scheduled_at).slice(0, 10).map(reportJob), failures: rows.filter(row => row.status === 'failed').sort((a, b) => b.created_at - a.created_at).slice(0, 10).map(reportJob) } })
+  app.get('/jobs', async request => { const filters = jobsSchema.parse(request.query); const [cursorAt, cursorId] = readCursor(filters.cursor); let rows = (await joinedJobs(db)).filter(row => (!filters.customer_id || row.customer_id === filters.customer_id) && (!filters.website_id || row.site_id === filters.website_id) && inRange(filters.date_basis === 'cost' ? row.started_at : row.created_at, filters.from, filters.to) && (!filters.status || filters.status === 'completed' ? (!filters.status || (filters.status === 'completed' ? row.status === 'ready' : true)) : row.status === filters.status) && (!filters.source || filters.source === row.mode || (filters.source === 'widget' && row.mode === 'preview')) && (!filters.provider || row.provider === filters.provider) && (!filters.key_mode || row.key_mode === filters.key_mode) && (!filters.q || `${row.keyword} ${row._id}`.toLowerCase().includes(filters.q.toLowerCase()))); rows.sort((a, b) => b.created_at - a.created_at || b._id.localeCompare(a._id)); rows = rows.filter(row => !cursorAt || row.created_at.toISOString() < cursorAt || (row.created_at.toISOString() === cursorAt && row._id < cursorId!)); const mapped: any[] = rows.slice(0, filters.limit + 1).map(row => ({ ...reportJob(row), cursor_at: row.created_at.toISOString(), cursor_id: row._id })); const attempts = await collection<any>(db, 'ai_attempts').find({}).toArray(); for (const row of mapped) { const cost = attempts.filter(attempt => attempt.job_id === row.id).reduce((sum, attempt) => sum + Number(attempt.cost_usd ?? 0), 0); row.cost_usd = cost ? cost.toFixed(12) : null } return pageOf(mapped, filters.limit) })
+  app.get('/jobs/:id', async request => { const { id } = idParams.parse(request.params); const rows = await joinedJobs(db); const row = rows.find(item => item._id === id); if (!row) throw notFound(); const attempts = await collection<any>(db, 'ai_attempts').find({ job_id: id }).sort({ requested_at: 1 }).toArray(); const deliveries = await collection<any>(db, 'webhook_deliveries').find({ job_id: id }).sort({ created_at: 1 }).toArray(); return { ...reportJob(row), result: row.result, instructions: row.instructions, attempts: attempts.map(attempt => ({ id: attempt._id, provider: attempt.provider, model: attempt.model, status: attempt.status, started_at: attempt.requested_at, called_at: attempt.requested_at, pricing_id: attempt.pricing_id, pricing_snapshot: attempt.pricing_snapshot, provider_response_id: attempt.provider_response_id, usage: attempt.usage, finished_at: attempt.finished_at, cost_usd: attempt.cost_usd, cost_source: attempt.cost_source, error_code: attempt.error_code, error_message: attempt.error })), deliveries: await Promise.all(deliveries.map(delivery => deliveryView(db, delivery))) } })
+  app.get('/deliveries', async request => { const filters = deliveriesSchema.parse(request.query); const rows = await joinedJobs(db); const deliveries = await collection<any>(db, 'webhook_deliveries').find({}).sort({ created_at: -1, _id: -1 }).toArray(); const mapped = deliveries.filter(delivery => { const job = rows.find(row => row._id === delivery.job_id); return job && (!filters.customer_id || job.customer_id === filters.customer_id) && (!filters.website_id || job.site_id === filters.website_id) && inRange(delivery.created_at, filters.from, filters.to) && (!filters.status || delivery.status === filters.status) && (!filters.event || delivery.event === filters.event) }).slice(0, filters.limit + 1); const result = await Promise.all(mapped.map(delivery => deliveryView(db, delivery))); return pageOf(result.map(row => ({ ...row, cursor_at: new Date(row.created_at).toISOString(), cursor_id: row.id })), filters.limit) })
+  app.get('/deliveries/:id', async request => { const { id } = idParams.parse(request.params); const delivery = await collection<any>(db, 'webhook_deliveries').findOne({ _id: id }); if (!delivery) throw notFound(); return deliveryView(db, delivery) })
+  app.post('/deliveries/:id/retry', async request => { const { id } = idParams.parse(request.params); const result = await collection(db, 'webhook_deliveries').updateOne({ _id: id, status: 'failed' }, { $set: { status: 'pending', attempt_count: 0, next_attempt_at: new Date(), error: null, updated_at: new Date() } }); if (!result.matchedCount) { const current = await collection(db, 'webhook_deliveries').findOne({ _id: id }); if (!current) throw notFound(); throw new ApiError(409, 'delivery_not_failed', 'Chỉ có thể gửi lại webhook đã lỗi.') } return { id, status: 'pending' } })
 }
+
+async function deliveryView(db: Database, delivery: any) { const job = await collection<any>(db, 'jobs').findOne({ _id: delivery.job_id }); const site = await collection<any>(db, 'sites').findOne({ _id: delivery.site_id }); const customer = job ? await collection<any>(db, 'customers').findOne({ _id: job.customer_id }) : null; const attempts = await collection<any>(db, 'webhook_attempts').find({ delivery_id: delivery._id }).sort({ attempted_at: 1 }).toArray(); return { id: delivery._id, job_id: delivery.job_id, website_id: delivery.site_id, website_name: site?.name ?? '', customer_name: customer?.name ?? '', keyword: job?.keyword, status: delivery.status, event_type: delivery.event, attempts: attempts.length, attempt_count: delivery.attempt_count, last_http_status: delivery.http_status ?? null, last_error: delivery.error ?? null, next_attempt_at: delivery.next_attempt_at, delivered_at: delivery.delivered_at ?? null, created_at: delivery.created_at, history: attempts.map(attempt => ({ id: attempt._id, attempted_at: attempt.attempted_at, started_at: attempt.attempted_at, finished_at: attempt.finished_at, http_status: attempt.http_status, error: attempt.error })) } }
+// @ts-nocheck

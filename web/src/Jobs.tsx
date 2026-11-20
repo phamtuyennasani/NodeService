@@ -1,16 +1,46 @@
 import { useState } from 'react';
-import { Alert, App, Button, DatePicker, Descriptions, Drawer, Grid, Input, Select, Skeleton, Space, Table, Tabs, Tag } from 'antd';
-import { ArrowRightOutlined, ControlOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { Alert, App, Button, DatePicker, Descriptions, Drawer, Form, Grid, Input, Modal, Select, Skeleton, Space, Table, Tabs, Tag } from 'antd';
+import { ArrowRightOutlined, CalendarOutlined, ControlOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { mutate, useCatalog, useResource, useSearchValue, withQuery } from './api';
-import { compactId, CursorPagination, datetime, EmptyState, go, jobId, PageHeading, Panel, ResourceError, Status, usd } from './shared';
+import { compactId, CursorPagination, datetime, EmptyState, go, jobId, PageHeading, Panel, ResourceError, Status, submitVietnamTime, usd } from './shared';
 import type { Attempt, Collection, Delivery, Job, JobDetails } from './types';
+import { DateTimeField } from './DateTimeField';
 import './records.css';
 
 const jobStatuses = [['scheduled', 'Chờ đến lịch'], ['queued', 'Chờ viết'], ['writing', 'Đang viết'], ['ready', 'Đã viết'], ['failed', 'Lỗi viết'], ['canceled', 'Đã hủy']];
 const deliveryStatuses = [['pending', 'Chờ giao'], ['sending', 'Đang giao'], ['delivered', 'Đã giao'], ['failed', 'Lỗi giao bài']];
 const modeLabels: Record<string, string> = { schedule: 'Lên lịch', scheduled: 'Lên lịch', preview: 'Widget', rewrite: 'Viết lại' };
 const eventLabels: Record<string, string> = { 'article.ready': 'Bài đã viết', 'article.failed': 'Viết lỗi' };
+
+function ScheduleModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+  const [form] = Form.useForm();
+  const [customerId, setCustomerId] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const customers = useCatalog('/customers', customerId);
+  const websites = useCatalog('/websites', undefined, customerId);
+  const providers = useResource<{ data: { provider: string; display_name: string; enabled: boolean; models: { model: string; display_name: string; enabled: boolean }[] }[] }>('/providers');
+  const models = (providers.data?.data ?? []).flatMap(provider => provider.enabled ? provider.models.filter(model => model.enabled).map(model => ({ value: model.model, label: `${model.display_name} · ${provider.display_name}` })) : []);
+  const { message } = App.useApp();
+  function close() { if (saving) return; form.resetFields(); setCustomerId(undefined); onClose(); }
+  async function submit(values: any) {
+    setSaving(true);
+    try { await mutate('/schedules', 'POST', { ...values, length: Number(values.length), scheduled_at: submitVietnamTime(values.scheduled_at) }); message.success('Đã tạo lịch viết bài cho website.'); close(); onCreated(); }
+    catch (error) { message.error((error as Error).message); }
+    finally { setSaving(false); }
+  }
+  return <Modal className="schedule-modal" title="Lên lịch viết bài" open={open} onCancel={close} onOk={() => form.submit()} okText="Tạo lịch viết" cancelText="Hủy" confirmLoading={saving} destroyOnHidden>
+    <Form form={form} layout="vertical" onFinish={submit}>
+      <Form.Item name="customer_id" label="Khách hàng" rules={[{ required: true, message: 'Chọn khách hàng.' }]}><Select showSearch {...customers.searchConfig} loading={customers.loading} options={customers.options} placeholder="Chọn khách hàng" onChange={value => { setCustomerId(value); form.setFieldValue('website_id', undefined); }} /></Form.Item>
+      <Form.Item name="website_id" label="Website nhận bài" rules={[{ required: true, message: 'Chọn website.' }]}><Select showSearch {...websites.searchConfig} loading={websites.loading} options={websites.options} disabled={!customerId} placeholder="Chọn website" /></Form.Item>
+      <Form.Item name="model" label="Model AI" rules={[{ required: true, message: 'Chọn model AI.' }]}><Select showSearch optionFilterProp="label" loading={providers.loading} options={models} placeholder="Chọn model" /></Form.Item>
+      <div className="schedule-form-grid"><Form.Item name="keyword" label="Từ khóa" rules={[{ required: true, message: 'Nhập từ khóa.' }]}><Input placeholder="Ví dụ: dịch vụ thiết kế website" /></Form.Item><Form.Item name="length" label="Độ dài (từ)" rules={[{ required: true, message: 'Nhập số từ.' }]}><Input type="number" min={1} max={25000} /></Form.Item><Form.Item name="tone" label="Giọng văn" rules={[{ required: true, message: 'Nhập giọng văn.' }]}><Input placeholder="Ví dụ: chuyên nghiệp" /></Form.Item><Form.Item name="style" label="Phong cách" rules={[{ required: true, message: 'Nhập phong cách.' }]}><Input placeholder="Ví dụ: SEO, dễ đọc" /></Form.Item></div>
+      <Form.Item name="scheduled_at" label="Thời gian viết (giờ Việt Nam)" rules={[{ required: true, message: 'Chọn thời gian viết.' }]}><DateTimeField seconds /></Form.Item>
+      <Form.Item name="instructions" label="Hướng dẫn thêm"><Input.TextArea rows={4} maxLength={4000} showCount placeholder="Yêu cầu bổ sung cho bài viết" /></Form.Item>
+      <Form.Item name="keyAI" label="API key riêng"><Input.Password autoComplete="new-password" placeholder="Để trống nếu dùng key dịch vụ" /></Form.Item>
+    </Form>
+  </Modal>;
+}
 
 function useFilters(query: URLSearchParams, compact: boolean) {
   const [customerId, setCustomerId] = useState(query.get('customer_id') ?? undefined);
@@ -155,10 +185,11 @@ export function Jobs({ query }: { query: URLSearchParams }) {
   const [keyMode, setKeyMode] = useState(query.get('key_mode') ?? undefined);
   const [mode, setMode] = useState(query.get('mode') ?? undefined);
   const [selected, setSelected] = useState(query.get('job'));
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const filters = useFilters(query, !screens.sm);
   const jobs = useResource<Collection<Job>>(withQuery('/jobs', { ...filters.parameters, q: searchValue, source: mode, date_basis: query.get('date_basis') ?? undefined, key_mode: keyMode }));
   return <>
-    <PageHeading title="Yêu cầu viết" description={query.get('date_basis') === 'cost' ? 'Chi phí các lần gọi AI trong khoảng thời gian đã chọn.' : 'Xem lịch viết, bản xem trước và các phiên bản viết lại.'} action={<Button icon={<ReloadOutlined />} loading={jobs.loading} onClick={jobs.reload}>Làm mới</Button>} />
+    <PageHeading title="Yêu cầu viết" description={query.get('date_basis') === 'cost' ? 'Chi phí các lần gọi AI trong khoảng thời gian đã chọn.' : 'Xem lịch viết, bản xem trước và các phiên bản viết lại.'} action={<Space><Button type="primary" icon={<CalendarOutlined />} onClick={() => setScheduleOpen(true)}>Lên lịch viết</Button><Button icon={<ReloadOutlined />} loading={jobs.loading} onClick={jobs.reload}>Làm mới</Button></Space>} />
     <ResourceError error={jobs.error} onRetry={jobs.reload} />
     <Panel className="table-panel record-panel">
       <div className="table-toolbar record-toolbar">
@@ -188,6 +219,7 @@ export function Jobs({ query }: { query: URLSearchParams }) {
       <CursorPagination cursor={filters.cursor} setCursor={filters.setCursor} next={jobs.data?.next_cursor} />
     </Panel>
     <JobDrawer id={selected} close={() => setSelected(null)} />
+    <ScheduleModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} onCreated={jobs.reload} />
   </>;
 }
 

@@ -18,7 +18,7 @@ export async function buildApp(db: Database, config: Config, logger = true) {
   });
 
   app.get('/health', async () => {
-    await db.query('SELECT 1');
+    await db.db.command({ ping: 1 });
     return { status: 'ok' };
   });
 

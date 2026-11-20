@@ -1,10 +1,10 @@
 # NodeService
 
-Dịch vụ Node.js nhận yêu cầu viết ngay, lên lịch và viết lại từ các website Laravel. CRM tiếng Việt dùng React, Ant Design và Recharts, mở tại trang gốc. Fastify phục vụ API. PostgreSQL lưu khách hàng, website, hạn mức, bài viết, lần gọi AI và lượt giao webhook.
+Dịch vụ Node.js nhận yêu cầu viết ngay, lên lịch và viết lại từ các website Laravel. CRM tiếng Việt dùng React, Ant Design và Recharts, mở tại trang gốc. Fastify phục vụ API. MongoDB lưu khách hàng, website, hạn mức, bài viết, lần gọi AI và lượt giao webhook.
 
 ## Chạy dịch vụ
 
-Cần Node.js 24 LTS và PostgreSQL 16 trở lên.
+Cần Node.js 24 LTS và MongoDB Atlas ho?c MongoDB 7 trở lên.
 
 ```sh
 npm ci
@@ -12,7 +12,7 @@ cp .env.example .env
 openssl rand -base64 32
 ```
 
-Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ PostgreSQL vào `DATABASE_URL` và URL CRM vào `APP_ORIGIN`. Tài khoản PostgreSQL cần quyền tạo bảng trong cơ sở dữ liệu của ứng dụng. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho các gói dùng key dịch vụ. Provider **OpenAI Compatible** được cấu hình trong CRM bằng `Base URL` và API key, nên không ghi key vào `.env`.
+Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ MongoDB vào `MONGODB_URI` và URL CRM vào `APP_ORIGIN`. Tài khoản MongoDB cần quyền tạo bảng trong cơ sở dữ liệu của ứng dụng. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho các gói dùng key dịch vụ. Provider **OpenAI Compatible** được cấu hình trong CRM bằng `Base URL` và API key, nên không ghi key vào `.env`.
 
 ```sh
 npm run migrate
@@ -33,7 +33,7 @@ npm start -- writer
 npm start -- webhook
 ```
 
-Khi vận hành qua HTTPS, đặt `NODE_ENV=production` và `APP_ORIGIN` bằng URL HTTPS thực tế của CRM. `GET /health` kiểm tra kết nối PostgreSQL. Dùng `WORKER_CONCURRENCY` và `WEBHOOK_CONCURRENCY` để điều chỉnh số tác vụ đồng thời mỗi tiến trình. Các biến `*_CONCURRENCY`, `*_REQUESTS_PER_MINUTE` và `*_TOKENS_PER_MINUTE` trong `.env.example` giới hạn lệnh gọi AI.
+Khi vận hành qua HTTPS, đặt `NODE_ENV=production` và `APP_ORIGIN` bằng URL HTTPS thực tế của CRM. `GET /health` kiểm tra kết nối MongoDB. Dùng `WORKER_CONCURRENCY` và `WEBHOOK_CONCURRENCY` để điều chỉnh số tác vụ đồng thời mỗi tiến trình. Các biến `*_CONCURRENCY`, `*_REQUESTS_PER_MINUTE` và `*_TOKENS_PER_MINUTE` trong `.env.example` giới hạn lệnh gọi AI.
 
 Khi thử với Laravel trên máy cục bộ, đặt `ALLOW_LOCAL_WEBHOOKS=true` để gửi webhook đến địa chỉ nội bộ.
 
@@ -156,4 +156,8 @@ npx playwright install chromium --only-shell
 npm test
 ```
 
-Kiểm thử dùng PostgreSQL tạm, phản hồi AI giả lập và trình duyệt Chromium.
+Kiểm thử dùng MongoDB tạm, phản hồi AI giả lập và trình duyệt Chromium.
+
+
+
+

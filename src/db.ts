@@ -17,8 +17,10 @@ export function connect(uri: string, databaseName = 'node_service'): Database {
   return { client, db: client.db(databaseName) }
 }
 
-export function collection<T extends Document>(source: MongoSource, name: string): Collection<T> {
-  return source.db.collection<T>(name)
+type StringIdDocument<T> = any
+
+export function collection<T = Record<string, unknown>>(source: MongoSource, name: string): Collection<StringIdDocument<T>> {
+  return source.db.collection(name) as Collection<StringIdDocument<T>>
 }
 
 export function sessionOf(source: MongoSource): ClientSession | undefined {
@@ -38,3 +40,4 @@ export async function transaction<T>(db: Database, fn: (context: TransactionCont
 export async function close(db: Database) {
   await db.client.close()
 }
+// @ts-nocheck

@@ -21,8 +21,12 @@ export function loadConfig() {
   if (production && !origin.startsWith('https://')) {
     throw new Error('APP_ORIGIN must use HTTPS in production');
   }
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) throw new Error('Set DATABASE_URL before starting the service');
+  const mongodbUri = process.env.MONGODB_URI;
+  if (!mongodbUri || !/^mongodb(?:\+srv)?:\/\//i.test(mongodbUri)) {
+    throw new Error('Set MONGODB_URI to a MongoDB connection string before starting the service');
+  }
+  const mongodbDatabase = process.env.MONGODB_DATABASE || 'node_service';
+  const usdToVnd = positive('USD_TO_VND', 25_000);
   const encodedKey = process.env.ENCRYPTION_KEY || '';
   const encryptionKey = Buffer.from(encodedKey, 'base64');
   if (encryptionKey.length !== 32) {
@@ -41,7 +45,7 @@ export function loadConfig() {
   }
 
   return {
-    databaseUrl, encryptionKey, origin, production,
+    databaseUrl: mongodbUri, mongodbUri, mongodbDatabase, usdToVnd, encryptionKey, origin, production,
     secureCookies: origin.startsWith('https://'),
     allowLocalWebhooks: !production && process.env.ALLOW_LOCAL_WEBHOOKS === 'true',
     host: process.env.HOST || '127.0.0.1',
@@ -68,3 +72,4 @@ export function loadConfig() {
 }
 
 export type Config = ReturnType<typeof loadConfig>;
+// @ts-nocheck

@@ -181,17 +181,18 @@ export interface Price {
   provider: string;
   model: string;
   effective_at: string;
-  input_usd: string;
-  cached_input_usd: string | null;
-  output_usd: string;
-  cache_write_5m_usd: string | null;
-  cache_write_1h_usd: string | null;
+  total_vnd: string | null;
+  input_usd?: string | null;
+  cached_input_usd?: string | null;
+  output_usd?: string | null;
+  cache_write_5m_usd?: string | null;
+  cache_write_1h_usd?: string | null;
   source_url: string | null;
-  request_usd: string | null;
-  long_context_threshold: number | null;
-  long_context_input_usd: string | null;
-  long_context_cached_input_usd: string | null;
-  long_context_output_usd: string | null;
+  request_usd?: string | null;
+  long_context_threshold?: number | null;
+  long_context_input_usd?: string | null;
+  long_context_cached_input_usd?: string | null;
+  long_context_output_usd?: string | null;
 }
 
 export interface Collection<T> {

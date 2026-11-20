@@ -103,6 +103,41 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; 
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 15px; }
 .form-grid > *, .ant-form-item-control { min-width: 0; }
 .form-grid :is(.ant-input-number, .ant-picker) { width: 100%; }
+.pricing-modal .ant-modal-body { padding-top: 4px; }
+.pricing-meta-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
+.pricing-meta-grid > :last-child { grid-column: auto; }
+.pricing-modal .pricing-meta-grid .ant-form-item,
+.pricing-modal .pricing-meta-grid .ant-select,
+.pricing-modal .pricing-meta-grid .ant-picker,
+.pricing-modal .pricing-meta-grid .ant-input,
+.pricing-modal .pricing-meta-grid .ant-input-affix-wrapper { width: 100%; }
+.pricing-section-heading { display: flex; align-items: flex-end; margin: 8px 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.pricing-section-heading strong { display: block; color: var(--text); font-size: 14px; }
+.pricing-section-heading span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+.price-field-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; width: 100%; }
+.price-field .ant-input-number { width: 100%; }
+.pricing-modal .price-field,
+.pricing-modal .price-field .ant-form-item-row,
+.pricing-modal .price-field .ant-form-item-control,
+.pricing-modal .price-field .ant-form-item-control-input,
+.pricing-modal .price-field .ant-form-item-control-input-content,
+.pricing-modal .price-field .ant-input-number,
+.pricing-modal .price-field .ant-input-number-group-wrapper,
+.pricing-modal .price-field .ant-input-number-group,
+.pricing-modal .price-field .ant-space-compact { display: flex !important; width: 100% !important; max-width: none !important; }
+.pricing-modal .price-field .ant-form-item-control-input-content { display: flex !important; }
+.pricing-modal .price-field .ant-input-number { flex: 1 1 auto; width: 100% !important; min-width: 0; }
+.pricing-modal .price-field .ant-input-number-group-addon { flex: 0 0 auto; }
+.pricing-modal .price-field .ant-space-compact > * { min-width: 0; }
+.pricing-modal .price-field .ant-space-compact > .ant-input-number { flex: 1 1 auto; }
+.price-field .ant-input-number-group-addon { padding-inline: 8px; color: var(--muted); background: #f6f7f1; }
+.pricing-context { margin-top: 6px; border: 1px solid var(--line); border-radius: 9px; background: #fafbf6; }
+.pricing-context summary { padding: 12px 14px; color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; }
+.pricing-context-body { padding: 4px 14px 2px; border-top: 1px solid var(--line); }
+.pricing-context-body > .ant-form-item { max-width: 220px; }
+.schedule-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.schedule-modal .ant-select, .schedule-modal .ant-picker, .schedule-modal .ant-input, .schedule-modal .ant-input-number, .schedule-modal .ant-input-affix-wrapper { width: 100%; }
+.schedule-modal .ant-modal-body { max-height: min(72vh, 680px); overflow-y: auto; }
 .ant-form-vertical .ant-form-item-label > label { font-weight: 600; }
 .ant-drawer .ant-drawer-title, .ant-modal .ant-modal-title { font-family: var(--display-font); font-weight: 650; letter-spacing: -.035em; overflow-wrap: anywhere; }
 .ant-drawer .ant-drawer-title { font-size: 21px; }
@@ -126,6 +161,9 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; 
 
 @media (max-width: 460px) {
   .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .pricing-meta-grid, .price-field-grid { grid-template-columns: minmax(0, 1fr); }
+  .schedule-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .pricing-meta-grid > :last-child { grid-column: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

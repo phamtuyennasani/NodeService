@@ -1,6 +1,6 @@
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
-import { connect } from './db.js';
+import { close, connect } from './db.js';
 import { migrate } from './migrate.js';
 import { runWorkers } from './worker/index.js';
 
@@ -10,7 +10,7 @@ if (!['all', 'api', 'writer', 'webhook'].includes(role)) {
 }
 
 const config = loadConfig();
-const db = connect(config.databaseUrl, config.poolSize);
+const db = connect(config.mongodbUri, config.mongodbDatabase);
 const controller = new AbortController();
 let closeApp: (() => Promise<void>) | undefined;
 const components: Promise<void>[] = [];
@@ -41,5 +41,5 @@ try {
   controller.abort();
   await closeApp?.();
   await Promise.allSettled(components);
-  await db.end();
+  await close(db);
 }
