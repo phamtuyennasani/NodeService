@@ -10,7 +10,7 @@ if (!['all', 'api', 'writer', 'webhook'].includes(role)) {
 }
 
 const config = loadConfig();
-const db = connect(config.mongodbUri, config.mongodbDatabase);
+const db = connect(config.mongodbUri, config.mongodbDatabase, config.poolSize);
 const controller = new AbortController();
 let closeApp: (() => Promise<void>) | undefined;
 const components: Promise<void>[] = [];

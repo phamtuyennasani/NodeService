@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Alert, Button, DatePicker, Segmented, Select, Skeleton } from 'antd';
 import {
   ArrowRightOutlined, ArrowUpOutlined, CalendarOutlined, CheckCircleOutlined, FileTextOutlined,
-  GlobalOutlined, ReloadOutlined, SendOutlined, TeamOutlined, WarningOutlined,
+  ClockCircleOutlined, GlobalOutlined, ReloadOutlined, SendOutlined, SyncOutlined, TeamOutlined,
+  ThunderboltOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
@@ -10,14 +11,16 @@ import {
   Tooltip as ChartTooltip, XAxis, YAxis,
 } from 'recharts';
 import { useCatalog, useResource, withQuery } from './api';
-import { datetime, displayVietnamTime, EmptyState, go, jobId, number, PageHeading, Panel, ResourceError, Status, usd } from './shared';
-import type { DashboardData, Job } from './types';
+import { datetime, displayVietnamTime, EmptyState, go, jobId, number, PageHeading, Panel, ResourceError, Status, usd, writingStageLabel } from './shared';
+import type { DashboardData, DashboardRuntime, Job } from './types';
 import './dashboard.css';
 
 const vietnamToday = () => dayjs(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date()));
 const costNumber = new Intl.NumberFormat('vi-VN', { minimumFractionDigits: 2, maximumFractionDigits: 12 });
 const shortDate = (date: string) => dayjs(date).format('DD/MM');
 const fullDate = (date: unknown) => dayjs(String(date)).format('DD/MM/YYYY');
+const runtimeTime = (date: string) => displayVietnamTime(date).format('HH:mm:ss');
+const providerLabels: Record<string, string> = { openai: 'OpenAI', anthropic: 'Anthropic', xai: 'xAI', 'openai-compatible': 'OpenAI Compatible' };
 const volumeSeries = [
   { key: 'articles', name: 'Đã viết', color: '#315b46' },
   { key: 'delivered', name: 'Đã giao', color: '#e3ac4b' },
@@ -133,6 +136,65 @@ function JobList({ rows, scheduled }: { rows: Job[]; scheduled?: boolean }) {
   </ul>;
 }
 
+function elapsedTime(seconds: number) {
+  const value = Math.max(0, Math.floor(seconds));
+  if (value < 60) return `${value} giây`;
+  if (value < 3600) return `${Math.floor(value / 60)} phút ${value % 60} giây`;
+  return `${Math.floor(value / 3600)} giờ ${Math.floor(value % 3600 / 60)} phút`;
+}
+
+function RuntimePanel({ data, loading, error, onRetry, scope }: {
+  data?: DashboardRuntime; loading: boolean; error?: Error; onRetry: () => void; scope: Record<string, string>;
+}) {
+  const summary = data?.summary;
+  return <section className="panel dash-runtime" aria-labelledby="dash-runtime-title" aria-busy={loading}>
+    <header className="dash-panel-header dash-runtime-header">
+      <div><h2 id="dash-runtime-title">Hoạt động hiện tại</h2><p>Theo khách hàng và website đã chọn · Không phụ thuộc khoảng ngày</p></div>
+      <span className={`dash-live${error ? ' dash-live-error' : ''}`}><i aria-hidden="true" />{error ? 'Chưa thể cập nhật' : data ? `Cập nhật ${runtimeTime(data.observed_at)}` : 'Đang kết nối'}<small>Tự làm mới mỗi 5 giây</small></span>
+    </header>
+    {error && <Alert className="dash-runtime-error" type="warning" showIcon title="Không thể cập nhật hoạt động hiện tại" description={error.message}
+      action={<Button size="small" onClick={onRetry}>Thử lại</Button>} />}
+    {!data && loading && <Skeleton active paragraph={{ rows: 3 }} />}
+    {data && summary && <>
+      <div className="dash-runtime-stats">
+        <button type="button" className="dash-runtime-stat" onClick={() => go('jobs', { ...scope, status: 'writing' })}>
+          <span><SyncOutlined aria-hidden="true" />Đang viết</span><strong>{number.format(summary.writing)}</strong><small>Job đang được xử lý<ArrowRightOutlined aria-hidden="true" /></small>
+        </button>
+        <div className="dash-runtime-stat">
+          <span><ClockCircleOutlined aria-hidden="true" />Đang chờ</span><strong>{number.format(summary.queued)}</strong><small>Bao gồm lịch đã đến giờ</small>
+        </div>
+        <div className="dash-runtime-stat dash-runtime-threads">
+          <span><ThunderboltOutlined aria-hidden="true" />Luồng AI đang bận</span><strong>{number.format(summary.active_threads)}</strong><small>Job đang nghiên cứu hoặc viết · lease hợp lệ</small>
+        </div>
+      </div>
+      <div className="dash-runtime-context">
+        <span>Cấu hình mỗi tiến trình: <b>{number.format(data.capacity.writer_per_process)}</b> luồng viết · <b>{number.format(data.capacity.webhook_per_process)}</b> luồng giao bài</span>
+        <button type="button" onClick={() => go('jobs', { ...scope, status: 'scheduled' })}><CalendarOutlined aria-hidden="true" />{number.format(summary.scheduled)} lịch chưa đến giờ<ArrowRightOutlined aria-hidden="true" /></button>
+      </div>
+      {summary.stale_writing > 0 && <Alert className="dash-runtime-warning" type="warning" showIcon title="Có job viết quá thời gian lease"
+        description={`${number.format(summary.stale_writing)} job thiếu hoặc hết hạn lease, đang chờ worker phục hồi. Các job này không được tính vào số luồng AI đang bận.`} />}
+      {data.providers.some(provider => provider.writing || provider.queued) && <div className="dash-runtime-providers" aria-label="Hoạt động theo nhà cung cấp">
+        {data.providers.filter(provider => provider.writing || provider.queued).map(provider => <div key={provider.provider}>
+          <b>{providerLabels[provider.provider] ?? provider.provider}</b><span>{number.format(provider.active_threads)} luồng bận · {number.format(provider.queued)} chờ</span>
+        </div>)}
+      </div>}
+      <div className="dash-runtime-jobs-heading"><h3>Đang xử lý</h3><Button type="link" icon={<ArrowRightOutlined />} iconPlacement="end" onClick={() => go('jobs', { ...scope, status: 'writing' })}>Xem tất cả</Button></div>
+      {!data.running.length ? <div className="dash-list-empty"><CheckCircleOutlined aria-hidden="true" />Hiện không có job đang viết</div>
+        : <ul className="dash-running-jobs">{data.running.map(job => <li key={jobId(job)}>
+          <button type="button" onClick={() => go('jobs', { job: jobId(job) })} aria-label={`Xem chi tiết ${job.keyword}`}>
+            <span className={`dash-running-icon${job.lease_active ? '' : ' dash-running-stale'}`} aria-hidden="true">{job.lease_active ? <SyncOutlined /> : <WarningOutlined />}</span>
+            <span className="dash-running-identity"><strong>{job.keyword}</strong><span>{job.website_name || 'Website chưa xác định'} · {job.customer_name || 'Khách hàng chưa xác định'}</span></span>
+            <span className="dash-running-model"><b>{providerLabels[job.provider ?? ''] ?? job.provider ?? '—'}</b><span>{job.model}</span></span>
+            <span className="dash-running-time"><b>{elapsedTime(job.elapsed_seconds)}</b><span>Bắt đầu {datetime(job.started_at)}</span></span>
+            <span className={`dash-running-state${job.lease_active ? '' : ' dash-running-state-stale'}`}>{job.lease_active ? writingStageLabel(job.writing_stage) : 'Chờ phục hồi'}</span>
+            <ArrowRightOutlined className="dash-running-arrow" aria-hidden="true" />
+          </button>
+        </li>)}</ul>}
+      {summary.writing > data.running.length && <p className="dash-runtime-more">Đang hiển thị {number.format(data.running.length)} / {number.format(summary.writing)} job. Chọn “Xem tất cả” để mở danh sách đầy đủ.</p>}
+    </>}
+  </section>;
+}
+
 export function Dashboard({ query }: { query: URLSearchParams }) {
   const [dates, setDates] = useState(() => periodFor(query));
   const [customerId, setCustomerId] = useState(query.get('customer_id') ?? undefined);
@@ -142,12 +204,23 @@ export function Dashboard({ query }: { query: URLSearchParams }) {
   const scope = { ...(customerId ? { customer_id: customerId } : {}), ...(websiteId ? { website_id: websiteId } : {}) };
   const filters = { ...scope, from: dates[0].format('YYYY-MM-DD'), to: dates[1].format('YYYY-MM-DD') };
   const report = useResource<DashboardData>(withQuery('/dashboard', filters));
+  const runtime = useResource<DashboardRuntime>(withQuery('/dashboard/runtime', scope));
+  const runtimeRefresh = useRef(runtime.reload);
+  const runtimeLoading = useRef(runtime.loading);
+  runtimeRefresh.current = runtime.reload;
+  runtimeLoading.current = runtime.loading;
+  useEffect(() => {
+    const refreshWhenVisible = () => { if (!document.hidden && !runtimeLoading.current) runtimeRefresh.current(); };
+    const timer = window.setInterval(refreshWhenVisible, 5000);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', refreshWhenVisible); };
+  }, []);
   const metrics = report.data?.metrics;
   const today = vietnamToday();
 
   return <div className="dash">
     <PageHeading title="Tổng quan" description="Hoạt động viết, giao bài và sử dụng ngân sách AI." action={
-      <Button icon={<ReloadOutlined />} loading={report.loading} onClick={report.reload}>Làm mới</Button>
+      <Button icon={<ReloadOutlined />} loading={report.loading || runtime.loading} onClick={() => { report.reload(); runtime.reload(); }}>Làm mới</Button>
     } />
     <div className="dash-filters">
       <DatePicker.RangePicker classNames={{ popup: { root: 'dash-period-popup' } }} allowClear={false} value={dates} format="DD/MM/YYYY" presets={[
@@ -164,6 +237,7 @@ export function Dashboard({ query }: { query: URLSearchParams }) {
     </div>
     <ResourceError error={report.error} onRetry={report.reload} />
     {(customers.error || websites.error) && <Alert type="warning" showIcon title="Không thể tải đầy đủ bộ lọc." className="resource-error" />}
+    <RuntimePanel data={runtime.data} loading={runtime.loading} error={runtime.error} onRetry={runtime.reload} scope={scope} />
     {!report.data && report.loading && <Panel><Skeleton active paragraph={{ rows: 12 }} /></Panel>}
     {metrics && report.data && <>
       <div className="dash-metrics">

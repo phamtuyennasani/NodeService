@@ -1,3 +1,5 @@
+import type { ResearchConfig } from './worker/research.js';
+
 export const providers = ['openai', 'anthropic', 'xai', 'openai-compatible'] as const;
 export type Provider = typeof providers[number];
 
@@ -33,8 +35,19 @@ export function loadConfig() {
     throw new Error('Set ENCRYPTION_KEY to a base64-encoded 32-byte key');
   }
   const aiTimeoutMs = positive('AI_TIMEOUT_MS', 120_000);
+  const outlineTimeoutMs = positive('AI_OUTLINE_TIMEOUT_MS', 45_000);
+  const seoRepairTimeoutMs = positive('AI_SEO_REPAIR_TIMEOUT_MS', 90_000);
   const leaseMs = positive('LEASE_MS', 150_000);
-  if (leaseMs <= aiTimeoutMs) throw new Error('LEASE_MS must exceed AI_TIMEOUT_MS');
+  const researchTimeoutMs = positive('RESEARCH_TIMEOUT_MS', 8_000);
+  if (leaseMs <= aiTimeoutMs + researchTimeoutMs) throw new Error('LEASE_MS must exceed AI_TIMEOUT_MS plus RESEARCH_TIMEOUT_MS');
+  const researchProvider: ResearchConfig['provider'] = process.env.RESEARCH_PROVIDER === 'tavily' ? 'tavily' : 'duckduckgo';
+  const researchEndpoint = process.env.RESEARCH_ENDPOINT || (researchProvider === 'tavily' ? 'https://api.tavily.com/search' : undefined);
+  if (researchEndpoint) {
+    const parsed = new URL(researchEndpoint);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error('RESEARCH_ENDPOINT must be a public HTTP(S) URL without credentials or query parameters');
+    }
+  }
 
   function limit(prefix: string): ProviderLimit {
     return {
@@ -55,7 +68,17 @@ export function loadConfig() {
     webhookConcurrency: positive('WEBHOOK_CONCURRENCY', 5),
     workerPollMs: positive('WORKER_POLL_MS', 500),
     aiTimeoutMs,
+    outlineTimeoutMs,
+    seoRepairTimeoutMs,
     leaseMs,
+    research: {
+      enabled: process.env.RESEARCH_ENABLED !== 'false',
+      timeoutMs: researchTimeoutMs,
+      maxResults: Math.min(8, positive('RESEARCH_MAX_RESULTS', 5)),
+      provider: researchProvider,
+      endpoint: researchEndpoint,
+      apiKey: process.env.TAVILY_API_KEY || undefined,
+    },
     providerLimits: {
       openai: limit('OPENAI'),
       anthropic: limit('ANTHROPIC'),

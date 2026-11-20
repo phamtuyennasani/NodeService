@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Alert, App, Button, Form, Input, Modal, Skeleton, Space, Switch, Table } from 'antd';
-import { AnthropicFilled, CheckOutlined, DeleteOutlined, EditOutlined, KeyOutlined, OpenAIOutlined, PlusOutlined } from '@ant-design/icons';
+import { AnthropicFilled, ApiOutlined, CheckOutlined, DeleteOutlined, EditOutlined, KeyOutlined, OpenAIOutlined, PlusOutlined } from '@ant-design/icons';
 import { mutate, useResource } from './api';
 import { EmptyState, PageHeading, Panel, ResourceError } from './shared';
 import type { CatalogModel, CatalogProvider, Collection } from './types';
@@ -113,6 +113,31 @@ export function Providers() {
     }
   }
 
+  async function checkProvider() {
+    setBusy('provider-check');
+    try {
+      const result = await mutate<{ message: string }>('/providers/openai-compatible/check', 'POST');
+      message.success(result.message);
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function pingModel(model: CatalogModel) {
+    const key = 'ping-model/' + model.model;
+    setBusy(key);
+    try {
+      const result = await mutate<{ message: string }>('/providers/openai-compatible/models/' + encodeURIComponent(model.model) + '/ping', 'POST');
+      message.success(result.message);
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   return <>
     <PageHeading title="Nhà cung cấp AI" description="Chọn những model mà website khách hàng có thể sử dụng để viết bài." />
     <ResourceError error={catalog.error} onRetry={catalog.reload} />
@@ -141,7 +166,10 @@ export function Providers() {
           <span><KeyOutlined /> {selected.provider === 'openai-compatible' ? 'API key' : 'Key dịch vụ'} {selected.provider === 'openai-compatible'
             ? (selected.api_key_configured ? 'đã cấu hình' : 'chưa cấu hình')
             : (selected.service_key_configured ? 'đã cấu hình' : 'chưa cấu hình')}</span>
-          {selected.provider === 'openai-compatible' && <Button size="small" onClick={() => editProvider(selected)}>Cấu hình kết nối</Button>}
+          {selected.provider === 'openai-compatible' && <>
+            <Button size="small" onClick={() => editProvider(selected)} disabled={Boolean(busy) || catalog.loading}>Cấu hình kết nối</Button>
+            <Button size="small" loading={busy === 'provider-check'} onClick={() => void checkProvider()} disabled={Boolean(busy) || catalog.loading}>Kiểm tra kết nối</Button>
+          </>}
         </Space>
         {selected.provider === 'openai-compatible' && <p className="record-provider-endpoint">
           Base URL <span className="mono">{selected.base_url || 'Chưa cấu hình'}</span>
@@ -160,7 +188,10 @@ export function Providers() {
             { title: 'Bật model', key: 'enabled', align: 'center', width: 85, render: (_, row) => <Switch checked={row.enabled}
               loading={busy === 'model/' + row.model} disabled={Boolean(busy) || catalog.loading}
               aria-label={'Bật model ' + row.model} onChange={(value) => void setEnabled(selected, value, row)} /> },
-            { title: '', key: 'actions', width: 96, align: 'right', render: (_, row) => <Space size={2}><Button type="text" icon={<EditOutlined />}
+            { title: '', key: 'actions', width: selected.provider === 'openai-compatible' ? 132 : 96, align: 'right', render: (_, row) => <Space size={2}>{selected.provider === 'openai-compatible' && <Button type="text" icon={<ApiOutlined />}
+              aria-label={'Ping model ' + row.model} title="Kiểm tra model" loading={busy === 'ping-model/' + row.model} disabled={Boolean(busy) || catalog.loading}
+              onClick={() => void pingModel(row)} />}
+              <Button type="text" icon={<EditOutlined />}
               aria-label={'Chỉnh sửa ' + row.model} title="Chỉnh sửa tên hiển thị" disabled={Boolean(busy) || catalog.loading}
               onClick={() => edit(selected, row)} />
               <Button type="text" danger icon={<DeleteOutlined />}

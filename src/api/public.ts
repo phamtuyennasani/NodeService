@@ -5,16 +5,16 @@ import type { Config, Provider } from '../config.js'
 import { collection, transaction, type Database, type MongoSource } from '../db.js'
 import { digest, seal } from '../security.js'
 import { listAvailableModels, modelIdSchema, requireAvailableModel } from './catalog.js'
-import { ApiError, idSchema, notFound, periodSchema, quantitySchema, timestampSchema } from './errors.js'
+import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { assertPackage, reserveQuota, usage, type Package } from './quota.js'
 
 export interface Site { id: string; customer_id: string; token_hash: string | null; webhook_url: string | null; webhook_secret: string | null }
 interface CustomerDoc extends Package { _id: string; name: string; email: string | null; phone: string | null; notes: string | null; updated_at: Date; created_at: Date }
-interface JobDoc { _id: string; site_id: string; customer_id: string; client_request_id: string; request_hash: string; mode: 'scheduled' | 'preview' | 'rewrite'; source_article_id: string | null; version: number; provider: Provider; model: string; keyword: string; tone: string; style: string; length: number; instructions: string | null; key_mode: 'own' | 'service'; encrypted_key: string | null; status: string; scheduled_at: Date | null; available_at: Date; attempt_count: number; lease_token: string | null; lease_expires_at: Date | null; started_at: Date | null; completed_at: Date | null; result: unknown[] | null; error_code: string | null; error_message: string | null; created_at: Date; updated_at: Date }
+interface JobDoc { _id: string; site_id: string; customer_id: string; client_request_id: string; request_hash: string; mode: 'scheduled' | 'preview' | 'rewrite'; source_article_id: string | null; retry_of_job_id: string | null; version: number; provider: Provider; model: string; keyword: string; tone: string; style: string; length: number; instructions: string | null; key_mode: 'own' | 'service'; encrypted_key: string | null; status: string; scheduled_at: Date | null; available_at: Date; attempt_count: number; lease_token: string | null; lease_expires_at: Date | null; started_at: Date | null; completed_at: Date | null; result: unknown[] | null; error_code: string | null; error_message: string | null; created_at: Date; updated_at: Date }
 
 const writingFields = z.object({
   model: modelIdSchema, keyword: z.string().trim().min(1).max(500), tone: z.string().trim().min(1).max(240), style: z.string().trim().min(1).max(500),
-  length: quantitySchema, instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(),
+  length: articleLengthSchema, instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(),
 })
 const createFields = writingFields.extend({ mode: z.enum(['scheduled', 'preview']).optional(), scheduled_at: timestampSchema.optional() }).strict()
 const patchFields = writingFields.partial().extend({ scheduled_at: timestampSchema.optional() }).strict().refine(body => Object.keys(body).length > 0, 'Cần ít nhất một trường thay đổi.')
@@ -54,11 +54,11 @@ function encryptedKeyFor(writing: Writing, customer: Package, config: Config, pr
   return encrypted
 }
 
-function summary(job: JobDoc) { return { job_id: job._id, status: job.status, scheduled_at: job.scheduled_at, version: job.version, source_article_id: job.source_article_id } }
+function summary(job: JobDoc) { return { job_id: job._id, status: job.status, scheduled_at: job.scheduled_at, version: job.version, source_article_id: job.source_article_id, retry_of_job_id: job.retry_of_job_id ?? null } }
 
-export async function createJob(db: Database, config: Config, site: Site, clientId: string, writing: Writing, mode: Mode, scheduled: string | undefined, sourceId?: string) {
+export async function createJob(db: Database, config: Config, site: Site, clientId: string, writing: Writing, mode: Mode, scheduled: string | undefined, sourceId?: string, retryOfJobId?: string) {
   const scheduledAt = scheduled ? new Date(scheduled) : null
-  const fingerprint = requestFingerprint({ writing, mode, scheduledAt, sourceId }, config)
+  const fingerprint = requestFingerprint({ writing, mode, scheduledAt, sourceId, retryOfJobId }, config)
   return transaction(db, async client => {
     const currentSite = await collection(client, 'sites').findOne({ _id: site.id, customer_id: site.customer_id, token_hash: site.token_hash })
     if (!currentSite) throw new ApiError(401, 'invalid_site_token', 'Token hoặc chủ sở hữu website đã thay đổi. Vui lòng kết nối lại.')
@@ -79,7 +79,7 @@ export async function createJob(db: Database, config: Config, site: Site, client
     const serviceConfigured = provider === 'openai-compatible' ? Boolean(settings?.encrypted_api_key && settings.base_url) : Boolean(config.serviceKeys[provider])
     if (customer.key_mode === 'service' && !serviceConfigured) throw new ApiError(422, 'service_key_unavailable', 'Nhà cung cấp này chưa được cấu hình key dịch vụ.')
     const job: JobDoc = {
-      _id: randomUUID(), site_id: site.id, customer_id: customer.id, client_request_id: clientId, request_hash: fingerprint, mode, source_article_id: sourceId ?? null,
+      _id: randomUUID(), site_id: site.id, customer_id: customer.id, client_request_id: clientId, request_hash: fingerprint, mode, source_article_id: sourceId ?? null, retry_of_job_id: retryOfJobId ?? null,
       version: 1, provider, model: writing.model, keyword: writing.keyword, tone: writing.tone, style: writing.style, length: writing.length, instructions: writing.instructions ?? null,
       key_mode: customer.key_mode, encrypted_key: encryptedKeyFor(writing, customer, config), status: mode === 'scheduled' ? 'scheduled' : 'queued', scheduled_at: scheduledAt, available_at: availableAt,
       attempt_count: 0, lease_token: null, lease_expires_at: null, started_at: null, completed_at: null, result: null, error_code: null, error_message: null, created_at: now, updated_at: now,

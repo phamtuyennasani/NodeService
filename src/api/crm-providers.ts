@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { providers, type Config, type Provider } from '../config.js'
 import { collection, type Database } from '../db.js'
-import { seal } from '../security.js'
+import { seal, unseal } from '../security.js'
 import { modelIdSchema } from './catalog.js'
 import { ApiError, notFound } from './errors.js'
 
@@ -13,6 +13,14 @@ const baseUrl = z.string().trim().url({ protocol: /^https?$/ }).max(500).refine(
 const editable = z.object({ display_name: displayName.optional(), enabled: z.boolean().optional(), base_url: baseUrl.optional(), api_key: z.string().trim().min(1).max(2048).optional() }).strict()
 const patchFields = editable.refine(fields => Object.keys(fields).length > 0, 'Cần ít nhất một trường thay đổi.')
 const newModel = z.object({ model: modelIdSchema, display_name: displayName.optional(), enabled: z.boolean().optional() }).strict()
+const pingParams = z.object({ model: modelIdSchema })
+
+function compatibleEndpoint(baseUrl: string, path: string): URL {
+  const endpoint = new URL(baseUrl)
+  if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') throw new Error('Unsupported provider protocol')
+  endpoint.pathname = endpoint.pathname.replace(/\/+$/, '') + path
+  return endpoint
+}
 
 export function registerProviders(app: FastifyInstance, db: Database, config: Config) {
   app.get('/providers', async () => {
@@ -27,6 +35,91 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
     const result = await collection(db, 'ai_providers').findOneAndUpdate({ _id: provider }, { $set: set }, { returnDocument: 'after' })
     if (!result) throw notFound()
     return { provider: result._id, display_name: result.display_name, enabled: result.enabled, base_url: result._id === 'openai-compatible' ? result.base_url ?? null : null, api_key_configured: result._id === 'openai-compatible' ? Boolean(result.encrypted_api_key) : undefined }
+  })
+  app.post('/providers/openai-compatible/check', async () => {
+    const settings = await collection<{ _id: Provider, base_url?: string | null, encrypted_api_key?: string | null }>(db, 'ai_providers').findOne({ _id: 'openai-compatible' })
+    if (!settings?.base_url || !settings.encrypted_api_key) {
+      throw new ApiError(422, 'provider_not_configured', 'OpenAI Compatible chưa có Base URL hoặc API key.')
+    }
+
+    let key: string
+    try {
+      key = unseal(settings.encrypted_api_key, config.encryptionKey)
+    } catch {
+      throw new ApiError(422, 'provider_key_unavailable', 'API key OpenAI Compatible không đọc được.')
+    }
+
+    let endpoint: URL
+    try {
+      endpoint = compatibleEndpoint(settings.base_url, '/models')
+    } catch {
+      throw new ApiError(422, 'provider_connection_failed', 'Base URL OpenAI Compatible không hợp lệ.')
+    }
+    let response: Response
+    try {
+      response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { accept: 'application/json', authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(10_000),
+        redirect: 'error',
+      })
+    } catch {
+      throw new ApiError(422, 'provider_connection_failed', 'Không thể kết nối đến OpenAI Compatible.')
+    }
+
+    if (response.ok) return { ok: true, message: 'Kết nối OpenAI Compatible thành công.' }
+    await response.body?.cancel().catch(() => undefined)
+    if (response.status === 401 || response.status === 403) {
+      throw new ApiError(422, 'provider_auth_failed', 'API key OpenAI Compatible không hợp lệ hoặc không có quyền truy cập.')
+    }
+    throw new ApiError(422, 'provider_request_failed', `OpenAI Compatible trả về HTTP ${response.status}.`)
+  })
+  app.post('/providers/openai-compatible/models/:model/ping', async request => {
+    const { model } = pingParams.parse(request.params)
+    const settings = await collection<{ _id: Provider, base_url?: string | null, encrypted_api_key?: string | null }>(db, 'ai_providers').findOne({ _id: 'openai-compatible' })
+    const modelRow = await collection<{ _id: string, provider: Provider }>(db, 'ai_models').findOne({ _id: model, provider: 'openai-compatible' })
+    if (!modelRow) throw notFound()
+    if (!settings?.base_url || !settings.encrypted_api_key) {
+      throw new ApiError(422, 'provider_not_configured', 'OpenAI Compatible chưa có Base URL hoặc API key.')
+    }
+
+    let key: string
+    try {
+      key = unseal(settings.encrypted_api_key, config.encryptionKey)
+    } catch {
+      throw new ApiError(422, 'provider_key_unavailable', 'API key OpenAI Compatible không đọc được.')
+    }
+
+    let endpoint: URL
+    try {
+      endpoint = compatibleEndpoint(settings.base_url, '/chat/completions')
+    } catch {
+      throw new ApiError(422, 'provider_connection_failed', 'Base URL OpenAI Compatible không hợp lệ.')
+    }
+
+    let response: Response
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json', authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Ping' }], max_tokens: 1, stream: true }),
+        signal: AbortSignal.timeout(15_000),
+        redirect: 'error',
+      })
+    } catch {
+      throw new ApiError(422, 'model_connection_failed', `Không thể kết nối model ${model}.`)
+    }
+
+    if (response.ok) {
+      await response.body?.cancel().catch(() => undefined)
+      return { ok: true, model, message: `Model ${model} đang hoạt động.` }
+    }
+    await response.body?.cancel().catch(() => undefined)
+    if (response.status === 401 || response.status === 403) {
+      throw new ApiError(422, 'provider_auth_failed', 'API key OpenAI Compatible không hợp lệ hoặc không có quyền truy cập.')
+    }
+    if (response.status === 404) throw new ApiError(422, 'model_not_found', `Không tìm thấy model ${model} ở OpenAI Compatible.`)
+    throw new ApiError(422, 'model_request_failed', `Model ${model} trả về HTTP ${response.status}.`)
   })
   app.post('/providers/:provider/models', async (request, reply) => {
     const { provider } = providerParams.parse(request.params); const { model, display_name, enabled } = newModel.parse(request.body)

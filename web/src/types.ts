@@ -1,3 +1,8 @@
+import type { SeoReport } from '../../src/worker/seo.js';
+
+export type WritingStage = 'research' | 'outline' | 'draft' | 'seo_check' | 'seo_repair';
+export type SeoRepairStatus = 'not_needed' | 'applied' | 'kept_draft' | 'skipped';
+
 export interface Session {
   username: string;
   csrf_token: string;
@@ -79,6 +84,8 @@ export interface Job {
   website_name: string;
   mode: string;
   status: string;
+  writing_stage?: WritingStage | null;
+  can_rewrite?: boolean;
   keyword: string;
   model: string;
   tone: string;
@@ -89,6 +96,7 @@ export interface Job {
   started_at: string | null;
   completed_at: string | null;
   source_article_id: string | null;
+  retry_of_job_id?: string | null;
   idempotency_key?: string;
   cost_usd?: string | null;
   provider?: string;
@@ -114,6 +122,7 @@ export interface Attempt {
   provider: string;
   model: string;
   status: string;
+  stage?: 'outline' | 'draft' | 'seo_repair' | null;
   started_at: string;
   called_at?: string;
   pricing_id?: string | null;
@@ -146,10 +155,35 @@ export interface Delivery {
 }
 
 export type JobDetails = Job & {
+  rewrite_key_mode?: 'own' | 'service';
   result?: Article[] | null;
+  seo_report?: SeoReport | null;
+  seo_repair_status?: SeoRepairStatus | null;
   attempts?: Attempt[];
   deliveries?: Delivery[];
 };
+
+export interface DashboardRuntime {
+  observed_at: string;
+  summary: {
+    writing: number;
+    queued: number;
+    scheduled: number;
+    active_threads: number;
+    stale_writing: number;
+  };
+  capacity: {
+    writer_per_process: number;
+    webhook_per_process: number;
+  };
+  providers: {
+    provider: string;
+    writing: number;
+    queued: number;
+    active_threads: number;
+  }[];
+  running: (Job & { lease_active: boolean; elapsed_seconds: number })[];
+}
 
 export interface DashboardData {
   metrics: {

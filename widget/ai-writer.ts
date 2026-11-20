@@ -1,7 +1,17 @@
-import DOMPurify from 'dompurify';
+import createDOMPurify from 'dompurify';
+import { sanitizeArticleStyle } from '../src/article-styles';
 import styles from './styles.css';
 
+const articlePurifier = createDOMPurify(window);
+articlePurifier.addHook('uponSanitizeAttribute', (_node, attribute) => {
+  if (attribute.attrName !== 'style') return;
+  attribute.attrValue = sanitizeArticleStyle(attribute.attrValue);
+  attribute.keepAttr = Boolean(attribute.attrValue);
+});
+
 const fields = ['Title', 'Content', 'Slug', 'Desc', 'Desction', 'Từ khóa'] as const;
+const toneOptions = ['Thân thiện', 'Chuyên nghiệp', 'Tư vấn', 'Thuyết phục', 'Trang trọng', 'Hài hước'];
+const styleOptions = ['Hướng dẫn', 'SEO', 'Chuyên gia', 'Kể chuyện', 'Danh sách', 'Tin tức'];
 type Field = typeof fields[number];
 type Article = Record<Exclude<Field, 'Từ khóa'>, string> & { 'Từ khóa': string[] };
 type Target = string | { selector: string; setValue?: (element: Element, value: string) => void | Promise<void> };
@@ -41,9 +51,9 @@ function articleFrom(value: unknown): Article {
     if (!valid) throw new Error(`Kết quả thiếu trường ${field}.`);
   }
   const article = record as Article;
-  const content = DOMPurify.sanitize(article.Content, {
+  const content = articlePurifier.sanitize(article.Content, {
     ALLOWED_TAGS: ['p', 'br', 'h2', 'h3', 'h4', 'strong', 'b', 'em', 'i', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'td', 'th'],
-    ALLOWED_ATTR: ['href', 'title'],
+    ALLOWED_ATTR: ['href', 'title', 'style', 'scope', 'colspan', 'rowspan'],
   });
   if (!content.trim()) throw new Error('Kết quả thiếu nội dung bài viết.');
   return { ...article, Content: content };
@@ -148,10 +158,10 @@ function mount(config: Config) {
         <label class="model-label field">Model<input name="model" placeholder="gpt-4.1" maxlength="160" required></label>
         <label class="field">Từ khóa<input name="keyword" maxlength="500" placeholder="Ví dụ: máy lọc nước gia đình" required></label>
         <div class="grid">
-          <label class="field">Giọng văn<input name="tone" maxlength="240" placeholder="Thân thiện" required></label>
-          <label class="field">Phong cách viết<input name="style" maxlength="500" placeholder="Hướng dẫn" required></label>
+          <label class="field">Giọng văn<select name="tone" required>${toneOptions.map(value => `<option value="${value}">${value}</option>`).join('')}</select></label>
+          <label class="field">Phong cách viết<select name="style" required>${styleOptions.map(value => `<option value="${value}">${value}</option>`).join('')}</select></label>
         </div>
-        <label class="field length-field">Độ dài <span>(số từ)</span><input name="length" type="number" min="1" max="25000" step="1" required></label>
+        <label class="field length-field">Độ dài <span>(600–2500 từ)</span><input name="length" type="number" min="600" max="2500" step="1" required></label>
         <div class="form-actions"><small>Nội dung sẽ được xem trước trước khi điền vào form.</small><button type="submit" class="primary submit"><span>Viết ngay</span><span class="button-arrow" aria-hidden="true">→</span></button></div>
       </form>
       <p class="status" role="status" aria-live="polite" hidden></p>
@@ -185,8 +195,10 @@ function mount(config: Config) {
     model = options;
   }
   model.value = config.defaults?.model ?? model.value;
-  select<HTMLInputElement>('[name="tone"]').value = config.defaults?.tone ?? 'Thân thiện';
-  select<HTMLInputElement>('[name="style"]').value = config.defaults?.style ?? 'Hướng dẫn';
+  const tone = select<HTMLSelectElement>('[name="tone"]');
+  const style = select<HTMLSelectElement>('[name="style"]');
+  tone.value = toneOptions.includes(config.defaults?.tone ?? '') ? config.defaults!.tone! : 'Thân thiện';
+  style.value = styleOptions.includes(config.defaults?.style ?? '') ? config.defaults!.style! : 'Hướng dẫn';
   select<HTMLInputElement>('[name="length"]').value = String(config.defaults?.length ?? 800);
 
   let pending: { body: string; id: string; jobId?: string } | undefined;

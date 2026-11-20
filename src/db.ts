@@ -12,8 +12,8 @@ export interface TransactionContext {
 
 export type MongoSource = Database | TransactionContext
 
-export function connect(uri: string, databaseName = 'node_service'): Database {
-  const client = new MongoClient(uri, { maxPoolSize: 20 })
+export function connect(uri: string, databaseName = 'node_service', maxPoolSize = 20): Database {
+  const client = new MongoClient(uri, { maxPoolSize })
   return { client, db: client.db(databaseName) }
 }
 

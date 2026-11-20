@@ -37,6 +37,10 @@ Khi vận hành qua HTTPS, đặt `NODE_ENV=production` và `APP_ORIGIN` bằng 
 
 Khi thử với Laravel trên máy cục bộ, đặt `ALLOW_LOCAL_WEBHOOKS=true` để gửi webhook đến địa chỉ nội bộ.
 
+Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu, lập dàn ý, viết bản nháp và kiểm tra SEO. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Nếu bài có tiêu chí cần chỉnh, hệ thống thử chỉnh SEO tối đa một lần; chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
+
+Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Overview** hiển thị job và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream; luồng đang trả dữ liệu được tiếp tục. Hai bước tùy chọn có giới hạn tổng thời gian riêng là `AI_OUTLINE_TIMEOUT_MS` (mặc định 45 giây) và `AI_SEO_REPAIR_TIMEOUT_MS` (mặc định 90 giây).
+
 ## API dành cho Laravel
 
 Laravel gửi header `Authorization: Bearer <site_token>` và `Accept: application/json`. Khi tạo một yêu cầu, sinh một mã duy nhất, lưu cùng yêu cầu và gửi mã đó qua `Idempotency-Key`. Dùng lại mã khi thử gửi cùng yêu cầu sau lỗi mạng.
@@ -146,6 +150,8 @@ Cài các route sau trên cùng origin với form Laravel và kiểm tra quyền
 - `GET /admin/ai/previews/{job_id}` kiểm tra người dùng có quyền tra cứu công việc, rồi chuyển tiếp trạng thái. Khi `status` là `ready`, gọi endpoint `/result` và đính mảng đó vào thuộc tính `result` của JSON trả cho widget. Với job lỗi, chuyển tiếp trường `error_message`.
 
 Cả site token, API key và khóa webhook được dùng từ backend Laravel.
+
+Để trang biên tập Laravel chấm cùng tiêu chí với CRM, xem [hướng dẫn đồng bộ bộ chấm SEO](docs/laravel-seo.md).
 
 ## Kiểm thử
 

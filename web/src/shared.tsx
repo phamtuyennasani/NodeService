@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Alert, Button, Empty } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, InboxOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { Job } from './types';
+import type { Job, WritingStage } from './types';
 
 export const number = new Intl.NumberFormat('vi-VN');
 const money = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 12 });
@@ -58,6 +58,24 @@ const statuses: Record<string, [string, string]> = {
 export function Status({ value }: { value: string }) {
   const [label, tone] = statuses[value] ?? [value, 'default'];
   return <span data-tone={tone} className="status-tag"><span className="status-dot" aria-hidden="true" />{label}</span>;
+}
+
+const writingStages: Record<WritingStage, string> = {
+  research: 'Đang nghiên cứu',
+  outline: 'Đang lập dàn ý',
+  draft: 'Đang viết nội dung',
+  seo_check: 'Đang kiểm tra SEO',
+  seo_repair: 'Đang chỉnh sửa SEO',
+};
+
+export function writingStageLabel(stage?: WritingStage | null) {
+  return stage ? writingStages[stage] ?? 'Đang viết' : 'Đang viết';
+}
+
+export function JobStatus({ job }: { job: Job }) {
+  return job.status === 'writing'
+    ? <span data-tone="active" className="status-tag job-stage-status"><span className="status-dot" aria-hidden="true" />{writingStageLabel(job.writing_stage)}</span>
+    : <Status value={job.status} />;
 }
 
 export function PageHeading({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
