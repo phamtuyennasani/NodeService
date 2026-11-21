@@ -11,6 +11,7 @@ import {
 } from './provider.js'
 import { researchTopic, type ResearchContext, type ResearchConfig } from './research.js'
 import { evaluateSeo, type SeoReport } from './seo.js'
+import { jobEvents } from '../job-events.js'
 
 const maxAttempts = 3
 let nextProvider = 0
@@ -28,6 +29,7 @@ interface Job {
   style: string
   length: number
   instructions: string | null
+  use_research?: boolean
   key_mode: 'own' | 'service'
   encrypted_key: string | null
   source_article_id: string | null
@@ -68,10 +70,12 @@ function owned(claim: Claim) {
 }
 
 async function checkpoint(db: Database, claim: Claim, stage: WritingStage, values: Record<string, unknown> = {}) {
+  const updatedAt = new Date()
   const updated = await collection(db, 'jobs').updateOne(owned(claim), {
-    $set: { ...values, writing_stage: stage, updated_at: new Date() },
+    $set: { ...values, writing_stage: stage, updated_at: updatedAt },
   })
   if (!updated.matchedCount) throw new WorkerError('AI_LEASE_LOST', 'Công việc đã được tiến trình khác tiếp quản.', false)
+  jobEvents.publish({ type: 'job.updated', job_id: claim.job._id, status: 'writing', writing_stage: stage, updated_at: updatedAt.toISOString() })
 }
 
 /** The job, quota and delivery must commit together; collection() does not attach sessions. */
@@ -79,12 +83,20 @@ async function transition(
   db: Database, job: Job, article: Article | null, error: WorkerError | null,
   report: SeoReport | null = null, repairStatus: RepairStatus | null = null, expired = false,
 ) {
-  return transaction(db, async source => {
+  let updateEvent: Record<string, unknown> | undefined
+  const committed = await transaction(db, async source => {
     const session = sessionOf(source)
     const now = new Date()
     const retryMs = !article && error?.retryable && job.attempt_count < maxAttempts
       ? backoff(job.attempt_count, 2_000, error.retryAfterMs) : null
     const status = article ? 'ready' : retryMs !== null ? 'queued' : 'failed'
+    updateEvent = {
+      type: 'job.updated', job_id: job._id, status: status === 'ready' ? 'completed' : status,
+      writing_stage: null, updated_at: now.toISOString(),
+      completed_at: retryMs === null ? now.toISOString() : null,
+      error_code: article ? null : error?.code ?? null,
+      error_message: article ? null : error?.message ?? null,
+    }
     const updated = await collection(source, 'jobs').updateOne({
       _id: job._id, status: 'writing', lease_token: job.lease_token,
       lease_expires_at: expired ? { $lte: now } : { $gt: now },
@@ -117,6 +129,8 @@ async function transition(
     }
     return true
   })
+  if (committed && updateEvent) jobEvents.publish(updateEvent as any)
+  return committed
 }
 
 async function abandonAttempts(source: MongoSource, jobId: string, now: Date) {
@@ -158,14 +172,27 @@ async function claimWriter(db: Database, config: Config, provider: Provider): Pr
     error_code: null, error_message: null, result: null, outline: null,
     seo_report: null, seo_repair_status: null, updated_at: now,
   }, $inc: { attempt_count: 1 } }, { sort: { available_at: 1, _id: 1 }, returnDocument: 'after' })
+  if (job) jobEvents.publish({ type: 'job.updated', job_id: job._id, status: 'writing', writing_stage: 'research', updated_at: now.toISOString(), started_at: now.toISOString() })
   return job ? { job, lease } : false
 }
 
-/** A hard deadline bounds optional steps even when a gateway keeps sending keepalives. */
-async function bounded<T>(signal: AbortSignal, duration: number | null, timeout: WorkerError, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
+/** Bounds an optional step by inactivity while the outer lease timeout remains the overall guard. */
+async function bounded<T>(
+  signal: AbortSignal,
+  duration: number | null,
+  timeout: WorkerError,
+  call: (signal: AbortSignal, touch?: () => void) => Promise<T>,
+): Promise<T> {
   const deadline = new AbortController()
-  const timer = duration === null ? undefined : setTimeout(() => deadline.abort(timeout), duration)
+  let timer: ReturnType<typeof setTimeout> | undefined
   const combined = AbortSignal.any([signal, deadline.signal])
+  const touch = () => {
+    if (combined.aborted || duration === null) return
+    if (timer !== undefined) clearTimeout(timer)
+    timer = setTimeout(() => deadline.abort(timeout), duration)
+    timer.unref?.()
+  }
+  touch()
   let onAbort: () => void = () => {}
   try {
     const cancelled = new Promise<never>((_resolve, reject) => {
@@ -176,7 +203,7 @@ async function bounded<T>(signal: AbortSignal, duration: number | null, timeout:
     })
     return await Promise.race([cancelled, Promise.resolve().then(() => {
       combined.throwIfAborted()
-      return call(combined)
+      return call(combined, touch)
     })])
   } finally {
     if (timer !== undefined) clearTimeout(timer)
@@ -224,7 +251,11 @@ async function callAi<T extends GenerationMetadata>(
     const idleTimeout = config.aiTimeoutMs
     const operationTimeout = duration === null ? idleTimeout : Math.max(idleTimeout, duration)
     result = await withLease(db, config, 'jobs', claim.job._id, claim.lease, operationTimeout,
-      (signal, touch) => bounded(signal, duration, timeout, boundedSignal => call(boundedSignal, touch)))
+      (signal, touch) => bounded(signal, duration, timeout,
+        (boundedSignal, boundedTouch) => call(boundedSignal, () => {
+          touch?.()
+          boundedTouch?.()
+        })))
   } catch (failure) {
     const error = failureOf(failure)
     await recordAttempt(db, claim, attemptId, pricing?.rates, error.metadata, error)
@@ -259,7 +290,9 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
     }
     const researchConfig = config.research ?? { enabled: false, timeoutMs: 8_000, maxResults: 5, provider: 'duckduckgo' }
     let research: ResearchContext | null = null
-    if (researchConfig.enabled) {
+    // Jobs created before this option existed have no field and retain the
+    // previous behavior of researching whenever the provider is enabled.
+    if (job.use_research !== false && researchConfig.enabled) {
       try {
         research = await withLease(db, config, 'jobs', job._id, claim.lease, researchConfig.timeoutMs + 1_000,
           signal => bounded(signal, researchConfig.timeoutMs,

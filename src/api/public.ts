@@ -2,23 +2,25 @@ import { createHmac, randomUUID } from 'node:crypto'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { Config, Provider } from '../config.js'
-import { collection, transaction, type Database, type MongoSource } from '../db.js'
+import { collection, sessionOf, transaction, type Database, type MongoSource } from '../db.js'
 import { digest, seal } from '../security.js'
 import { listAvailableModels, modelIdSchema, requireAvailableModel } from './catalog.js'
 import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { assertPackage, reserveQuota, usage, type Package } from './quota.js'
 import { normalizeArticleFields } from '../worker/provider.js'
+import { jobEvents } from '../job-events.js'
 
 export interface Site { id: string; customer_id: string; token_hash: string | null; webhook_url: string | null; webhook_secret: string | null }
 interface CustomerDoc extends Package { _id: string; name: string; email: string | null; phone: string | null; notes: string | null; updated_at: Date; created_at: Date }
-interface JobDoc { _id: string; site_id: string; customer_id: string; client_request_id: string; request_hash: string; mode: 'scheduled' | 'preview' | 'rewrite'; source_article_id: string | null; retry_of_job_id: string | null; version: number; provider: Provider; model: string; keyword: string; tone: string; style: string; length: number; instructions: string | null; key_mode: 'own' | 'service'; encrypted_key: string | null; status: string; scheduled_at: Date | null; available_at: Date; attempt_count: number; lease_token: string | null; lease_expires_at: Date | null; started_at: Date | null; completed_at: Date | null; result: unknown[] | null; error_code: string | null; error_message: string | null; created_at: Date; updated_at: Date }
+interface JobDoc { _id: string; site_id: string; customer_id: string; client_request_id: string; request_hash: string; mode: 'scheduled' | 'preview' | 'rewrite'; source_article_id: string | null; retry_of_job_id: string | null; version: number; provider: Provider; model: string; keyword: string; tone: string; style: string; length: number; instructions: string | null; use_research?: boolean; key_mode: 'own' | 'service'; encrypted_key: string | null; status: string; scheduled_at: Date | null; available_at: Date; attempt_count: number; lease_token: string | null; lease_expires_at: Date | null; started_at: Date | null; completed_at: Date | null; result: unknown[] | null; error_code: string | null; error_message: string | null; created_at: Date; updated_at: Date }
 
 const writingFields = z.object({
   model: modelIdSchema, keyword: z.string().trim().min(1).max(500), tone: z.string().trim().min(1).max(240), style: z.string().trim().min(1).max(500),
-  length: articleLengthSchema, instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(),
+  length: articleLengthSchema, instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(), use_research: z.boolean().default(true),
 })
 const createFields = writingFields.extend({ mode: z.enum(['scheduled', 'preview']).optional(), scheduled_at: timestampSchema.optional() }).strict()
-const patchFields = writingFields.partial().extend({ scheduled_at: timestampSchema.optional() }).strict().refine(body => Object.keys(body).length > 0, 'Cần ít nhất một trường thay đổi.')
+// Zod defaults still run under partial(); a schedule edit must preserve opt-out.
+const patchFields = writingFields.omit({ use_research: true }).partial().extend({ use_research: z.boolean().optional(), scheduled_at: timestampSchema.optional() }).strict().refine(body => Object.keys(body).length > 0, 'Cần ít nhất một trường thay đổi.')
 const rewriteFields = writingFields.pick({ instructions: true, keyAI: true }).strict()
 const jobParams = z.object({ job_id: idSchema })
 export type Writing = z.infer<typeof writingFields>
@@ -41,7 +43,11 @@ async function authenticateSite(db: Database, request: FastifyRequest) {
 }
 
 async function lockedCustomer(source: MongoSource, id: string) {
-  const customer = await collection<CustomerDoc>(source, 'customers').findOne({ _id: id })
+  const session = sessionOf(source)
+  // A real write serializes quota reservations and conflicts with deletion.
+  const locked = await collection(source, 'customers').updateOne({ _id: id }, { $inc: { relation_version: 1 } }, { session })
+  if (!locked.matchedCount) throw notFound()
+  const customer = await collection<CustomerDoc>(source, 'customers').findOne({ _id: id }, { session })
   if (!customer) throw notFound()
   return asPackage(customer)
 }
@@ -55,46 +61,62 @@ function encryptedKeyFor(writing: Writing, customer: Package, config: Config, pr
   return encrypted
 }
 
-function summary(job: JobDoc) { return { job_id: job._id, status: job.status, scheduled_at: job.scheduled_at, version: job.version, source_article_id: job.source_article_id, retry_of_job_id: job.retry_of_job_id ?? null } }
+function summary(job: JobDoc) { return { job_id: job._id, status: job.status, scheduled_at: job.scheduled_at, version: job.version, source_article_id: job.source_article_id, retry_of_job_id: job.retry_of_job_id ?? null, use_research: job.use_research ?? true } }
 
 export async function createJob(db: Database, config: Config, site: Site, clientId: string, writing: Writing, mode: Mode, scheduled: string | undefined, sourceId?: string, retryOfJobId?: string) {
   const scheduledAt = scheduled ? new Date(scheduled) : null
   const fingerprint = requestFingerprint({ writing, mode, scheduledAt, sourceId, retryOfJobId }, config)
-  return transaction(db, async client => {
-    const currentSite = await collection(client, 'sites').findOne({ _id: site.id, customer_id: site.customer_id, token_hash: site.token_hash })
+  const created = await transaction(db, async client => {
+    const session = sessionOf(client)
+    const siteFilter = { _id: site.id, customer_id: site.customer_id, token_hash: site.token_hash }
+    const lockedSite = await collection(client, 'sites').updateOne(siteFilter, { $inc: { relation_version: 1 } }, { session })
+    if (!lockedSite.matchedCount) throw new ApiError(401, 'invalid_site_token', 'Token hoặc chủ sở hữu website đã thay đổi. Vui lòng kết nối lại.')
+    const currentSite = await collection(client, 'sites').findOne(siteFilter, { session })
     if (!currentSite) throw new ApiError(401, 'invalid_site_token', 'Token hoặc chủ sở hữu website đã thay đổi. Vui lòng kết nối lại.')
     const customer = await lockedCustomer(client, site.customer_id)
-    const existing = await collection<JobDoc>(client, 'jobs').findOne({ site_id: site.id, client_request_id: clientId })
+    const existing = await collection<JobDoc>(client, 'jobs').findOne({ site_id: site.id, client_request_id: clientId }, { session })
     if (existing) {
       if (existing.request_hash !== fingerprint) throw new ApiError(409, 'idempotency_conflict', 'Mã yêu cầu này đã được dùng với nội dung khác.')
-      return summary(existing)
+      return { result: summary(existing), created: false }
     }
+    // Recheck references after taking the site lock, which deletion also holds.
+    if (sourceId && !await collection(client, 'jobs').findOne({ _id: sourceId, site_id: site.id, customer_id: customer.id, status: 'ready' }, { session })) throw notFound()
+    if (retryOfJobId && !await collection(client, 'jobs').findOne({ _id: retryOfJobId, site_id: site.id, customer_id: customer.id }, { session })) throw notFound()
     const now = new Date()
     if (scheduledAt && scheduledAt <= now) throw new ApiError(400, 'invalid_schedule_time', 'Giờ hẹn phải ở tương lai.')
     if (mode === 'scheduled' && (!currentSite.webhook_url || !currentSite.webhook_secret)) throw new ApiError(422, 'webhook_not_configured', 'Website cần URL và khóa ký webhook để nhận bài theo lịch viết.')
     const availableAt = scheduledAt ?? now
     assertPackage(customer, availableAt, writing.model, writing.length)
     const provider = await requireAvailableModel(client, writing.model)
-    const settings = await collection<{ _id: Provider, base_url?: string | null, encrypted_api_key?: string | null }>(client, 'ai_providers').findOne({ _id: provider })
+    const settings = await collection<{ _id: Provider, base_url?: string | null, encrypted_api_key?: string | null }>(client, 'ai_providers').findOne({ _id: provider }, { session })
     if (provider === 'openai-compatible' && !settings?.base_url) throw new ApiError(422, 'provider_not_configured', 'OpenAI Compatible chưa được cấu hình Base URL trong CRM.')
     const serviceConfigured = provider === 'openai-compatible' ? Boolean(settings?.encrypted_api_key && settings.base_url) : Boolean(config.serviceKeys[provider])
     if (customer.key_mode === 'service' && !serviceConfigured) throw new ApiError(422, 'service_key_unavailable', 'Nhà cung cấp này chưa được cấu hình key dịch vụ.')
     const job: JobDoc = {
       _id: randomUUID(), site_id: site.id, customer_id: customer.id, client_request_id: clientId, request_hash: fingerprint, mode, source_article_id: sourceId ?? null, retry_of_job_id: retryOfJobId ?? null,
-      version: 1, provider, model: writing.model, keyword: writing.keyword, tone: writing.tone, style: writing.style, length: writing.length, instructions: writing.instructions ?? null,
+      version: 1, provider, model: writing.model, keyword: writing.keyword, tone: writing.tone, style: writing.style, length: writing.length, instructions: writing.instructions ?? null, use_research: writing.use_research,
       key_mode: customer.key_mode, encrypted_key: encryptedKeyFor(writing, customer, config), status: mode === 'scheduled' ? 'scheduled' : 'queued', scheduled_at: scheduledAt, available_at: availableAt,
       attempt_count: 0, lease_token: null, lease_expires_at: null, started_at: null, completed_at: null, result: null, error_code: null, error_message: null, created_at: now, updated_at: now,
     }
-    await collection(client, 'jobs').insertOne(job)
+    await collection(client, 'jobs').insertOne(job, { session })
     await reserveQuota(client, customer, job._id, availableAt)
-    return summary(job)
+    return { result: summary(job), created: true, job }
   })
+  const createdJob = created.job
+  if (created.created && createdJob) {
+    jobEvents.publish({
+      type: 'job.created', job_id: createdJob._id, status: createdJob.status,
+      writing_stage: null, updated_at: createdJob.updated_at.toISOString(),
+      created_at: createdJob.created_at.toISOString(),
+    })
+  }
+  return created.result
 }
 
 const scheduleStatuses = ['scheduled', 'queued', 'writing', 'ready', 'failed', 'canceled'] as const
 const listFields = z.object({ cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(100).default(25), q: z.string().trim().max(160).optional(), from: periodSchema.optional(), to: periodSchema.optional(), status: z.enum([...scheduleStatuses, 'all']).optional() }).refine(query => !query.from || !query.to || query.from <= query.to, 'Ngày bắt đầu phải trước ngày kết thúc.')
 
-export function readCursor(cursor?: string, sortField = z.string().regex(/^\d{4}-\d{2}-\d{2}/)) {
+export function readCursor(cursor?: string, sortField: z.ZodType<string> = timestampSchema) {
   if (!cursor) return [null, null] as [string | null, string | null]
   try { return z.tuple([sortField, idSchema]).parse(JSON.parse(Buffer.from(cursor, 'base64url').toString())) }
   catch { throw new ApiError(400, 'invalid_cursor', 'Mã phân trang không hợp lệ.') }
@@ -108,6 +130,7 @@ export function pageOf<T extends { cursor_at: string, cursor_id: string }>(rows:
 function dayStart(date: string) { return new Date(`${date}T00:00:00+07:00`) }
 function dayEnd(date: string) { return new Date(`${date}T00:00:00+07:00`).getTime() + 86_400_000 }
 function toIso(value: Date | null | undefined) { return value?.toISOString() ?? null }
+function escapedRegex(value: string) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
 
 async function siteCatalog(db: Database, config: Config, request: FastifyRequest) {
   const site = await authenticateSite(db, request)
@@ -143,7 +166,7 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
     const job = await collection<JobDoc>(db, 'jobs').findOne({ _id: job_id, site_id: site.id })
     if (!job) throw notFound()
     const delivery = await collection<{ status: string }>(db, 'webhook_deliveries').findOne({ job_id }, { sort: { created_at: -1 } })
-    return { job_id: job._id, status: job.status, mode: job.mode, source_article_id: job.source_article_id, scheduled_at: toIso(job.scheduled_at), version: job.version, started_at: toIso(job.started_at), completed_at: toIso(job.completed_at), error_code: job.error_code, error_message: job.error_message, created_at: job.created_at.toISOString(), delivery_status: delivery?.status ?? null }
+    return { job_id: job._id, status: job.status, mode: job.mode, source_article_id: job.source_article_id, use_research: job.use_research ?? true, scheduled_at: toIso(job.scheduled_at), version: job.version, started_at: toIso(job.started_at), completed_at: toIso(job.completed_at), error_code: job.error_code, error_message: job.error_message, created_at: job.created_at.toISOString(), delivery_status: delivery?.status ?? null }
   })
   app.get('/v1/article-jobs/:job_id/result', async (request, reply) => {
     const site = await authenticateSite(db, request); const { job_id } = jobParams.parse(request.params)
@@ -155,20 +178,34 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
 
   app.get('/v1/articles', async request => {
     const site = await authenticateSite(db, request); const { from, to, q, cursor, limit } = listFields.parse(request.query); const [cursorAt, cursorId] = readCursor(cursor)
-    const filter: Record<string, unknown> = { site_id: site.id, status: 'ready' }
-    if (from || to) filter.completed_at = { ...(from ? { $gte: dayStart(from) } : {}), ...(to ? { $lt: new Date(dayEnd(to)) } : {}) }
-    const jobs = await collection<JobDoc>(db, 'jobs').find(filter).sort({ completed_at: -1, _id: -1 }).toArray()
-    const rows = jobs.filter(job => !q || job.keyword.toLowerCase().includes(q.toLowerCase()) || String((job.result?.[0] as Record<string, unknown> | undefined)?.Title ?? '').toLowerCase().includes(q.toLowerCase()))
-      .filter(job => !cursorAt || job.completed_at && (job.completed_at.toISOString() < cursorAt || (job.completed_at.toISOString() === cursorAt && job._id < cursorId!)))
-      .slice(0, limit + 1).map(job => ({ article_id: job._id, source_article_id: job.source_article_id, Title: (job.result?.[0] as Record<string, unknown> | undefined)?.Title, keyword: job.keyword, model: job.model, mode: job.mode, completed_at: toIso(job.completed_at), cursor_at: job.completed_at!.toISOString(), cursor_id: job._id }))
+    const filter: Record<string, unknown> = { site_id: site.id, status: 'ready', completed_at: { $exists: true, $ne: null } }
+    if (from || to) filter.completed_at = { $exists: true, $ne: null, ...(from ? { $gte: dayStart(from) } : {}), ...(to ? { $lt: new Date(dayEnd(to)) } : {}) }
+    const conditions: Record<string, unknown>[] = []
+    if (q) {
+      const pattern = escapedRegex(q)
+      conditions.push({ $or: [{ keyword: { $regex: pattern, $options: 'i' } }, { 'result.0.Title': { $regex: pattern, $options: 'i' } }] })
+    }
+    if (cursorAt) {
+      const cursorDate = new Date(cursorAt)
+      conditions.push({ $or: [{ completed_at: { $lt: cursorDate } }, { completed_at: cursorDate, _id: { $lt: cursorId! } }] })
+    }
+    if (conditions.length) filter.$and = conditions
+    const jobs = await collection<JobDoc>(db, 'jobs').find(filter).sort({ completed_at: -1, _id: -1 }).limit(limit + 1).toArray()
+    const rows = jobs.map(job => ({ article_id: job._id, source_article_id: job.source_article_id, Title: (job.result?.[0] as Record<string, unknown> | undefined)?.Title, keyword: job.keyword, model: job.model, mode: job.mode, completed_at: toIso(job.completed_at), cursor_at: job.completed_at!.toISOString(), cursor_id: job._id }))
     return pageOf(rows, limit)
   })
 
   app.get('/v1/schedules', async request => {
     const site = await authenticateSite(db, request); const { from, to, cursor, limit, status = 'scheduled' } = listFields.parse(request.query); const [cursorAt, cursorId] = readCursor(cursor)
-    const jobs = await collection<JobDoc>(db, 'jobs').find({ site_id: site.id, mode: 'scheduled' }).sort({ scheduled_at: 1, _id: 1 }).toArray()
-    const rows = jobs.filter(job => (!from || (job.scheduled_at && job.scheduled_at >= dayStart(from))) && (!to || (job.scheduled_at && job.scheduled_at < new Date(dayEnd(to)))) && (status === 'all' || job.status === status) && (!cursorAt || job.scheduled_at && (job.scheduled_at.toISOString() > cursorAt || (job.scheduled_at.toISOString() === cursorAt && job._id > cursorId!))))
-      .slice(0, limit + 1).map(job => ({ job_id: job._id, status: job.status, version: job.version, scheduled_at: job.scheduled_at, model: job.model, keyword: job.keyword, tone: job.tone, style: job.style, length: job.length, instructions: job.instructions, cursor_at: job.scheduled_at!.toISOString(), cursor_id: job._id }))
+    const filter: Record<string, unknown> = { site_id: site.id, mode: 'scheduled', scheduled_at: { $exists: true, $ne: null } }
+    if (from || to) filter.scheduled_at = { $exists: true, $ne: null, ...(from ? { $gte: dayStart(from) } : {}), ...(to ? { $lt: new Date(dayEnd(to)) } : {}) }
+    if (status !== 'all') filter.status = status
+    if (cursorAt) {
+      const cursorDate = new Date(cursorAt)
+      filter.$and = [{ $or: [{ scheduled_at: { $gt: cursorDate } }, { scheduled_at: cursorDate, _id: { $gt: cursorId! } }] }]
+    }
+    const jobs = await collection<JobDoc>(db, 'jobs').find(filter).sort({ scheduled_at: 1, _id: 1 }).limit(limit + 1).toArray()
+    const rows = jobs.map(job => ({ job_id: job._id, status: job.status, version: job.version, scheduled_at: job.scheduled_at, model: job.model, keyword: job.keyword, tone: job.tone, style: job.style, length: job.length, instructions: job.instructions, use_research: job.use_research ?? true, cursor_at: job.scheduled_at!.toISOString(), cursor_id: job._id }))
     return pageOf(rows, limit)
   })
 
@@ -176,27 +213,40 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
     const site = await authenticateSite(db, request); const { job_id } = jobParams.parse(request.params); const patch = patchFields.parse(request.body)
     const match = typeof request.headers['if-match'] === 'string' ? /^"?(\d+)"?$/.exec(request.headers['if-match'])?.[1] : undefined; if (!match) throw new ApiError(428, 'version_required', 'Gửi version hiện tại trong header If-Match.')
     const updated = await transaction(db, async client => {
-      const job = await collection<JobDoc>(client, 'jobs').findOne({ _id: job_id, site_id: site.id, mode: 'scheduled' }); if (!job) throw notFound(); if (job.status !== 'scheduled') throw scheduleConflict(job.status); if (job.version !== Number(match)) throw new ApiError(412, 'version_conflict', 'Lịch đã thay đổi. Hãy tải lại.', { version: job.version })
+      const session = sessionOf(client)
+      const job = await collection<JobDoc>(client, 'jobs').findOne({ _id: job_id, site_id: site.id, mode: 'scheduled' }, { session }); if (!job) throw notFound(); if (job.status !== 'scheduled') throw scheduleConflict(job.status); if (job.version !== Number(match)) throw new ApiError(412, 'version_conflict', 'Lịch đã thay đổi. Hãy tải lại.', { version: job.version })
       const customer = await lockedCustomer(client, site.customer_id); const when = patch.scheduled_at ? new Date(patch.scheduled_at) : job.scheduled_at!; if (patch.scheduled_at && when <= new Date()) throw new ApiError(400, 'invalid_schedule_time', 'Giờ hẹn phải ở tương lai.')
-      const writing = { model: job.model, keyword: job.keyword, tone: job.tone, style: job.style, length: job.length, instructions: job.instructions ?? undefined, ...patch }; assertPackage({ ...customer, key_mode: job.key_mode }, when, writing.model, writing.length)
+      const writing = { model: job.model, keyword: job.keyword, tone: job.tone, style: job.style, length: job.length, instructions: job.instructions ?? undefined, use_research: job.use_research ?? true, ...patch }; assertPackage({ ...customer, key_mode: job.key_mode }, when, writing.model, writing.length)
       const provider = writing.model === job.model ? job.provider : await requireAvailableModel(client, writing.model); const oldKey = provider === job.provider ? job.encrypted_key : null; const encrypted = encryptedKeyFor(writing, { ...customer, key_mode: job.key_mode }, config, oldKey)
-      await reserveQuota(client, { ...customer, key_mode: job.key_mode }, job_id, when, await collection<{ quota_day: string, quota_month: string }>(client, 'quota_reservations').findOne({ job_id, status: 'reserved' }) ?? undefined)
-      const next = { ...patch, scheduled_at: when, model: writing.model, keyword: writing.keyword, tone: writing.tone, style: writing.style, length: writing.length, instructions: writing.instructions ?? null, provider, encrypted_key: encrypted, available_at: when, version: job.version + 1, updated_at: new Date() }
-      await collection(client, 'jobs').updateOne({ _id: job_id }, { $set: next })
-      return { job_id, status: job.status, version: next.version, scheduled_at: when, model: next.model, keyword: next.keyword, tone: next.tone, style: next.style, length: next.length, instructions: next.instructions }
+      await reserveQuota(client, { ...customer, key_mode: job.key_mode }, job_id, when, await collection<{ quota_day: string, quota_month: string }>(client, 'quota_reservations').findOne({ job_id, status: 'reserved' }, { session }) ?? undefined)
+      const next = { ...patch, scheduled_at: when, model: writing.model, keyword: writing.keyword, tone: writing.tone, style: writing.style, length: writing.length, instructions: writing.instructions ?? null, use_research: writing.use_research, provider, encrypted_key: encrypted, available_at: when, version: job.version + 1, updated_at: new Date() }
+      const changed = await collection(client, 'jobs').updateOne({ _id: job_id, status: 'scheduled', version: job.version }, { $set: next }, { session })
+      if (!changed.matchedCount) throw scheduleConflict('changed')
+      return { job_id, status: job.status, version: next.version, scheduled_at: when, model: next.model, keyword: next.keyword, tone: next.tone, style: next.style, length: next.length, instructions: next.instructions, use_research: next.use_research }
     })
+    jobEvents.publish({ type: 'job.updated', job_id: updated.job_id, status: updated.status, writing_stage: null, scheduled_at: updated.scheduled_at?.toISOString?.() ?? updated.scheduled_at, updated_at: new Date().toISOString() })
     return reply.header('ETag', `"${updated.version}"`).send(updated)
   })
   app.delete('/v1/schedules/:job_id', async (request, reply) => {
     const site = await authenticateSite(db, request); const { job_id } = jobParams.parse(request.params)
-    await transaction(db, async client => { const job = await collection<JobDoc>(client, 'jobs').findOne({ _id: job_id, site_id: site.id, mode: 'scheduled' }); if (!job) throw notFound(); if (job.status === 'canceled') return; if (job.status !== 'scheduled') throw scheduleConflict(job.status); await collection(client, 'jobs').updateOne({ _id: job_id }, { $set: { status: 'canceled', encrypted_key: null, updated_at: new Date() }, $inc: { version: 1 } }); await collection(client, 'quota_reservations').updateOne({ job_id, status: 'reserved' }, { $set: { status: 'released' } }) })
+    await transaction(db, async client => {
+      const session = sessionOf(client)
+      const job = await collection<JobDoc>(client, 'jobs').findOne({ _id: job_id, site_id: site.id, mode: 'scheduled' }, { session })
+      if (!job) throw notFound()
+      if (job.status === 'canceled') return
+      if (job.status !== 'scheduled') throw scheduleConflict(job.status)
+      const changed = await collection(client, 'jobs').updateOne({ _id: job_id, status: 'scheduled', version: job.version }, { $set: { status: 'canceled', encrypted_key: null, updated_at: new Date() }, $inc: { version: 1 } }, { session })
+      if (!changed.matchedCount) throw scheduleConflict('changed')
+      await collection(client, 'quota_reservations').updateOne({ job_id, status: 'reserved' }, { $set: { status: 'released' } }, { session })
+    })
+    jobEvents.publish({ type: 'job.updated', job_id, status: 'canceled', writing_stage: null, updated_at: new Date().toISOString() })
     return reply.code(204).send()
   })
   app.post('/v1/articles/:article_id/rewrites', async (request, reply) => {
     const site = await authenticateSite(db, request); const { article_id } = z.object({ article_id: idSchema }).parse(request.params); const additions = rewriteFields.parse(request.body ?? {})
     const article = await collection<JobDoc>(db, 'jobs').findOne({ _id: article_id, site_id: site.id, status: 'ready' }); if (!article) throw notFound()
     const instructions = [article.instructions, additions.instructions].filter(Boolean).join('\n\n').slice(-8000)
-    return reply.code(202).send(await createJob(db, config, site, requestId(request), { model: article.model, keyword: article.keyword, tone: article.tone, style: article.style, length: article.length, instructions: instructions || undefined, keyAI: additions.keyAI }, 'rewrite', undefined, article_id))
+    return reply.code(202).send(await createJob(db, config, site, requestId(request), { model: article.model, keyword: article.keyword, tone: article.tone, style: article.style, length: article.length, instructions: instructions || undefined, keyAI: additions.keyAI, use_research: article.use_research ?? true }, 'rewrite', undefined, article_id))
   })
 }
 

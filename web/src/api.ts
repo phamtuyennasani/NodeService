@@ -42,17 +42,18 @@ export function withQuery(path: string, parameters: Record<string, string | numb
 
 export function useResource<T>(path: string | null) {
   const [revision, setRevision] = useState(0);
-  const [result, setResult] = useState<{ path: string; data?: T; error?: Error }>();
+  const [result, setResult] = useState<{ path: string; data?: T; error?: Error; requestedAt: number }>();
   const [loading, setLoading] = useState(Boolean(path));
 
   useEffect(() => {
     if (!path) return;
     const abort = new AbortController();
+    const requestedAt = performance.now();
     setLoading(true);
     request<T>(path, { signal: abort.signal })
-      .then((data) => setResult({ path, data }))
+      .then((data) => setResult({ path, data, requestedAt }))
       .catch((error: Error) => {
-        if (!abort.signal.aborted) setResult({ path, error });
+        if (!abort.signal.aborted) setResult({ path, error, requestedAt });
       })
       .finally(() => {
         if (!abort.signal.aborted) setLoading(false);
@@ -64,6 +65,7 @@ export function useResource<T>(path: string | null) {
   return {
     data: current?.data,
     error: current?.error,
+    requestedAt: current?.requestedAt,
     loading: Boolean(path) && (loading || !current),
     reload: () => setRevision((previous) => previous + 1),
   };

@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Alert, App, Button, DatePicker, Descriptions, Drawer, Form, Grid, Input, InputNumber, Modal, Select, Skeleton, Space, Table, Tabs, Tag, Tooltip } from 'antd';
-import { ArrowRightOutlined, CalendarOutlined, CheckCircleOutlined, ControlOutlined, MinusCircleOutlined, ReloadOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Checkbox, DatePicker, Descriptions, Drawer, Form, Grid, Input, InputNumber, Modal, Select, Skeleton, Space, Table, Tabs, Tag, Tooltip } from 'antd';
+import { ArrowRightOutlined, CalendarOutlined, CheckCircleOutlined, ControlOutlined, DeleteOutlined, MinusCircleOutlined, ReloadOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import { Decimal } from 'decimal.js';
 import { mutate, useCatalog, useResource, useSearchValue, withQuery } from './api';
+import { useLiveJobs } from './job-events';
 import { compactId, CursorPagination, datetime, EmptyState, go, jobId, JobStatus, PageHeading, Panel, ResourceError, Status, submitVietnamTime, usd } from './shared';
 import type { Attempt, Collection, Delivery, Job, JobDetails } from './types';
 import { DateTimeField } from './DateTimeField';
@@ -15,6 +17,42 @@ const eventLabels: Record<string, string> = { 'article.ready': 'Bài đã viết
 const toneOptions = ['Thân thiện', 'Chuyên nghiệp', 'Tư vấn', 'Thuyết phục', 'Trang trọng', 'Hài hước'].map(value => ({ value, label: value }));
 const styleOptions = ['Hướng dẫn', 'SEO', 'Chuyên gia', 'Kể chuyện', 'Danh sách', 'Tin tức'].map(value => ({ value, label: value }));
 const attemptStageLabels = { outline: 'Lập dàn ý', draft: 'Viết nội dung', seo_repair: 'Chỉnh sửa SEO' };
+
+type LiveJob = { job: JobDetails; requestedAt: number };
+
+function newestJob(saved: Job, requestedAt: number | undefined, live?: LiveJob): Job {
+  if (!live || (requestedAt !== undefined && requestedAt > live.requestedAt)) return saved;
+  return live.job;
+}
+
+function dateMatches(value: string | null, filters: { from?: string; to?: string }) {
+  if (!value) return false;
+  return (!filters.from || new Date(value) >= new Date(`${filters.from}T00:00:00+07:00`)) &&
+    (!filters.to || new Date(value).getTime() < new Date(`${filters.to}T00:00:00+07:00`).getTime() + 86_400_000);
+}
+
+function jobMatches(job: Job, filters: { customer_id?: string; website_id?: string; status?: string; from?: string; to?: string; cursor?: string }, search?: string, mode?: string, keyMode?: string, costDates = false) {
+  const status = (value: string) => value === 'ready' ? 'completed' : value;
+  if (filters.customer_id && job.customer_id !== filters.customer_id) return false;
+  if (filters.website_id && job.website_id !== filters.website_id) return false;
+  if (filters.status && status(job.status) !== status(filters.status)) return false;
+  const source = (value: string) => value === 'widget' ? 'preview' : value === 'schedule' ? 'scheduled' : value;
+  if (mode && source(job.mode) !== source(mode)) return false;
+  if (keyMode && job.key_mode !== keyMode) return false;
+  if (search && !`${job.keyword} ${jobId(job)}`.toLowerCase().includes(search.toLowerCase())) return false;
+  if (costDates) {
+    // Collection rows were filtered by the server; live detail snapshots carry attempts.
+    const attempts = (job as JobDetails).attempts;
+    if (attempts && !attempts.some(attempt => dateMatches(attempt.called_at ?? attempt.started_at, filters))) return false;
+  } else if ((filters.from || filters.to) && !dateMatches(job.created_at, filters)) return false;
+  if (filters.cursor) {
+    try {
+      const [date, id] = JSON.parse(atob(filters.cursor.replace(/-/g, '+').replace(/_/g, '/'))) as [string, string];
+      if (job.created_at > date || (job.created_at === date && jobId(job) >= id)) return false;
+    } catch { return false; }
+  }
+  return true;
+}
 
 function OutlineReview({ job }: { job: JobDetails }) {
   const outline = job.outline;
@@ -108,12 +146,13 @@ function ScheduleModal({ open, onClose, onCreated }: { open: boolean; onClose: (
     finally { setSaving(false); }
   }
   return <Modal className="schedule-modal" title="Lên lịch viết bài" open={open} onCancel={close} onOk={() => form.submit()} okText="Tạo lịch viết" cancelText="Hủy" confirmLoading={saving} destroyOnHidden>
-    <Form form={form} layout="vertical" onFinish={submit}>
+    <Form form={form} layout="vertical" initialValues={{ use_research: true }} onFinish={submit}>
       <Form.Item name="customer_id" label="Khách hàng" rules={[{ required: true, message: 'Chọn khách hàng.' }]}><Select showSearch {...customers.searchConfig} loading={customers.loading} options={customers.options} placeholder="Chọn khách hàng" onChange={value => { setCustomerId(value); form.setFieldValue('website_id', undefined); }} /></Form.Item>
       <Form.Item name="website_id" label="Website nhận bài" rules={[{ required: true, message: 'Chọn website.' }]}><Select showSearch {...websites.searchConfig} loading={websites.loading} options={websites.options} disabled={!customerId} placeholder="Chọn website" /></Form.Item>
       <Form.Item name="model" label="Model AI" rules={[{ required: true, message: 'Chọn model AI.' }]}><Select showSearch optionFilterProp="label" loading={providers.loading} options={models} placeholder="Chọn model" /></Form.Item>
       <div className="schedule-form-grid"><Form.Item name="keyword" label="Từ khóa" rules={[{ required: true, message: 'Nhập từ khóa.' }]}><Input placeholder="Ví dụ: dịch vụ thiết kế website" /></Form.Item><Form.Item name="length" label="Độ dài (600–2500 từ)" rules={[{ required: true, message: 'Nhập từ 600 đến 2500 từ.' }, { type: 'integer', min: 600, max: 2500, message: 'Độ dài phải là số nguyên từ 600 đến 2500 từ.' }]}><InputNumber step={1} changeOnBlur={false} style={{ width: '100%' }} /></Form.Item><Form.Item name="tone" label="Giọng văn" rules={[{ required: true, message: 'Chọn giọng văn.' }]}><Select options={toneOptions} placeholder="Chọn giọng văn" /></Form.Item><Form.Item name="style" label="Phong cách" rules={[{ required: true, message: 'Chọn phong cách.' }]}><Select options={styleOptions} placeholder="Chọn phong cách" /></Form.Item></div>
       <Form.Item name="scheduled_at" label="Thời gian viết (giờ Việt Nam)" rules={[{ required: true, message: 'Chọn thời gian viết.' }]}><DateTimeField seconds /></Form.Item>
+      <Form.Item name="use_research" valuePropName="checked"><Checkbox>Sử dụng dữ liệu tìm kiếm để hỗ trợ viết bài</Checkbox></Form.Item>
       <Form.Item name="instructions" label="Hướng dẫn thêm"><Input.TextArea rows={4} maxLength={4000} showCount placeholder="Yêu cầu bổ sung cho bài viết" /></Form.Item>
       <Form.Item name="keyAI" label="API key riêng"><Input.Password autoComplete="new-password" placeholder="Để trống nếu dùng key dịch vụ" /></Form.Item>
     </Form>
@@ -182,22 +221,19 @@ function useFilters(query: URLSearchParams, compact: boolean) {
   };
 }
 
-function JobDrawer({ id, close, onRewritten, startWithRewrite = false }: { id: string | null; close: () => void; onRewritten: (id: string) => void; startWithRewrite?: boolean }) {
+function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, startWithRewrite = false }: { id: string | null; liveJob?: LiveJob; revision: number; close: () => void; onRewritten: (id: string) => void; onDeleted: () => void; startWithRewrite?: boolean }) {
   const detail = useResource<JobDetails>(id ? `/jobs/${id}` : null);
   const [rewriteOpen, setRewriteOpen] = useState(startWithRewrite);
   const [rewriting, setRewriting] = useState(false);
   const [form] = Form.useForm();
-  const { message } = App.useApp();
-  const job = detail.data;
+  const { message, modal } = App.useApp();
+  const job = detail.data ? newestJob(detail.data, detail.requestedAt, liveJob) as JobDetails : liveJob?.job;
   const article = job?.result?.[0];
   const rewriteKeyMode = job?.rewrite_key_mode ?? job?.key_mode;
   const isFailed = job?.status === 'failed';
   const canRewrite = isFailed || Boolean(article && (job?.status === 'completed' || job?.status === 'ready'));
-  useEffect(() => {
-    if (!id || !['scheduled', 'queued', 'writing'].includes(job?.status ?? '')) return;
-    const timer = window.setInterval(detail.reload, 5000);
-    return () => window.clearInterval(timer);
-  }, [id, job?.status]);
+  const canDelete = Boolean(job && ['scheduled', 'queued', 'completed', 'ready', 'failed', 'canceled'].includes(job.status));
+  useEffect(() => { if (id && revision) detail.reload(); }, [id, revision]);
   function closeRewrite() { if (rewriting) return; setRewriteOpen(false); form.resetFields(); }
   async function rewrite(values: { instructions?: string; keyAI?: string }) {
     if (!job) return;
@@ -216,8 +252,17 @@ function JobDrawer({ id, close, onRewritten, startWithRewrite = false }: { id: s
       setRewriting(false);
     }
   }
+  function removeJob() {
+    if (!job || !canDelete) return;
+    const hasArticle = Boolean(job.result?.length);
+    modal.confirm({ title: hasArticle ? 'Xóa bài viết?' : 'Xóa khỏi danh sách chờ?',
+      content: hasArticle ? 'Bài viết, lịch sử gọi AI và sự kiện giao bài sẽ bị xóa vĩnh viễn.' : 'Yêu cầu viết và lịch sử xử lý sẽ bị xóa vĩnh viễn.',
+      okText: hasArticle ? 'Xóa bài viết' : 'Xóa yêu cầu', cancelText: 'Hủy', okButtonProps: { danger: true },
+      async onOk() { try { await mutate(`/jobs/${jobId(job)}`, 'DELETE'); message.success(hasArticle ? 'Đã xóa bài viết.' : 'Đã xóa yêu cầu khỏi danh sách chờ.'); close(); onDeleted(); } catch (error) { message.error((error as Error).message); } },
+    });
+  }
   return <Drawer title={job?.keyword ?? 'Chi tiết yêu cầu viết'} open={Boolean(id)} size={760} onClose={close}
-    extra={<Space><Tooltip title={canRewrite ? undefined : rewriteUnavailableReason(job)}><span><Button type="primary" icon={<ReloadOutlined />} disabled={!canRewrite} onClick={() => setRewriteOpen(true)}>Viết lại</Button></span></Tooltip><Button icon={<ReloadOutlined />} loading={detail.loading} onClick={detail.reload}>Làm mới</Button></Space>}>
+    extra={<Space><Tooltip title={canRewrite ? undefined : rewriteUnavailableReason(job)}><span><Button type="primary" icon={<ReloadOutlined />} disabled={!canRewrite} onClick={() => setRewriteOpen(true)}>Viết lại</Button></span></Tooltip>{canDelete && <Button danger icon={<DeleteOutlined />} onClick={removeJob}>{job?.result?.length ? 'Xóa bài' : 'Xóa khỏi hàng chờ'}</Button>}<Button icon={<ReloadOutlined />} loading={detail.loading} onClick={detail.reload}>Làm mới</Button></Space>}>
     <ResourceError error={detail.error} onRetry={detail.reload} />
     {detail.loading && !job && <Skeleton active />}
     {job && <>
@@ -244,6 +289,7 @@ function JobDrawer({ id, close, onRewritten, startWithRewrite = false }: { id: s
           { key: 'tone', label: 'Giọng văn', children: job.tone },
           { key: 'style', label: 'Phong cách', children: job.style },
           { key: 'length', label: 'Độ dài', children: `${job.length} từ` },
+          { key: 'research', label: 'Dữ liệu tìm kiếm', children: job.use_research === false ? 'Không sử dụng' : 'Có sử dụng' },
           { key: 'instructions', label: 'Hướng dẫn thêm', children: job.instructions ?? '—' },
         ]} /> },
         { key: 'outline', label: 'Dàn ý', children: <OutlineReview job={job} /> },
@@ -306,18 +352,80 @@ export function Jobs({ query }: { query: URLSearchParams }) {
   const [selected, setSelected] = useState(query.get('job'));
   const [startWithRewrite, setStartWithRewrite] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [liveJobs, setLiveJobs] = useState<Record<string, LiveJob | null>>({});
+  const [liveError, setLiveError] = useState<Error>();
+  const [reconcileRevision, setReconcileRevision] = useState(0);
+  const { message, modal } = App.useApp();
   const filters = useFilters(query, !screens.sm);
   const jobs = useResource<Collection<Job>>(withQuery('/jobs', { ...filters.parameters, q: searchValue, source: mode, date_basis: query.get('date_basis') ?? undefined, key_mode: keyMode }));
-  const hasPendingJobs = jobs.data?.data.some(job => ['scheduled', 'queued', 'writing'].includes(job.status)) ?? false;
-  useEffect(() => {
-    if (!hasPendingJobs) return;
-    const timer = window.setInterval(jobs.reload, 5000);
-    return () => window.clearInterval(timer);
-  }, [hasPendingJobs]);
+  useLiveJobs({
+    changed(job, requestedAt) {
+      setLiveJobs(previous => ({ ...previous, [jobId(job)]: { job, requestedAt } }));
+      setLiveError(undefined);
+    },
+    deleted(id) {
+      setLiveJobs(previous => ({ ...previous, [id]: null }));
+      if (id === selected) setSelected(null);
+    },
+    reconcile() {
+      setLiveJobs({});
+      setLiveError(undefined);
+      setReconcileRevision(previous => previous + 1);
+      jobs.reload();
+    },
+    failed: setLiveError,
+  });
+  const savedRows = jobs.data?.data ?? [];
+  const rows = new Map(savedRows.map(row => [jobId(row), row]));
+  const lastSavedRow = savedRows.at(-1);
+  for (const [id, snapshot] of Object.entries(liveJobs)) {
+    if (snapshot === null) rows.delete(id);
+    else {
+      const job = snapshot.job;
+      if (!rows.has(id) && jobs.requestedAt !== undefined && jobs.requestedAt > snapshot.requestedAt) continue;
+      // An older changed job must not jump over unseen rows on the next page.
+      if (!rows.has(id) && jobs.data?.next_cursor && lastSavedRow &&
+        (job.created_at < lastSavedRow.created_at || (job.created_at === lastSavedRow.created_at && id < jobId(lastSavedRow)))) continue;
+      rows.set(id, rows.has(id) ? newestJob(rows.get(id)!, jobs.requestedAt, snapshot) : job);
+    }
+  }
+  const matchingJobs = [...rows.values()]
+    .filter(row => jobMatches(row, filters.parameters, searchValue, mode, keyMode, query.get('date_basis') === 'cost'))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || jobId(b).localeCompare(jobId(a)));
+  const displayedJobs = matchingJobs.slice(0, filters.parameters.limit).map(job => {
+    if (query.get('date_basis') !== 'cost' || !(job as JobDetails).attempts) return job;
+    const priced = (job as JobDetails).attempts!.filter(attempt => dateMatches(attempt.called_at ?? attempt.started_at, filters.parameters) && attempt.cost_usd != null && attempt.cost_usd !== '');
+    return { ...job, cost_usd: priced.length ? priced.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new Decimal(0)).toFixed(12) : null };
+  });
+  const lastJob = displayedJobs.at(-1);
+  const nextCursor = lastJob && (matchingJobs.length > filters.parameters.limit || jobs.data?.next_cursor)
+    ? btoa(JSON.stringify([lastJob.created_at, jobId(lastJob)])).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    : lastJob ? null : jobs.data?.next_cursor;
   function openJob(id: string, rewrite = false) { setStartWithRewrite(rewrite); setSelected(id); }
+  function removeJob(row: Job) {
+    const article = ['completed', 'ready'].includes(row.status);
+    modal.confirm({
+      title: article ? 'Xóa bài viết?' : 'Xóa khỏi danh sách chờ?',
+      content: article ? 'Bài viết và toàn bộ lịch sử xử lý sẽ bị xóa vĩnh viễn.' : 'Yêu cầu viết sẽ bị xóa vĩnh viễn khỏi danh sách chờ.',
+      okText: article ? 'Xóa bài viết' : 'Xóa yêu cầu',
+      cancelText: 'Hủy',
+      okButtonProps: { danger: true },
+      async onOk() {
+        try {
+          await mutate(`/jobs/${jobId(row)}`, 'DELETE');
+          message.success(article ? 'Đã xóa bài viết.' : 'Đã xóa yêu cầu khỏi danh sách chờ.');
+          if (selected === jobId(row)) setSelected(null);
+          jobs.reload();
+        } catch (error) {
+          message.error((error as Error).message);
+        }
+      },
+    });
+  }
   return <>
     <PageHeading title="Yêu cầu viết" description={query.get('date_basis') === 'cost' ? 'Chi phí các lần gọi AI trong khoảng thời gian đã chọn.' : 'Xem lịch viết, bản xem trước và các phiên bản viết lại.'} action={<Space><Button type="primary" icon={<CalendarOutlined />} onClick={() => setScheduleOpen(true)}>Lên lịch viết</Button><Button icon={<ReloadOutlined />} loading={jobs.loading} onClick={jobs.reload}>Làm mới</Button></Space>} />
     <ResourceError error={jobs.error} onRetry={jobs.reload} />
+    <ResourceError error={liveError} onRetry={jobs.reload} />
     <Panel className="table-panel record-panel">
       <div className="table-toolbar record-toolbar">
         <Input prefix={<SearchOutlined />} placeholder="Tìm từ khóa hoặc mã yêu cầu" aria-label="Tìm yêu cầu viết" allowClear value={search} onChange={(event) => { setSearch(event.target.value); filters.setCursor([]); }} />
@@ -333,7 +441,7 @@ export function Jobs({ query }: { query: URLSearchParams }) {
         ]} />}
         {filters.inputs()}
       </div>}
-      <Table rowKey={jobId} dataSource={jobs.data?.data ?? []} loading={jobs.loading} scroll={screens.md ? { x: 1060 } : undefined} pagination={false}
+      <Table rowKey={jobId} dataSource={displayedJobs} loading={jobs.loading} scroll={screens.md ? { x: 1060 } : undefined} pagination={false}
         locale={{ emptyText: <EmptyState description="Chưa có yêu cầu phù hợp" /> }}
         columns={[
           { title: 'Từ khóa / yêu cầu', key: 'keyword', render: (_, row) => <button className="table-link table-identity" onClick={() => openJob(jobId(row))}><strong>{row.keyword}</strong><small>{row.website_name} · <span className="mono">{compactId(jobId(row))}</span></small></button> },
@@ -342,14 +450,15 @@ export function Jobs({ query }: { query: URLSearchParams }) {
           { title: 'Model', dataIndex: 'model', responsive: ['md'], render: (value) => <span className="mono">{value}</span> },
           { title: 'Giờ hẹn', dataIndex: 'scheduled_at', responsive: ['md'], render: datetime },
           { title: 'Chi phí', dataIndex: 'cost_usd', responsive: ['md'], align: 'right', render: usd },
-          { title: 'Thao tác', key: 'actions', width: screens.md ? 120 : 106, render: (_, row) => {
+          { title: 'Thao tác', key: 'actions', width: screens.md ? 220 : 140, render: (_, row) => {
             const available = row.status === 'failed' || (row.can_rewrite ?? ['completed', 'ready'].includes(row.status));
-            return <Tooltip title={available ? row.status === 'failed' ? 'Viết lại bằng thông tin của yêu cầu bị lỗi' : 'Tạo bản viết lại từ bài này' : rewriteUnavailableReason(row)}><span><Button size="small" icon={<ReloadOutlined />} disabled={!available} onClick={() => openJob(jobId(row), true)}>Viết lại</Button></span></Tooltip>;
+            const deletable = ['scheduled', 'queued', 'completed', 'ready', 'failed', 'canceled'].includes(row.status);
+            return <Space size={4}><Tooltip title={available ? row.status === 'failed' ? 'Viết lại bằng thông tin của yêu cầu bị lỗi' : 'Tạo bản viết lại từ bài này' : rewriteUnavailableReason(row)}><span><Button size="small" icon={<ReloadOutlined />} disabled={!available} onClick={() => openJob(jobId(row), true)}>Viết lại</Button></span></Tooltip>{deletable && <Button size="small" danger icon={<DeleteOutlined />} aria-label={['completed', 'ready'].includes(row.status) ? 'Xóa bài viết' : 'Xóa yêu cầu'} onClick={() => removeJob(row)}>{['completed', 'ready'].includes(row.status) ? 'Xóa bài' : 'Xóa'}</Button>}</Space>;
           } },
         ]} />
-      <CursorPagination cursor={filters.cursor} setCursor={filters.setCursor} next={jobs.data?.next_cursor} />
+      <CursorPagination cursor={filters.cursor} setCursor={filters.setCursor} next={nextCursor} />
     </Panel>
-    <JobDrawer key={selected} id={selected} startWithRewrite={startWithRewrite} close={() => { setSelected(null); setStartWithRewrite(false); }} onRewritten={id => { openJob(id); jobs.reload(); }} />
+    <JobDrawer key={selected} id={selected} liveJob={selected ? liveJobs[selected] ?? undefined : undefined} revision={reconcileRevision} startWithRewrite={startWithRewrite} close={() => { setSelected(null); setStartWithRewrite(false); }} onRewritten={id => { openJob(id); jobs.reload(); }} onDeleted={jobs.reload} />
     <ScheduleModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} onCreated={jobs.reload} />
   </>;
 }

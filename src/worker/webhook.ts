@@ -8,8 +8,19 @@ import { retryAfter, WorkerError } from './provider.js'
 
 const stripBrackets = (host: string) => host.replace(/^\[|\]$/g, '')
 
-function publicAddress(address: string): boolean {
+export function publicAddress(address: string): boolean {
   return ipaddr.isValid(address) && ipaddr.process(address).range() === 'unicast'
+}
+
+export async function assertPublicDestination(url: URL): Promise<void> {
+  const hostname = stripBrackets(url.hostname)
+  const literal = isIP(hostname)
+  if (literal) {
+    if (!publicAddress(hostname)) throw new Error('Private destination')
+    return
+  }
+  const addresses = await lookup(hostname, { all: true })
+  if (!addresses.length || addresses.some(item => !publicAddress(item.address))) throw new Error('Private destination')
 }
 
 export function validateWebhookUrl(input: string, allowLocal: boolean): URL {

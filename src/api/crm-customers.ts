@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { Config } from '../config.js'
-import { collection, transaction, type Database } from '../db.js'
+import { collection, sessionOf, transaction, type Database } from '../db.js'
 import { digest, issueToken, seal } from '../security.js'
 import { validateWebhookUrl } from '../worker/webhook.js'
 import { assertAvailableModels, modelIdSchema } from './catalog.js'
@@ -26,12 +26,67 @@ export function registerCustomers(app: FastifyInstance, db: Database, config: Co
   app.get('/customers', async request => { const { q, limit, cursor, id } = listQuery.parse(request.query); const [name, cursorId] = readCursor(cursor, nameCursor); const customers = await collection<CustomerDoc>(db, 'customers').find(id ? { _id: id } : {}).sort({ name: 1, _id: 1 }).toArray(); const rows: any[] = []; for (const customer of customers) { if (q && !`${customer.name} ${customer.email ?? ''} ${customer.phone ?? ''} ${customer._id}`.toLowerCase().includes(q.toLowerCase())) continue; if (name && (customer.name < name || (customer.name === name && customer._id <= cursorId!))) continue; const websiteCount = await collection(db, 'sites').countDocuments({ customer_id: customer._id }); const articleCount = await collection(db, 'jobs').countDocuments({ customer_id: customer._id, status: 'ready' }); rows.push({ id: customer._id, name: customer.name, email: customer.email, phone: customer.phone, notes: customer.notes, key_mode: customer.key_mode, daily_limit: customer.daily_limit, monthly_limit: customer.monthly_limit, allowed_models: customer.allowed_models, max_length: customer.max_length, active_from: customer.starts_at, active_until: customer.ends_at, created_at: customer.created_at, website_count: websiteCount, article_count: articleCount, cursor_at: customer.name, cursor_id: customer._id }); if (rows.length >= limit + 1) break } return pageOf(rows, limit) })
   app.post('/customers', async (request, reply) => { const fields = customerFields.parse(request.body); const values = await customerArguments(db, fields); const now = new Date(); const doc = { _id: randomUUID(), ...values, created_at: now, updated_at: now }; await collection(db, 'customers').insertOne(doc); return reply.code(201).send({ id: doc._id, ...values, active_from: values.starts_at, active_until: values.ends_at, created_at: now, website_count: 0, article_count: 0 }) })
   app.patch('/customers/:id', async request => { const { id } = idParams.parse(request.params); const patch = customerFields.partial().parse(request.body); return transaction(db, async client => { const existing = await collection<CustomerDoc>(client, 'customers').findOne({ _id: id }); if (!existing) throw notFound(); const values = { name: existing.name, email: existing.email, phone: existing.phone, notes: existing.notes, key_mode: existing.key_mode, daily_limit: existing.daily_limit, monthly_limit: existing.monthly_limit, allowed_models: existing.allowed_models, max_length: existing.max_length, active_from: existing.starts_at?.toISOString() ?? null, active_until: existing.ends_at?.toISOString() ?? null, ...patch }; const args = await customerArguments(client as unknown as Database, values, existing.allowed_models); await collection(client, 'customers').updateOne({ _id: id }, { $set: { ...args, updated_at: new Date() } }); const websiteCount = await collection(client, 'sites').countDocuments({ customer_id: id }); const articleCount = await collection(client, 'jobs').countDocuments({ customer_id: id, status: 'ready' }); return { id, ...args, active_from: args.starts_at, active_until: args.ends_at, created_at: existing.created_at, website_count: websiteCount, article_count: articleCount } }) })
+  app.delete('/customers/:id', async (request, reply) => {
+    const { id } = idParams.parse(request.params)
+    await transaction(db, async client => {
+      const session = sessionOf(client)
+      const existing = await collection<CustomerDoc>(client, 'customers').findOne({ _id: id }, { session })
+      if (!existing) throw notFound()
+      const website = await collection(client, 'sites').findOne({ customer_id: id }, { projection: { _id: 1 }, session })
+      const job = await collection(client, 'jobs').findOne({ customer_id: id }, { projection: { _id: 1 }, session })
+      if (website || job) throw new ApiError(409, 'customer_has_history', 'Không thể xóa khách hàng còn website hoặc lịch sử viết bài. Hãy xóa các website và bài viết trước.')
+      await collection(client, 'quota_reservations').deleteMany({ customer_id: id }, { session })
+      await collection(client, 'customers').deleteOne({ _id: id }, { session })
+    })
+    return reply.code(204).send()
+  })
   app.get('/customers/:id/usage', async request => { const { id } = idParams.parse(request.params); const { date } = z.object({ date: periodSchema.optional() }).parse(request.query); const customer = await collection<CustomerDoc>(db, 'customers').findOne({ _id: id }); if (!customer) throw notFound(); const when = date ? new Date(`${date}T00:00:00+07:00`) : new Date(); const result = await usage(db, toPackage(customer), when); const month = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(when).slice(0, 7); const reservations = await collection(db, 'quota_reservations').find({ customer_id: id, quota_month: month, status: { $in: ['used', 'reserved'] } }).sort({ quota_day: -1, job_id: -1 }).limit(100).toArray(); const enriched = await Promise.all(reservations.map(async reservation => { const job = await collection<any>(db, 'jobs').findOne({ _id: reservation.job_id }); const site = job ? await collection<any>(db, 'sites').findOne({ _id: job.site_id }) : null; return { job_id: reservation.job_id, quota_day: reservation.quota_day, status: reservation.status, keyword: job?.keyword, scheduled_at: job?.scheduled_at ?? null, website_name: site?.name ?? '' } })); return { ...result, reservations: enriched } })
   app.get('/websites', async request => { const { q, limit, customer_id, cursor, id } = listQuery.parse(request.query); const [name, cursorId] = readCursor(cursor, nameCursor); const sites = await collection<SiteDoc>(db, 'sites').find(id ? { _id: id } : customer_id ? { customer_id } : {}).sort({ name: 1, _id: 1 }).toArray(); const rows: any[] = []; for (const site of sites) { const customer = await collection<CustomerDoc>(db, 'customers').findOne({ _id: site.customer_id }); if (!customer || (q && !`${site.name} ${site.domain} ${customer.name}`.toLowerCase().includes(q.toLowerCase())) || (name && (site.name < name || (site.name === name && site._id <= cursorId!)))) continue; rows.push({ id: site._id, name: site.name, customer_id: site.customer_id, customer_name: customer.name, domain: site.domain, webhook_url: site.webhook_url, token_hint: site.token_prefix ?? null, last_seen_at: site.last_used_at ?? null, webhook_secret_configured: Boolean(site.webhook_secret), created_at: site.created_at, article_count: await collection(db, 'jobs').countDocuments({ site_id: site._id, status: 'ready' }), cursor_at: site.name, cursor_id: site._id }); if (rows.length >= limit + 1) break } return pageOf(rows, limit) })
-  app.post('/websites', async (request, reply) => { const fields = websiteFields.parse(request.body); const values = await websiteArguments(fields, config); const now = new Date(); const doc = { _id: randomUUID(), ...values, webhook_secret: seal(issueToken(), config.encryptionKey), token_hash: null, token_prefix: null, last_used_at: null, created_at: now, updated_at: now }; await collection(db, 'sites').insertOne(doc); return reply.code(201).send({ id: doc._id }) })
-  app.patch('/websites/:id', async request => { const { id } = idParams.parse(request.params); const patch = websiteFields.partial().parse(request.body); return transaction(db, async client => { const existing = await collection<SiteDoc>(client, 'sites').findOne({ _id: id }); if (!existing) throw notFound(); const fields = { customer_id: existing.customer_id, name: existing.name, domain: existing.domain, webhook_url: existing.webhook_url, ...patch }; if (fields.customer_id !== existing.customer_id && await collection(client, 'jobs').findOne({ site_id: id })) throw new ApiError(409, 'website_has_history', 'Website đã có lịch sử viết. Hãy tạo website mới cho khách hàng khác.'); const values = await websiteArguments(fields, config); await collection(client, 'sites').updateOne({ _id: id }, { $set: { ...values, updated_at: new Date() } }); return { id } }) })
+  app.post('/websites', async (request, reply) => {
+    const fields = websiteFields.parse(request.body)
+    const values = await websiteArguments(fields, config)
+    const now = new Date()
+    const doc = { _id: randomUUID(), ...values, webhook_secret: seal(issueToken(), config.encryptionKey), token_prefix: null, last_used_at: null, created_at: now, updated_at: now }
+    await transaction(db, async client => {
+      const session = sessionOf(client)
+      // Lock the parent so customer deletion cannot commit alongside a new site.
+      const customer = await collection(client, 'customers').updateOne({ _id: fields.customer_id }, { $inc: { relation_version: 1 } }, { session })
+      if (!customer.matchedCount) throw notFound()
+      await collection(client, 'sites').insertOne(doc, { session })
+    })
+    return reply.code(201).send({ id: doc._id })
+  })
+  app.patch('/websites/:id', async request => {
+    const { id } = idParams.parse(request.params)
+    const patch = websiteFields.partial().parse(request.body)
+    return transaction(db, async client => {
+      const session = sessionOf(client)
+      const existing = await collection<SiteDoc>(client, 'sites').findOne({ _id: id }, { session })
+      if (!existing) throw notFound()
+      const fields = { customer_id: existing.customer_id, name: existing.name, domain: existing.domain, webhook_url: existing.webhook_url, ...patch }
+      if (fields.customer_id !== existing.customer_id && await collection(client, 'jobs').findOne({ site_id: id }, { session })) throw new ApiError(409, 'website_has_history', 'Website đã có lịch sử viết. Hãy tạo website mới cho khách hàng khác.')
+      const values = await websiteArguments(fields, config)
+      const customer = await collection(client, 'customers').updateOne({ _id: fields.customer_id }, { $inc: { relation_version: 1 } }, { session })
+      if (!customer.matchedCount) throw notFound()
+      await collection(client, 'sites').updateOne({ _id: id }, { $set: { ...values, updated_at: new Date() } }, { session })
+      return { id }
+    })
+  })
+  app.delete('/websites/:id', async (request, reply) => {
+    const { id } = idParams.parse(request.params)
+    await transaction(db, async client => {
+      const session = sessionOf(client)
+      const existing = await collection<SiteDoc>(client, 'sites').findOne({ _id: id }, { session })
+      if (!existing) throw notFound()
+      if (await collection(client, 'jobs').findOne({ site_id: id }, { projection: { _id: 1 }, session })) {
+        throw new ApiError(409, 'website_has_history', 'Không thể xóa website còn lịch sử viết bài. Hãy xóa các bài viết và yêu cầu trước.')
+      }
+      await collection(client, 'sites').deleteOne({ _id: id }, { session })
+    })
+    return reply.code(204).send()
+  })
   app.post('/websites/:id/token', async request => { const { id } = idParams.parse(request.params); const token = issueToken(); const result = await collection(db, 'sites').updateOne({ _id: id }, { $set: { token_hash: digest(token), token_prefix: token.slice(0, 9), last_used_at: null, updated_at: new Date() } }); if (!result.matchedCount) throw notFound(); return { token } })
-  app.delete('/websites/:id/token', async (request, reply) => { const { id } = idParams.parse(request.params); const result = await collection(db, 'sites').updateOne({ _id: id }, { $set: { token_hash: null, token_prefix: null, updated_at: new Date() } }); if (!result.matchedCount) throw notFound(); return reply.code(204).send() })
+  app.delete('/websites/:id/token', async (request, reply) => { const { id } = idParams.parse(request.params); const result = await collection(db, 'sites').updateOne({ _id: id }, { $unset: { token_hash: '' }, $set: { token_prefix: null, updated_at: new Date() } }); if (!result.matchedCount) throw notFound(); return reply.code(204).send() })
   app.post('/websites/:id/webhook-secret', async request => { const { id } = idParams.parse(request.params); const secret = issueToken(); const result = await collection(db, 'sites').updateOne({ _id: id }, { $set: { webhook_secret: seal(secret, config.encryptionKey), updated_at: new Date() } }); if (!result.matchedCount) throw notFound(); return { secret } })
 }
 // @ts-nocheck

@@ -23,9 +23,18 @@ function failedJob(): JobDetails {
   };
 }
 
-async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' | 'service' = 'service', options: { outline?: 'timeout' | 'missing' } = {}) {
+async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' | 'service' = 'service', options: { outline?: 'timeout' | 'missing'; query?: string } = {}) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
+  await page.addInitScript({ content: `
+    class TestEventSource extends EventTarget {
+      static instances = [];
+      constructor(url) { super(); this.url = url; TestEventSource.instances.push(this); }
+      close() {}
+    }
+    Object.defineProperty(window, 'EventSource', { configurable: true, value: TestEventSource });
+    Object.defineProperty(window, '__crmEventSources', { configurable: true, value: TestEventSource.instances });
+  ` });
   const failed = { ...failedJob(), rewrite_key_mode: rewriteKeyMode };
   const active: JobDetails = { ...failedJob(), id: activeId, job_id: activeId, keyword: 'bài đang viết', status: 'writing', writing_stage: 'outline', can_rewrite: false, error_code: null, error_message: null };
   const completed: JobDetails = {
@@ -51,6 +60,7 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
   const posts: { method: string; body: unknown; csrf: string | undefined }[] = [];
   const unexpected: string[] = [];
   const pageErrors: string[] = [];
+  const detailReads: string[] = [];
   let listReads = 0;
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.route('**/*', async route => {
@@ -65,22 +75,32 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
     if (url.pathname === '/api/crm/jobs') {
       listReads++;
-      return route.fulfill({ json: { data: posts.length ? [rewritten, failed, active, completed] : [failed, active, completed], next_cursor: null } });
+      const status = url.searchParams.get('status');
+      let data = [...details.values()].filter(job => (job.id !== rewrittenId || posts.length) && (!status || job.status === status || (status === 'ready' && job.status === 'completed')));
+      if (url.searchParams.get('date_basis') === 'cost') data = data.map(job => { const { attempts, ...row } = job; return row as JobDetails; });
+      return route.fulfill({ json: { data, next_cursor: null } });
     }
+    if (url.pathname === '/api/crm/jobs/events') return route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' });
     if (['/api/crm/customers', '/api/crm/websites', '/api/crm/providers'].includes(url.pathname)) return route.fulfill({ json: { data: [] } });
     if (url.pathname === `/api/crm/jobs/${failedId}/rewrite`) {
       posts.push({ method: request.method(), body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
       return route.fulfill({ status: 202, json: { job_id: rewrittenId, status: 'queued', retry_of_job_id: failedId } });
     }
     const detail = details.get(url.pathname.replace('/api/crm/jobs/', ''));
-    if (detail) return route.fulfill({ json: detail });
+    if (detail) { detailReads.push(detail.id); return route.fulfill({ json: detail }); }
     unexpected.push(`${request.method()} ${url.pathname}`);
     return route.abort();
   });
-  await page.goto(origin);
+  await page.goto(`${origin}/${options.query ? `?${options.query}` : ''}`);
   const row = (keyword: string) => page.getByRole('row').filter({ has: page.getByRole('button', { name: new RegExp(keyword) }) });
   await row(failed.keyword).waitFor();
-  return { page, row, posts, unexpected, pageErrors, listReads: () => listReads };
+  return {
+    page, row, posts, unexpected, pageErrors, details, detailReads, listReads: () => listReads,
+    emitJobEvent: (type: string, data: Record<string, unknown> = {}) => page.evaluate(({ type: eventType, data: eventData }) => {
+      const source = (window as typeof window & { __crmEventSources: EventTarget[] }).__crmEventSources[0];
+      source.dispatchEvent(new MessageEvent(eventType, { data: JSON.stringify(eventData) }));
+    }, { type, data }),
+  };
 }
 
 test('CRM exposes and submits rewrites for failed jobs without generated content', async t => {
@@ -93,7 +113,7 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
         import {setCsrfToken} from './web/src/api';
         setCsrfToken('fixture-csrf');
         createRoot(document.getElementById('root')!).render(
-          <ConfigProvider theme={{token:{motion:false}}}><App><Jobs query={new URLSearchParams()} /></App></ConfigProvider>
+          <ConfigProvider theme={{token:{motion:false}}}><App><Jobs query={new URLSearchParams(window.location.search)} /></App></ConfigProvider>
         );`,
       resolveDir: process.cwd(), loader: 'tsx',
     },
@@ -102,6 +122,73 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
   });
   const browser = await chromium.launch();
   try {
+    await t.test('live job updates refresh only their own authoritative row and recover missed events', async () => {
+      const fixture = await mockCrm(browser, outputFiles[0].text);
+      const { page, row, details, detailReads, emitJobEvent, unexpected, pageErrors } = fixture;
+      try {
+        const completed = { ...details.get(activeId)!, status: 'completed', can_rewrite: true, writing_stage: null,
+          updated_at: '2026-11-20T05:00:00Z', completed_at: '2026-11-20T05:00:00Z', cost_usd: '0.012300000000',
+          result: details.get(completedId)!.result } satisfies JobDetails;
+        details.set(activeId, completed);
+        await emitJobEvent('job.updated', { job_id: activeId, status: 'completed' });
+        await row('bài đang viết').getByRole('button', { name: 'Xóa bài viết' }).waitFor();
+        assert.equal(await row('bài đang viết').getByRole('button', { name: /Viết lại/ }).isEnabled(), true);
+        assert.match(await row('bài đang viết').innerText(), /0[,.]0123/);
+        assert.equal(fixture.listReads(), 1, 'a job event must not reload the collection');
+        assert.deepEqual(detailReads, [activeId]);
+
+        const created = { ...completed, id: rewrittenId, job_id: rewrittenId, keyword: 'yêu cầu từ máy khác', status: 'queued', can_rewrite: false, result: null };
+        details.set(rewrittenId, created);
+        await emitJobEvent('job.created', { job_id: rewrittenId });
+        await row(created.keyword).waitFor();
+        assert.equal(fixture.listReads(), 1, 'new jobs use a single-job lookup too');
+
+        details.set(activeId, { ...completed, keyword: 'tên mới sau khi kết nối lại', updated_at: '2026-11-20T06:00:00Z' });
+        await emitJobEvent('ready');
+        await row('tên mới sau khi kết nối lại').waitFor();
+        assert.equal(fixture.listReads(), 2, 'ready reconciles events missed during a disconnection');
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('live jobs enter and leave the active status filter', async () => {
+      const { page, row, details, emitJobEvent, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        await page.getByRole('combobox', { name: 'Trạng thái', exact: true }).click();
+        await page.locator('.ant-select-item-option-content').getByText('Đã viết', { exact: true }).click();
+        await row('bài đã hoàn tất').waitFor();
+        await row('bài đang viết').waitFor({ state: 'hidden' });
+        details.set(activeId, { ...details.get(activeId)!, status: 'completed', can_rewrite: true, writing_stage: null, updated_at: '2026-11-20T05:00:00Z', result: details.get(completedId)!.result });
+        await emitJobEvent('job.updated', { job_id: activeId });
+        await row('bài đang viết').waitFor();
+        details.set(activeId, { ...details.get(activeId)!, status: 'queued', can_rewrite: false, updated_at: '2026-11-20T05:01:00Z', result: null });
+        await emitJobEvent('job.updated', { job_id: activeId });
+        await row('bài đang viết').waitFor({ state: 'hidden' });
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('cost-date live updates use attempt dates and newer reads replace equal-timestamp snapshots', async () => {
+      const fixture = await mockCrm(browser, outputFiles[0].text, 'service', { query: 'date_basis=cost&from=2026-11-21&to=2026-11-21' });
+      const { page, row, details, emitJobEvent, unexpected, pageErrors } = fixture;
+      try {
+        details.set(activeId, { ...details.get(activeId)!, updated_at: '2026-11-20T03:00:00Z', attempts: [
+          { id: 'old-cost', provider: 'openai', model: 'test', status: 'failed', started_at: '2026-11-20T03:00:00Z', cost_usd: '9' },
+          { id: 'new-cost', provider: 'openai', model: 'test', status: 'succeeded', started_at: '2026-11-21T03:00:00Z', cost_usd: '0.0123' },
+        ] });
+        await emitJobEvent('job.updated', { job_id: activeId });
+        await row('bài đang viết').getByText(/0[,.]0123/).waitFor();
+        assert.equal(await row('bài đang viết').count(), 1, 'an old job remains in the cost period of its new attempt');
+        details.set(activeId, { ...details.get(activeId)!, cost_usd: '0.0234' });
+        await page.getByRole('button', { name: /Làm mới/ }).first().click();
+        await row('bài đang viết').getByText(/0[,.]0234/).waitFor();
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
     await t.test('failed job has list and detail actions, queues a retry, and links its failed original', async () => {
       const fixture = await mockCrm(browser, outputFiles[0].text);
       const { page, row, posts, unexpected, pageErrors } = fixture;

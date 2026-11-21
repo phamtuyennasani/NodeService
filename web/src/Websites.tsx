@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Alert, App, Button, Descriptions, Drawer, Form, Grid, Input, Modal, Select, Space, Table, Tabs } from 'antd';
-import { CopyOutlined, EditOutlined, GlobalOutlined, KeyOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
+import { CopyOutlined, DeleteOutlined, EditOutlined, GlobalOutlined, KeyOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
 import { mutate, useCatalog, useResource, useSearchValue, withQuery } from './api';
 import { CursorPagination, datetime, EmptyState, go, PageHeading, Panel, ResourceError } from './shared';
 import type { Collection, Website } from './types';
@@ -87,6 +87,21 @@ export function Websites({ query }: { query: URLSearchParams }) {
     }
   }
 
+  function removeWebsite(site: Website) {
+    modal.confirm({
+      title: `Xóa website ${site.name}?`,
+      content: 'Website chỉ xóa được khi chưa có yêu cầu viết hoặc lịch sử bài viết.',
+      okText: 'Xóa website', cancelText: 'Hủy', okButtonProps: { danger: true },
+      async onOk() {
+        try {
+          await mutate(`/websites/${site.id}`, 'DELETE');
+          message.success('Đã xóa website.');
+          setSelectedId(null); sites.reload(); details.reload();
+        } catch (error) { message.error((error as Error).message); }
+      },
+    });
+  }
+
   function manageSecret(site: Website, action: 'token' | 'revoke' | 'webhook') {
     const title = action === 'revoke' ? 'Thu hồi token website' : action === 'webhook' ? 'Cấp khóa ký webhook' : 'Cấp token website';
     modal.confirm({
@@ -136,12 +151,12 @@ export function Websites({ query }: { query: URLSearchParams }) {
           { title: 'Token', dataIndex: 'token_hint', width: screens.md ? undefined : 100, render: (value) => <span className={'record-pill ' + (value ? 'is-service' : '')}>{value ? 'Đã cấp' : 'Chưa cấp'}</span> },
           { title: 'Bài đã viết', dataIndex: 'article_count', responsive: ['md'], align: 'right' },
           { title: 'API dùng gần nhất', dataIndex: 'last_seen_at', responsive: ['md'], render: datetime },
-          { title: '', align: 'right', key: 'edit', width: 64, responsive: ['md'], render: (_, row) => <Button type="text" icon={<EditOutlined />} title={'Chỉnh sửa ' + row.name} aria-label={'Chỉnh sửa ' + row.name} onClick={() => open(row)} /> },
+          { title: '', align: 'right', key: 'edit', width: 104, responsive: ['md'], render: (_, row) => <Space size={2}><Button type="text" icon={<EditOutlined />} title={'Chỉnh sửa ' + row.name} aria-label={'Chỉnh sửa ' + row.name} onClick={() => open(row)} /><Button type="text" danger icon={<DeleteOutlined />} title={'Xóa ' + row.name} aria-label={'Xóa ' + row.name} onClick={() => removeWebsite(row)} /></Space> },
         ]} />
       <CursorPagination cursor={cursor} setCursor={setCursor} next={sites.data?.next_cursor} />
     </Panel>
     <Drawer title={selected?.name ?? 'Thông tin website'} open={Boolean(selectedId)} onClose={() => setSelectedId(null)} size={620}
-      extra={selected && <Button onClick={() => open(selected)}>Chỉnh sửa</Button>}>
+      extra={selected && <Space><Button onClick={() => open(selected)}>Chỉnh sửa</Button><Button danger icon={<DeleteOutlined />} onClick={() => removeWebsite(selected)}>Xóa website</Button></Space>}>
       <ResourceError error={details.error} onRetry={details.reload} />
       {!selected && !details.error && (details.loading ? <p className="muted">Đang tải website…</p> : <EmptyState description="Không tìm thấy website" />)}
       {selected && <Tabs items={[

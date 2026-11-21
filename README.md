@@ -4,7 +4,7 @@ Dịch vụ Node.js nhận yêu cầu viết ngay, lên lịch và viết lại 
 
 ## Chạy dịch vụ
 
-Cần Node.js 24 LTS và MongoDB Atlas ho?c MongoDB 7 trở lên.
+Cần Node.js 24 LTS và MongoDB Atlas hoặc MongoDB 7 trở lên được cấu hình replica set. Dịch vụ dùng transaction và change stream nên MongoDB standalone không được hỗ trợ.
 
 ```sh
 npm ci
@@ -37,9 +37,13 @@ Khi vận hành qua HTTPS, đặt `NODE_ENV=production` và `APP_ORIGIN` bằng 
 
 Khi thử với Laravel trên máy cục bộ, đặt `ALLOW_LOCAL_WEBHOOKS=true` để gửi webhook đến địa chỉ nội bộ.
 
-Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu, lập dàn ý, viết bản nháp và kiểm tra SEO. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Nếu bài có tiêu chí cần chỉnh, hệ thống thử chỉnh SEO tối đa một lần; chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
+Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu khi được bật, lập dàn ý, viết bản nháp và kiểm tra SEO. Trường `use_research` cho phép chọn có dùng dữ liệu tìm kiếm web làm tư liệu hay không. Mặc định là `true` để giữ nguyên hành vi hiện có; đặt `false` để bỏ qua lượt tìm kiếm cho yêu cầu đó. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Nếu bài có tiêu chí cần chỉnh, hệ thống thử chỉnh SEO tối đa một lần; chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
 
-Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Overview** hiển thị job và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream; luồng đang trả dữ liệu được tiếp tục. Hai bước tùy chọn có giới hạn tổng thời gian riêng là `AI_OUTLINE_TIMEOUT_MS` (mặc định 300 giây) và `AI_SEO_REPAIR_TIMEOUT_MS` (mặc định 90 giây).
+Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Overview** hiển thị job và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream. Mỗi chunk mới gia hạn timeout này. `AI_OUTLINE_TIMEOUT_MS` và `AI_SEO_REPAIR_TIMEOUT_MS` cho phép đặt riêng thời gian chờ khi không nhận chunk cho dàn ý và chỉnh SEO, mặc định theo `AI_TIMEOUT_MS`.
+
+CRM nhận thay đổi job, chi phí AI và trạng thái giao webhook qua SSE từ MongoDB change stream, kể cả khi API và worker chạy ở các tiến trình riêng. Danh sách chỉ tải lại thông tin của job thay đổi; khi kết nối được khôi phục hoặc quay lại tab, CRM đối chiếu lại dữ liệu để bù các sự kiện bị lỡ. Trang không tự tải lại định kỳ.
+
+Xóa bài đã hoàn tất không hoàn lại lượt viết đã dùng trong kỳ. Xóa yêu cầu còn chờ sẽ giải phóng lượt giữ tương ứng.
 
 ## API dành cho Laravel
 
@@ -72,9 +76,12 @@ Mẫu dữ liệu tạo lịch cho khách dùng gói dịch vụ
   "tone": "thân thiện",
   "style": "hướng dẫn từng bước",
   "length": 800,
+  "use_research": true,
   "scheduled_at": "2027-03-22T09:00:00+07:00"
 }
 ```
+
+`use_research` là tùy chọn boolean trong payload tạo yêu cầu và dời lịch. Khi tạo mới, bỏ qua trường này sẽ dùng `true`. Khi sửa hoặc dời lịch, bỏ qua trường này sẽ giữ lựa chọn hiện tại. Yêu cầu viết lại kế thừa lựa chọn của bài nguồn.
 
 Với key riêng, Laravel thêm `keyAI` lấy từ cài đặt đã mã hóa của đúng nhà cung cấp. Các model bắt đầu bằng `claude-` và `grok-` đi qua Anthropic và xAI. Đặt đơn giá theo **USD trên một triệu token** và chọn mốc hiệu lực trong CRM. Khi xAI trả chi phí theo request, dịch vụ ghi nhận chi phí đó. Kiểm tra các dòng chờ đối soát nếu thiếu usage hoặc biểu giá.
 

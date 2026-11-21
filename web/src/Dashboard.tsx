@@ -143,6 +143,18 @@ function elapsedTime(seconds: number) {
   return `${Math.floor(value / 3600)} giờ ${Math.floor(value % 3600 / 60)} phút`;
 }
 
+function useEventRefresh(revision: number, loading: boolean, reload: () => void) {
+  const refreshed = useRef(0);
+  useEffect(() => {
+    if (loading || document.hidden || revision <= refreshed.current) return;
+    const timer = window.setTimeout(() => {
+      refreshed.current = revision;
+      reload();
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [revision, loading]);
+}
+
 function RuntimePanel({ data, loading, error, onRetry, scope }: {
   data?: DashboardRuntime; loading: boolean; error?: Error; onRetry: () => void; scope: Record<string, string>;
 }) {
@@ -150,7 +162,7 @@ function RuntimePanel({ data, loading, error, onRetry, scope }: {
   return <section className="panel dash-runtime" aria-labelledby="dash-runtime-title" aria-busy={loading}>
     <header className="dash-panel-header dash-runtime-header">
       <div><h2 id="dash-runtime-title">Hoạt động hiện tại</h2><p>Theo khách hàng và website đã chọn · Không phụ thuộc khoảng ngày</p></div>
-      <span className={`dash-live${error ? ' dash-live-error' : ''}`}><i aria-hidden="true" />{error ? 'Chưa thể cập nhật' : data ? `Cập nhật ${runtimeTime(data.observed_at)}` : 'Đang kết nối'}<small>Tự làm mới mỗi 5 giây</small></span>
+      <span className={`dash-live${error ? ' dash-live-error' : ''}`}><i aria-hidden="true" />{error ? 'Chưa thể cập nhật' : data ? `Cập nhật ${runtimeTime(data.observed_at)}` : 'Đang kết nối'}<small>Cập nhật khi job thay đổi</small></span>
     </header>
     {error && <Alert className="dash-runtime-error" type="warning" showIcon title="Không thể cập nhật hoạt động hiện tại" description={error.message}
       action={<Button size="small" onClick={onRetry}>Thử lại</Button>} />}
@@ -205,15 +217,37 @@ export function Dashboard({ query }: { query: URLSearchParams }) {
   const filters = { ...scope, from: dates[0].format('YYYY-MM-DD'), to: dates[1].format('YYYY-MM-DD') };
   const report = useResource<DashboardData>(withQuery('/dashboard', filters));
   const runtime = useResource<DashboardRuntime>(withQuery('/dashboard/runtime', scope));
-  const runtimeRefresh = useRef(runtime.reload);
-  const runtimeLoading = useRef(runtime.loading);
-  runtimeRefresh.current = runtime.reload;
-  runtimeLoading.current = runtime.loading;
+  const [refreshRequest, setRefreshRequest] = useState(0);
+  useEventRefresh(refreshRequest, runtime.loading, runtime.reload);
+  useEventRefresh(refreshRequest, report.loading, report.reload);
   useEffect(() => {
-    const refreshWhenVisible = () => { if (!document.hidden && !runtimeLoading.current) runtimeRefresh.current(); };
-    const timer = window.setInterval(refreshWhenVisible, 5000);
-    document.addEventListener('visibilitychange', refreshWhenVisible);
-    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', refreshWhenVisible); };
+    const source = new EventSource('/api/crm/jobs/events');
+    const scheduleRefresh = () => setRefreshRequest(previous => previous + 1);
+    const receive = (event: Event) => {
+      const data = (event as MessageEvent<string>).data;
+      if (!data) return;
+      try {
+        const payload = JSON.parse(data) as { job_id?: string };
+        if (typeof payload.job_id === 'string' && payload.job_id) scheduleRefresh();
+      } catch {
+        // Ignore malformed event frames. EventSource will reconnect itself.
+      }
+    };
+    source.addEventListener('job.created', receive);
+    source.addEventListener('job.updated', receive);
+    source.addEventListener('job.deleted', receive);
+    source.addEventListener('message', receive);
+    source.addEventListener('ready', scheduleRefresh);
+    document.addEventListener('visibilitychange', scheduleRefresh);
+    return () => {
+      source.removeEventListener('job.created', receive);
+      source.removeEventListener('job.updated', receive);
+      source.removeEventListener('job.deleted', receive);
+      source.removeEventListener('message', receive);
+      source.removeEventListener('ready', scheduleRefresh);
+      source.close();
+      document.removeEventListener('visibilitychange', scheduleRefresh);
+    };
   }, []);
   const metrics = report.data?.metrics;
   const today = vietnamToday();

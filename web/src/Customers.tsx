@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import {
-  App, Button, Descriptions, Drawer, Form, Grid, Input, InputNumber, Modal, Progress, Select, Table, Tabs, Tag,
+  App, Button, Descriptions, Drawer, Form, Grid, Input, InputNumber, Modal, Progress, Select, Space, Table, Tabs, Tag,
 } from 'antd';
-import { ArrowRightOutlined, EditOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, DeleteOutlined, EditOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
 import type dayjs from 'dayjs';
 import { mutate, useResource, useSearchValue, withQuery } from './api';
 import { CursorPagination, datetime, displayVietnamTime, EmptyState, go, number, PageHeading, Panel, ResourceError, submitVietnamTime } from './shared';
@@ -100,7 +100,7 @@ export function Customers({ query }: { query: URLSearchParams }) {
     const inactive = previousModels.filter(model => selectedModels.includes(model) && !available.has(model));
     if (inactive.length) modelGroups.push({ label: 'Đã ngừng cung cấp', options: inactive.map(model => ({ value: model, label: model })) });
   }
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const customers = useResource<Collection<Customer>>(withQuery('/customers', { q, cursor: cursor.at(-1), limit: 12 }));
   const details = useResource<Collection<Customer>>(selectedId ? withQuery('/customers', { id: selectedId, limit: 1 }) : null);
   const selected = details.data?.data[0] ?? customers.data?.data.find((item) => item.id === selectedId);
@@ -148,6 +148,21 @@ export function Customers({ query }: { query: URLSearchParams }) {
     }
   }
 
+  function removeCustomer(customer: Customer) {
+    modal.confirm({
+      title: `Xóa khách hàng ${customer.name}?`,
+      content: 'Khách hàng chỉ xóa được khi chưa có website hoặc yêu cầu viết.',
+      okText: 'Xóa khách hàng', cancelText: 'Hủy', okButtonProps: { danger: true },
+      async onOk() {
+        try {
+          await mutate(`/customers/${customer.id}`, 'DELETE');
+          message.success('Đã xóa khách hàng.');
+          setSelectedId(null); customers.reload(); details.reload();
+        } catch (error) { message.error((error as Error).message); }
+      },
+    });
+  }
+
   return <>
     <PageHeading title="Khách hàng" description="Quản lý hồ sơ, gói viết bài và hạn mức của từng khách hàng." action={<Button type="primary" icon={<PlusOutlined />} onClick={() => open('new')}>Thêm khách hàng</Button>} />
     <ResourceError error={customers.error} onRetry={customers.reload} />
@@ -166,12 +181,12 @@ export function Customers({ query }: { query: URLSearchParams }) {
           { title: 'Gói viết bài', dataIndex: 'key_mode', width: screens.md ? undefined : 105, render: (value) => <span className={'record-pill ' + (value === 'service' ? 'is-service' : '')}>{value === 'service' ? 'Key dịch vụ' : 'Key riêng'}</span> },
           { title: 'Website', dataIndex: 'website_count', responsive: ['md'], align: 'right', render: (value) => number.format(value) },
           { title: 'Bài đã viết', dataIndex: 'article_count', responsive: ['md'], align: 'right', render: (value) => number.format(value) },
-          { title: '', key: 'actions', width: 64, responsive: ['md'], align: 'right', render: (_, row) => <Button type="text" icon={<EditOutlined />} title={'Chỉnh sửa ' + row.name} aria-label={'Chỉnh sửa ' + row.name} onClick={() => open(row)} /> },
+          { title: '', key: 'actions', width: 104, responsive: ['md'], align: 'right', render: (_, row) => <Space size={2}><Button type="text" icon={<EditOutlined />} title={'Chỉnh sửa ' + row.name} aria-label={'Chỉnh sửa ' + row.name} onClick={() => open(row)} /><Button type="text" danger icon={<DeleteOutlined />} title={'Xóa ' + row.name} aria-label={'Xóa ' + row.name} onClick={() => removeCustomer(row)} /></Space> },
         ]} />
       <CursorPagination cursor={cursor} setCursor={setCursor} next={customers.data?.next_cursor} />
     </Panel>
     <Drawer size={600} title={selected?.name ?? 'Hồ sơ khách hàng'} open={Boolean(selectedId)} onClose={() => setSelectedId(null)}
-      extra={selected && <Button onClick={() => open(selected)}>Chỉnh sửa</Button>}>
+      extra={selected && <Space><Button onClick={() => open(selected)}>Chỉnh sửa</Button><Button danger icon={<DeleteOutlined />} onClick={() => removeCustomer(selected)}>Xóa khách hàng</Button></Space>}>
       <ResourceError error={details.error} onRetry={details.reload} />
       {!selected && !details.error && (details.loading ? <p className="muted">Đang tải hồ sơ…</p> : <EmptyState description="Không tìm thấy khách hàng" />)}
       {selected && <Profile key={selected.id} customer={selected} />}

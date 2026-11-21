@@ -92,7 +92,9 @@ export interface Job {
   tone: string;
   style: string;
   length: number;
+  use_research?: boolean;
   created_at: string;
+  updated_at?: string;
   scheduled_at: string | null;
   started_at: string | null;
   completed_at: string | null;

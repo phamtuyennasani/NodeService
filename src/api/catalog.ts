@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { Provider } from '../config.js'
-import { collection, type MongoSource } from '../db.js'
+import { collection, sessionOf, type MongoSource } from '../db.js'
 import { ApiError } from './errors.js'
 
 export const modelIdSchema = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9._/-]+$/)
@@ -13,8 +13,8 @@ export interface AvailableModel {
 
 export async function listAvailableModels(db: MongoSource, allowed?: string[]): Promise<AvailableModel[]> {
   const models = await collection<{ _id: string, provider: Provider, display_name: string, enabled: boolean }>(db, 'ai_models')
-    .find({ enabled: true, ...(allowed ? { _id: { $in: allowed } } : {}) }).toArray()
-  const providers = await collection<{ _id: Provider, enabled: boolean }>(db, 'ai_providers').find({ enabled: true }).toArray()
+    .find({ enabled: true, ...(allowed ? { _id: { $in: allowed } } : {}) }, { session: sessionOf(db) }).toArray()
+  const providers = await collection<{ _id: Provider, enabled: boolean }>(db, 'ai_providers').find({ enabled: true }, { session: sessionOf(db) }).toArray()
   const enabled = new Set(providers.map(row => row._id))
   return models.filter(row => enabled.has(row.provider))
     .map(row => ({ provider: row.provider, model: row._id, display_name: row.display_name }))
@@ -26,9 +26,9 @@ function unavailable(model: string) {
 }
 
 export async function requireAvailableModel(source: MongoSource, model: string): Promise<Provider> {
-  const row = await collection<{ _id: string, provider: Provider, enabled: boolean }>(source, 'ai_models').findOne({ _id: model, enabled: true })
+  const row = await collection<{ _id: string, provider: Provider, enabled: boolean }>(source, 'ai_models').findOne({ _id: model, enabled: true }, { session: sessionOf(source) })
   if (!row) throw unavailable(model)
-  const provider = await collection<{ _id: Provider, enabled: boolean }>(source, 'ai_providers').findOne({ _id: row.provider, enabled: true })
+  const provider = await collection<{ _id: Provider, enabled: boolean }>(source, 'ai_providers').findOne({ _id: row.provider, enabled: true }, { session: sessionOf(source) })
   if (!provider) throw unavailable(model)
   return row.provider
 }

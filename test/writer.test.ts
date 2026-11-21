@@ -186,6 +186,20 @@ test('scheduled writer researches, outlines and streams a compliant article with
   assert.deepEqual(atomicWrites.map(op => op.table), ['jobs', 'quota_reservations', 'webhook_deliveries'])
 })
 
+test('scheduled writer skips research when the request disables it', async () => {
+  const f = fixture({ use_research: false }, { research: { enabled: true, timeoutMs: 1_000, maxResults: 1, provider: 'duckduckgo' } })
+  let researchCalls = 0
+  await f.run({
+    async research() { researchCalls += 1; return { query: keyword, sources: [], researchedAt: new Date().toISOString() } },
+    async outline(input) {
+      assert.equal(input.research, null)
+      return { outline, ...metadata }
+    },
+  })
+  assert.equal(researchCalls, 0)
+  assertReady(f, seoArticle(), 'not_needed')
+})
+
 test('a failed outline falls back to writing and does not fail the article', async () => {
   const f = fixture()
   await f.run({
@@ -197,12 +211,13 @@ test('a failed outline falls back to writing and does not fail the article', asy
   assert.equal(f.tables.ai_attempts[0].provider_response_id, 'response-test')
 })
 
-test('an outline with keepalives has a hard deadline and falls back to writing', { timeout: 2_000 }, async () => {
-  const f = fixture({}, { outlineTimeoutMs: 20 })
+test('an outline timeout measures idle time between streamed chunks', { timeout: 2_000 }, async () => {
+  const f = fixture({}, { aiTimeoutMs: 5_000, outlineTimeoutMs: 20 })
   let aborted = false
   await f.run({
     outline: input => new Promise((_resolve, reject) => {
       const timer = setInterval(() => input.onChunk?.(), 2)
+      setTimeout(() => clearInterval(timer), 35)
       input.signal.addEventListener('abort', () => { aborted = true; clearInterval(timer); reject(input.signal.reason) }, { once: true })
     }),
   })
@@ -277,13 +292,14 @@ test('a repair error preserves the valid draft and records separate provider usa
   assert.equal(f.tables.ai_attempts[2].cost_usd, '0.000195000000')
 })
 
-test('SEO repair stops at its own deadline despite keepalives and delivers the draft', { timeout: 2_000 }, async () => {
-  const f = fixture({}, { seoRepairTimeoutMs: 20 })
+test('SEO repair timeout measures idle time between streamed chunks', { timeout: 2_000 }, async () => {
+  const f = fixture({}, { aiTimeoutMs: 5_000, seoRepairTimeoutMs: 20 })
   let aborted = false
   await f.run({
     generate: async () => ({ article: shortArticle, ...metadata }),
     repair: input => new Promise((_resolve, reject) => {
       const timer = setInterval(() => input.onChunk?.(), 2)
+      setTimeout(() => clearInterval(timer), 35)
       input.signal.addEventListener('abort', () => { aborted = true; clearInterval(timer); reject(input.signal.reason) }, { once: true })
     }),
   })

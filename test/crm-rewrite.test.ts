@@ -15,7 +15,8 @@ type Tables = Record<string, Row[]>
 // Exercise the real route, catalog and createJob/quota logic without MongoDB,
 // workers or a provider request. Roll back the fake transaction on failures.
 function memoryDatabase(tables: Tables): Database {
-  const matches = (row: Row, filter: Row) => Object.entries(filter).every(([field, expected]) => {
+  const matches = (row: Row, filter: Row): boolean => Object.entries(filter).every(([field, expected]) => {
+    if (field === '$or') return expected.some((branch: Row) => matches(row, branch))
     const actual = row[field]
     if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
       if ('$in' in expected) return expected.$in.includes(actual)
@@ -41,6 +42,23 @@ function memoryDatabase(tables: Tables): Database {
           if (!row && options?.upsert) { row = { ...filter }; rows().push(row) }
           if (row) Object.assign(row, structuredClone(update.$set ?? {}))
           return { matchedCount: row ? 1 : 0 }
+        },
+        async updateMany(filter: Row, update: Row) {
+          const matched = rows().filter(item => matches(item, filter))
+          matched.forEach(item => Object.assign(item, structuredClone(update.$set ?? {})))
+          return { matchedCount: matched.length, modifiedCount: matched.length }
+        },
+        async deleteOne(filter: Row) {
+          const index = rows().findIndex(item => matches(item, filter))
+          if (index < 0) return { deletedCount: 0 }
+          rows().splice(index, 1)
+          return { deletedCount: 1 }
+        },
+        async deleteMany(filter: Row) {
+          const kept = rows().filter(item => !matches(item, filter))
+          const deletedCount = rows().length - kept.length
+          rows().splice(0, rows().length, ...kept)
+          return { deletedCount }
         },
       }
     },
@@ -99,6 +117,21 @@ async function fixture(t: test.TestContext) {
   return { app, tables, article, sourceId, customerId, siteId, config }
 }
 
+test('CRM job detail carries the same precise priced cost used for targeted row updates', async t => {
+  const { app, tables, sourceId } = await fixture(t)
+  tables.ai_attempts = [
+    { _id: randomUUID(), job_id: sourceId, cost_usd: '0.100000000001' },
+    { _id: randomUUID(), job_id: sourceId, cost_usd: '0.2' },
+    { _id: randomUUID(), job_id: sourceId, cost_usd: null },
+  ]
+  const request = () => app.inject({ method: 'GET', url: `/jobs/${sourceId}` })
+  assert.equal((await request()).json().cost_usd, '0.300000000001')
+  tables.ai_attempts = [{ _id: randomUUID(), job_id: sourceId, cost_usd: '0' }]
+  assert.equal((await request()).json().cost_usd, '0.000000000000')
+  tables.ai_attempts = [{ _id: randomUUID(), job_id: sourceId, cost_usd: null }]
+  assert.equal((await request()).json().cost_usd, null)
+})
+
 test('CRM rewrite queues a separate version and retains source settings and instructions', async t => {
   const { app, tables, article, sourceId, customerId, siteId } = await fixture(t)
   const before = structuredClone(article)
@@ -132,6 +165,92 @@ test('CRM rewrite queues a separate version and retains source settings and inst
   assert.equal(tables.quota_reservations.length, 1)
   assert.equal(tables.quota_reservations[0].job_id, body.job_id)
   assert.equal(tables.quota_reservations[0].status, 'reserved')
+})
+
+test('CRM deletes a completed article and its related processing records', async t => {
+  const { app, tables, sourceId } = await fixture(t)
+  tables.ai_attempts = [{ _id: 'attempt-1', job_id: sourceId }]
+  tables.webhook_deliveries = [{ _id: 'delivery-1', job_id: sourceId }]
+  tables.webhook_attempts = [{ _id: 'webhook-attempt-1', delivery_id: 'delivery-1' }]
+  tables.quota_reservations = [{ _id: 'reservation-1', job_id: sourceId }]
+  const response = await app.inject({ method: 'DELETE', url: `/jobs/${sourceId}` })
+  assert.equal(response.statusCode, 204, response.body)
+  assert.equal(tables.jobs.some(job => job._id === sourceId), false)
+  assert.equal(tables.ai_attempts.some(row => row.job_id === sourceId), false)
+  assert.equal(tables.webhook_deliveries.some(row => row.job_id === sourceId), false)
+  assert.equal(tables.webhook_attempts.some(row => row.delivery_id === 'delivery-1'), false)
+  assert.equal(tables.quota_reservations.some(row => row.job_id === sourceId), false)
+})
+
+test('CRM refuses to delete a job while the writer is processing it', async t => {
+  const { app, article } = await fixture(t)
+  article.status = 'writing'
+  const response = await app.inject({ method: 'DELETE', url: `/jobs/${article._id}` })
+  assert.equal(response.statusCode, 409, response.body)
+  assert.equal(response.json().error.code, 'job_in_progress')
+})
+
+test('CRM deletion clears only references to the deleted job', async t => {
+  const { app, tables, sourceId } = await fixture(t)
+  const otherSource = randomUUID()
+  const otherRetry = randomUUID()
+  const sourceChild = { ...structuredClone(tables.jobs[0]), _id: randomUUID(), source_article_id: sourceId, retry_of_job_id: otherRetry }
+  const retryChild = { ...structuredClone(tables.jobs[0]), _id: randomUUID(), source_article_id: otherSource, retry_of_job_id: sourceId }
+  tables.jobs.push(sourceChild, retryChild)
+  const response = await app.inject({ method: 'DELETE', url: `/jobs/${sourceId}` })
+  assert.equal(response.statusCode, 204, response.body)
+  assert.equal(sourceChild.source_article_id, null)
+  assert.equal(sourceChild.retry_of_job_id, otherRetry)
+  assert.equal(retryChild.source_article_id, otherSource)
+  assert.equal(retryChild.retry_of_job_id, null)
+})
+
+test('CRM refuses deletion while a rewrite uses the source or its webhook is sending', async t => {
+  for (const scenario of ['rewrite', 'webhook']) {
+    await t.test(scenario, async t => {
+      const { app, tables, sourceId } = await fixture(t)
+      if (scenario === 'rewrite') tables.jobs.push({ ...structuredClone(tables.jobs[0]), _id: randomUUID(), source_article_id: sourceId, status: 'writing' })
+      else tables.webhook_deliveries = [{ _id: randomUUID(), job_id: sourceId, status: 'sending' }]
+      const before = structuredClone(tables)
+      const response = await app.inject({ method: 'DELETE', url: `/jobs/${sourceId}` })
+      assert.equal(response.statusCode, 409, response.body)
+      assert.equal(response.json().error.code, 'job_in_progress')
+      assert.deepEqual(tables, before)
+    })
+  }
+})
+
+test('CRM webhook history advances past the date and id cursor', async t => {
+  const { app, tables, sourceId, siteId } = await fixture(t)
+  const ids = [randomUUID(), randomUUID(), randomUUID()].sort().reverse()
+  const createdAt = new Date('2026-11-20T03:00:00Z')
+  tables.webhook_deliveries = ids.map(id => ({ _id: id, job_id: sourceId, site_id: siteId, status: 'delivered', event: 'article.ready', created_at: createdAt }))
+  const first = await app.inject({ method: 'GET', url: '/deliveries?limit=1' })
+  assert.equal(first.statusCode, 200, first.body)
+  assert.deepEqual(first.json().data.map((row: Row) => row.id), [ids[0]])
+  const second = await app.inject({ method: 'GET', url: `/deliveries?limit=1&cursor=${first.json().next_cursor}` })
+  assert.equal(second.statusCode, 200, second.body)
+  assert.deepEqual(second.json().data.map((row: Row) => row.id), [ids[1]])
+  const last = await app.inject({ method: 'GET', url: `/deliveries?limit=1&cursor=${second.json().next_cursor}` })
+  assert.equal(last.statusCode, 200, last.body)
+  assert.deepEqual(last.json().data.map((row: Row) => row.id), [ids[2]])
+  assert.equal(last.json().next_cursor, null)
+})
+
+test('CRM job source aliases match their canonical scheduling and widget modes', async t => {
+  const { app, tables, sourceId } = await fixture(t)
+  const previewId = randomUUID()
+  tables.jobs.push({ ...structuredClone(tables.jobs[0]), _id: previewId, mode: 'preview' })
+  for (const source of ['schedule', 'scheduled']) {
+    const response = await app.inject({ method: 'GET', url: `/jobs?source=${source}` })
+    assert.equal(response.statusCode, 200, response.body)
+    assert.deepEqual(response.json().data.map((row: Row) => row.id), [sourceId])
+  }
+  for (const source of ['widget', 'preview']) {
+    const response = await app.inject({ method: 'GET', url: `/jobs?source=${source}` })
+    assert.equal(response.statusCode, 200, response.body)
+    assert.deepEqual(response.json().data.map((row: Row) => row.id), [previewId])
+  }
 })
 
 test('CRM failed job rewrite queues a fresh request and retains the failed job and history', async t => {

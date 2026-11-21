@@ -51,6 +51,8 @@ async function fixture(t: test.TestContext, jobs: Row[] = []) {
     jobs: rows,
     customers: [{ _id: customerId, name: 'Khách kiểm thử', encrypted_secret: 'customer-secret' }],
     sites: [{ _id: siteId, name: 'Website kiểm thử', webhook_secret: 'site-secret' }],
+    webhook_deliveries: [],
+    ai_attempts: [] as Row[],
   }
   const reads: Read[] = []
   const app = Fastify()
@@ -67,7 +69,7 @@ async function fixture(t: test.TestContext, jobs: Row[] = []) {
     result: [{ Content: 'private article content' }], encrypted_key: 'private-ai-key', instructions: 'private instructions',
     ...patch,
   })
-  return { app, rows, job, now, customerId, siteId, reads }
+  return { app, rows, job, now, customerId, siteId, reads, tables }
 }
 
 test('CRM runtime reports valid processing leases and separates queue from future schedules', async t => {
@@ -159,4 +161,52 @@ test('CRM historical dashboard counts ready jobs as written articles', async t =
   assert.equal(response.statusCode, 200, response.body)
   assert.equal(response.json().metrics.articles, 1)
   assert.equal(response.json().metrics.write_errors, 1)
+})
+
+test('CRM historical dashboard reports priced service and customer costs by day', async t => {
+  const { app, rows, job, tables } = await fixture(t)
+  const serviceJob = job({ status: 'ready', completed_at: new Date('2026-11-20T01:00:00.000Z'), key_mode: 'service' })
+  const customerJob = job({ status: 'ready', completed_at: new Date('2026-11-20T02:00:00.000Z'), key_mode: 'own' })
+  rows.push(serviceJob, customerJob)
+  tables.ai_attempts.push(
+    { _id: randomUUID(), job_id: serviceJob._id, requested_at: new Date('2026-11-19T18:10:00.000Z'), cost_usd: '0.125' },
+    { _id: randomUUID(), job_id: customerJob._id, requested_at: new Date('2026-11-19T19:10:00.000Z'), cost_usd: '0.375' },
+    { _id: randomUUID(), job_id: serviceJob._id, requested_at: new Date('2026-11-19T20:10:00.000Z'), cost_usd: null },
+  )
+  const response = await app.inject({ method: 'GET', url: '/dashboard?from=2026-11-20&to=2026-11-20' })
+  assert.equal(response.statusCode, 200, response.body)
+  const body = response.json()
+  assert.equal(body.metrics.service_cost_usd, '0.125000000000')
+  assert.equal(body.metrics.customer_cost_usd, '0.375000000000')
+  assert.equal(body.metrics.unpriced_attempts, 1)
+  assert.deepEqual(body.series, [{
+    date: '2026-11-20', articles: 2, delivered: 0,
+    service_cost_usd: '0.125000000000', customer_cost_usd: '0.375000000000', unpriced_attempts: 1,
+  }])
+})
+
+test('CRM costs follow attempt dates even when creation and completion are outside the report', async t => {
+  const { app, rows, job, tables } = await fixture(t)
+  const crossing = job({ status: 'ready', key_mode: 'service', created_at: new Date('2026-11-18T01:00:00Z'), started_at: new Date('2026-11-18T01:01:00Z'), completed_at: new Date('2026-11-21T01:00:00Z') })
+  rows.push(crossing)
+  tables.ai_attempts.push(
+    { _id: randomUUID(), job_id: crossing._id, requested_at: new Date('2026-11-19T18:00:00Z'), cost_usd: '0.125' },
+    { _id: randomUUID(), job_id: crossing._id, requested_at: new Date('2026-11-20T18:00:00Z'), cost_usd: '0.5' },
+  )
+  const report = await app.inject({ method: 'GET', url: '/dashboard?from=2026-11-20&to=2026-11-20' })
+  assert.equal(report.statusCode, 200, report.body)
+  assert.equal(report.json().metrics.articles, 0)
+  assert.equal(report.json().metrics.service_cost_usd, '0.125000000000')
+  assert.equal(report.json().series[0].service_cost_usd, '0.125000000000')
+  const drilldown = await app.inject({ method: 'GET', url: '/jobs?date_basis=cost&from=2026-11-20&to=2026-11-20' })
+  assert.equal(drilldown.statusCode, 200, drilldown.body)
+  assert.deepEqual(drilldown.json().data.map((row: Row) => [row.id, row.cost_usd]), [[crossing._id, '0.125000000000']])
+})
+
+test('CRM report cursors reject invalid date prefixes instead of passing invalid dates to MongoDB', async t => {
+  const { app } = await fixture(t)
+  const cursor = Buffer.from(JSON.stringify(['2026-11-20garbage', randomUUID()])).toString('base64url')
+  const response = await app.inject({ method: 'GET', url: `/jobs?cursor=${cursor}` })
+  assert.equal(response.statusCode, 400, response.body)
+  assert.equal(response.json().error.code, 'invalid_cursor')
 })

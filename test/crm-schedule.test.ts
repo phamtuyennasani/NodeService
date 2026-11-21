@@ -24,6 +24,7 @@ async function mockSchedule(browser: Browser, bundle: string) {
     if (url.pathname === '/crm-test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
     if (url.pathname === '/api/crm/jobs') return route.fulfill({ json: { data: [], next_cursor: null } });
+    if (url.pathname === '/api/crm/jobs/events') return route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' });
     if (url.pathname === '/api/crm/customers') return route.fulfill({ json: { data: [{ id: 'customer-test', name: 'Khách kiểm thử' }] } });
     if (url.pathname === '/api/crm/websites') return route.fulfill({ json: { data: [{ id: 'website-test', name: 'Website kiểm thử' }] } });
     if (url.pathname === '/api/crm/providers') return route.fulfill({ json: { data: [{ provider: 'openai-compatible', display_name: 'OpenAI Compatible', enabled: true, models: [{ model: 'model-test', display_name: 'Model kiểm thử', enabled: true }] }] } });
@@ -82,7 +83,7 @@ test('CRM schedule accepts numeric word lengths and rejects invalid lengths', as
           await response;
           assert.deepEqual(posts, [{
             method: 'POST', csrf: 'fixture-csrf',
-            body: { customer_id: 'customer-test', website_id: 'website-test', model: 'model-test', keyword: 'dịch vụ thiết kế website', length, tone: 'Chuyên nghiệp', style: 'SEO', scheduled_at: '2030-01-01T05:00:00.000Z', instructions },
+            body: { customer_id: 'customer-test', website_id: 'website-test', model: 'model-test', keyword: 'dịch vụ thiết kế website', length, tone: 'Chuyên nghiệp', style: 'SEO', scheduled_at: '2030-01-01T05:00:00.000Z', instructions, use_research: true },
           }]);
           assert.deepEqual(unexpected, []);
           assert.deepEqual(pageErrors, []);

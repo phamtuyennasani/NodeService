@@ -28,12 +28,15 @@ export function installErrorHandler(app: FastifyInstance) {
         },
       })
     }
-    const problem = error as { code?: string, statusCode?: number }
-    if (problem.code === '23505') {
+    const problem = error as { code?: string | number, codeName?: string, statusCode?: number }
+    if (problem.code === '23505' || problem.code === 11000 || problem.codeName === 'DuplicateKey') {
       return reply.code(409).send({ error: { code: 'duplicate', message: 'Dữ liệu này đã tồn tại.' } })
     }
     if (problem.code === '23503') {
       return reply.code(409).send({ error: { code: 'related_record', message: 'Hồ sơ liên quan không còn khả dụng.' } })
+    }
+    if (problem.code === 121 || problem.codeName === 'DocumentValidationFailure') {
+      return reply.code(400).send({ error: { code: 'invalid_document', message: 'Dữ liệu không hợp lệ.' } })
     }
     if (problem.statusCode && problem.statusCode >= 400 && problem.statusCode < 500) {
       return reply.code(problem.statusCode).send({

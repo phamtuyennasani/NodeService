@@ -49,6 +49,24 @@ async function mockDashboard(browser: Browser, bundle: string, options: { empty?
   const pageErrors: string[] = [];
   let failed = options.failed ?? false;
   const runtime = runtimeData();
+  const reportData = structuredClone(report);
+  let heldRuntime: { entered: () => void; wait: Promise<void> } | undefined;
+  let heldReport: { entered: () => void; wait: Promise<void> } | undefined;
+  await page.addInitScript({ content: `
+    class TestEventSource extends EventTarget {
+      static instances = [];
+      constructor(url) {
+        super();
+        this.url = url;
+        this.withCredentials = false;
+        this.readyState = 1;
+        TestEventSource.instances.push(this);
+      }
+      close() { this.readyState = 2; }
+    }
+    Object.defineProperty(window, 'EventSource', { configurable: true, value: TestEventSource });
+    Object.defineProperty(window, '__crmEventSources', { configurable: true, value: TestEventSource.instances });
+  ` });
   if (options.empty) {
     runtime.summary = { writing: 0, queued: 0, scheduled: 0, active_threads: 0, stale_writing: 0 };
     runtime.providers = [];
@@ -69,13 +87,24 @@ async function mockDashboard(browser: Browser, bundle: string, options: { empty?
     if (url.pathname === '/api/crm/websites') return route.fulfill({ json: { data: [{ id: 'website-test', name: 'Website kiểm thử' }] } });
     if (url.pathname === '/api/crm/dashboard') {
       reportRequests.push(url);
-      return route.fulfill({ json: report });
+      const body = structuredClone(reportData);
+      const held = heldReport;
+      heldReport = undefined;
+      if (held) { held.entered(); await held.wait; }
+      return route.fulfill({ json: body });
     }
     if (url.pathname === '/api/crm/dashboard/runtime') {
       runtimeRequests.push(url);
+      const body = structuredClone(runtime);
+      const held = heldRuntime;
+      heldRuntime = undefined;
+      if (held) { held.entered(); await held.wait; }
       return failed
         ? route.fulfill({ status: 503, json: { error: { code: 'UNAVAILABLE', message: 'Tạm thời không lấy được số liệu.' } } })
-        : route.fulfill({ json: runtime });
+        : route.fulfill({ json: body });
+    }
+    if (url.pathname === '/api/crm/jobs/events') {
+      return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': ready\n\n' });
     }
     unexpected.push(`${request.method()} ${url.pathname}`);
     return route.abort();
@@ -83,7 +112,31 @@ async function mockDashboard(browser: Browser, bundle: string, options: { empty?
   await page.goto(`${origin}/?from=2020-01-01&to=2020-01-31&customer_id=customer-test&website_id=website-test`);
   const panel = page.getByRole('region', { name: 'Hoạt động hiện tại', exact: true });
   await panel.waitFor();
-  return { page, panel, runtimeRequests, reportRequests, unexpected, pageErrors, recover: () => { failed = false; } };
+  return {
+    page, panel, runtimeRequests, reportRequests, unexpected, pageErrors,
+    emitJobEvent: async (type: string, data: { job_id?: string } = {}) => page.evaluate(({ type: eventType, data: eventData }) => {
+      const source = (window as typeof window & { __crmEventSources: EventTarget[] }).__crmEventSources[0];
+      source.dispatchEvent(new MessageEvent(eventType, { data: JSON.stringify(eventData) }));
+    }, { type, data }),
+    recover: () => { failed = false; },
+    runtime, reportData,
+    holdNextRuntime: () => {
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      heldRuntime = { entered, wait };
+      return { started, release };
+    },
+    holdNextReport: () => {
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      heldReport = { entered, wait };
+      return { started, release };
+    },
+  };
 }
 
 test('CRM overview shows current jobs and processing slots independently from historical dates', async t => {
@@ -103,9 +156,80 @@ test('CRM overview shows current jobs and processing slots independently from hi
   });
   const browser = await chromium.launch();
   try {
-    await t.test('active and stalled jobs, scoped counters, refresh, polling and navigation', async () => {
+    await t.test('job completion, deletion and reconnect update report counters and queues with a trailing refresh', async () => {
+      const { page, reportRequests, reportData, emitJobEvent, holdNextReport, pageErrors } = await mockDashboard(browser, outputFiles[0].text);
+      try {
+        const reportResponse = () => page.waitForResponse(response => new URL(response.url()).pathname === '/api/crm/dashboard');
+        await page.locator('.dash-metric').filter({ hasText: 'Bài đã viết' }).getByText('12', { exact: true }).waitFor();
+        const held = holdNextReport();
+        reportData.metrics.articles = 13;
+        reportData.upcoming = [{ ...writingJob(activeId, 'lịch cần xóa'), status: 'scheduled' }];
+        await emitJobEvent('job.updated', { job_id: activeId });
+        await page.clock.fastForward(200);
+        await held.started;
+        reportData.metrics.articles = 14;
+        reportData.upcoming = [];
+        reportData.failures = [{ ...writingJob(staleId, 'yêu cầu lỗi mới'), status: 'failed' }];
+        await emitJobEvent('job.deleted', { job_id: activeId });
+        await page.clock.fastForward(200);
+        assert.equal(reportRequests.length, 2, 'do not abort an active report request for a new job event');
+        const completed = reportResponse();
+        held.release();
+        await completed;
+        await page.locator('.dash-metric').filter({ hasText: 'Bài đã viết' }).getByText('13', { exact: true }).waitFor();
+        await page.getByRole('button', { name: /lịch cần xóa/ }).waitFor();
+        const trailing = reportResponse();
+        await page.clock.fastForward(200);
+        await trailing;
+        await page.locator('.dash-metric').filter({ hasText: 'Bài đã viết' }).getByText('14', { exact: true }).waitFor();
+        await page.getByRole('button', { name: /yêu cầu lỗi mới/ }).waitFor();
+        await page.getByRole('button', { name: /lịch cần xóa/ }).waitFor({ state: 'hidden' });
+        reportData.metrics.articles = 15;
+        const reconnect = reportResponse();
+        await emitJobEvent('ready');
+        await page.clock.fastForward(200);
+        await reconnect;
+        await page.locator('.dash-metric').filter({ hasText: 'Bài đã viết' }).getByText('15', { exact: true }).waitFor();
+        assert.equal(reportRequests.length, 4);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('events received during a runtime request get a trailing refresh and ready repairs missed events', async () => {
+      const { page, panel, runtimeRequests, reportRequests, runtime, emitJobEvent, holdNextRuntime, pageErrors } = await mockDashboard(browser, outputFiles[0].text);
+      try {
+        await panel.getByRole('button', { name: 'Xem chi tiết bài đang nghiên cứu', exact: true }).waitFor();
+        const held = holdNextRuntime();
+        await emitJobEvent('job.updated', { job_id: activeId });
+        await page.clock.fastForward(200);
+        await held.started;
+        runtime.summary.queued = 8;
+        await emitJobEvent('job.created', { job_id: staleId });
+        await page.clock.fastForward(200);
+        assert.equal(runtimeRequests.length, 2, 'serialize refreshes while a request is active');
+        const finished = page.waitForResponse(response => response.url().includes('/api/crm/dashboard/runtime'));
+        held.release();
+        await finished;
+        await panel.getByText('Cập nhật khi job thay đổi', { exact: true }).waitFor();
+        await page.waitForFunction(() => document.querySelector('.dash-runtime')?.getAttribute('aria-busy') === 'false');
+        const trailing = page.waitForResponse(response => response.url().includes('/api/crm/dashboard/runtime'));
+        await page.clock.fastForward(200);
+        await trailing;
+        await panel.locator('.dash-runtime-stat').filter({ hasText: 'Đang chờ' }).getByText('8', { exact: true }).waitFor();
+        assert.equal(runtimeRequests.length, 3);
+        const reconnected = page.waitForResponse(response => response.url().includes('/api/crm/dashboard/runtime'));
+        await emitJobEvent('ready');
+        await page.clock.fastForward(200);
+        await reconnected;
+        assert.equal(runtimeRequests.length, 4);
+        assert.equal(reportRequests.length, 4, 'live events and reconnect reconcile report aggregates too');
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('active and stalled jobs, scoped counters, event refresh and navigation', async () => {
       const fixture = await mockDashboard(browser, outputFiles[0].text);
-      const { page, panel, runtimeRequests, reportRequests, unexpected, pageErrors } = fixture;
+      const { page, panel, runtimeRequests, reportRequests, unexpected, pageErrors, emitJobEvent } = fixture;
       try {
         await panel.getByRole('button', { name: 'Xem chi tiết bài đang nghiên cứu', exact: true }).waitFor();
         assert.equal(await panel.locator('.dash-runtime-stat').filter({ hasText: 'Đang viết' }).locator('strong').innerText(), '2');
@@ -132,11 +256,15 @@ test('CRM overview shows current jobs and processing slots independently from hi
         assert.equal(runtimeRequests.length, 2);
         assert.equal(reportRequests.length, 2);
 
-        const polled = page.waitForResponse(response => response.url().includes('/api/crm/dashboard/runtime'));
         await page.clock.fastForward(5000);
-        await polled;
-        assert.equal(runtimeRequests.length, 3, 'poll the current runtime endpoint every five seconds');
-        assert.equal(reportRequests.length, 2, 'automatic refresh must not reload the historical report');
+        assert.equal(runtimeRequests.length, 2, 'do not poll the current runtime endpoint');
+        assert.equal(reportRequests.length, 2, 'do not poll the historical report');
+        const eventRefresh = page.waitForResponse(response => response.url().includes('/api/crm/dashboard/runtime'));
+        await emitJobEvent('job.updated', { job_id: activeId });
+        await page.clock.fastForward(200);
+        await eventRefresh;
+        assert.equal(runtimeRequests.length, 3, 'refresh the current runtime endpoint after a job event');
+        assert.equal(reportRequests.length, 3, 'refresh report aggregates after a job event');
         await panel.getByRole('button', { name: 'Xem chi tiết bài đang nghiên cứu', exact: true }).click();
         assert.equal(new URL(page.url()).hash, `#jobs?job=${activeId}`);
         assert.deepEqual(unexpected, []);

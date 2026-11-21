@@ -53,6 +53,8 @@ input, select { width: 100%; min-width: 0; color: var(--ink); background: #fff; 
 input::placeholder { color: #9aa8b9; }
 input:hover, select:hover { border-color: #9fb2c9; }
 input:focus, select:focus { border-color: #6e8ef2; box-shadow: 0 0 0 3px #6e8ef21f; outline: 0; }
+.research-option { display: flex; align-items: center; gap: 9px; color: #34455b; font-size: .8rem; font-weight: 600; }
+.research-option input { width: 16px; height: 16px; flex: 0 0 auto; margin: 0; accent-color: var(--accent); }
 .grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .length-field { max-width: 260px; }
 .form-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 5px; padding-top: 17px; border-top: 1px solid var(--line); }

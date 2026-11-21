@@ -5,11 +5,21 @@ import { collection, type Database } from '../db.js'
 import { seal, unseal } from '../security.js'
 import { modelIdSchema } from './catalog.js'
 import { ApiError, notFound } from './errors.js'
+import { assertPublicDestination, validateWebhookUrl } from '../worker/webhook.js'
 
 const providerParams = z.object({ provider: z.enum(providers) })
 const modelParams = providerParams.extend({ model: modelIdSchema })
 const displayName = z.string().trim().min(1).max(160)
-const baseUrl = z.string().trim().url({ protocol: /^https?$/ }).max(500).refine(value => { const url = new URL(value); return !url.username && !url.password && !url.search && !url.hash }, 'Base URL không được chứa thông tin đăng nhập, query hoặc hash.')
+const baseUrl = z.string().trim().url({ protocol: /^https?$/ }).max(500).refine(value => {
+  const url = new URL(value)
+  if (url.username || url.password || url.search || url.hash) return false
+  try {
+    validateWebhookUrl(value, false)
+    return true
+  } catch {
+    return false
+  }
+}, 'Base URL phải là địa chỉ HTTPS công khai, không chứa thông tin đăng nhập, query hoặc hash.')
 const editable = z.object({ display_name: displayName.optional(), enabled: z.boolean().optional(), base_url: baseUrl.optional(), api_key: z.string().trim().min(1).max(2048).optional() }).strict()
 const patchFields = editable.refine(fields => Object.keys(fields).length > 0, 'Cần ít nhất một trường thay đổi.')
 const newModel = z.object({ model: modelIdSchema, display_name: displayName.optional(), enabled: z.boolean().optional() }).strict()
@@ -18,7 +28,18 @@ const pingParams = z.object({ model: modelIdSchema })
 function compatibleEndpoint(baseUrl: string, path: string): URL {
   const endpoint = new URL(baseUrl)
   if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') throw new Error('Unsupported provider protocol')
+  validateWebhookUrl(baseUrl, false)
   endpoint.pathname = endpoint.pathname.replace(/\/+$/, '') + path
+  return endpoint
+}
+
+async function publicEndpoint(baseUrl: string, path: string): Promise<URL> {
+  const endpoint = compatibleEndpoint(baseUrl, path)
+  try {
+    await assertPublicDestination(endpoint)
+  } catch {
+    throw new Error('Private provider destination')
+  }
   return endpoint
 }
 
@@ -51,7 +72,7 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
 
     let endpoint: URL
     try {
-      endpoint = compatibleEndpoint(settings.base_url, '/models')
+      endpoint = await publicEndpoint(settings.base_url, '/models')
     } catch {
       throw new ApiError(422, 'provider_connection_failed', 'Base URL OpenAI Compatible không hợp lệ.')
     }
@@ -92,7 +113,7 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
 
     let endpoint: URL
     try {
-      endpoint = compatibleEndpoint(settings.base_url, '/chat/completions')
+      endpoint = await publicEndpoint(settings.base_url, '/chat/completions')
     } catch {
       throw new ApiError(422, 'provider_connection_failed', 'Base URL OpenAI Compatible không hợp lệ.')
     }

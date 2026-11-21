@@ -74,6 +74,7 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     assert.equal(await page.locator('[name="title"]').inputValue(), 'Bản nháp');
 
     await launch.click();
+    await dialog.getByLabel('Sử dụng dữ liệu tìm kiếm để hỗ trợ viết bài').uncheck();
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     await waitForPreview();
     await accept.click();
@@ -91,8 +92,9 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     assert.equal(posts.length, 2);
     assert.notEqual(keys[0], keys[1]);
     assert.deepEqual(posts[0], {
-      model: 'gpt-4.1', keyword: article.Keywords[0], tone: 'Thân thiện', style: 'Hướng dẫn', length: 800,
+      model: 'gpt-4.1', keyword: article.Keywords[0], tone: 'Thân thiện', style: 'Hướng dẫn', length: 800, use_research: true,
     });
+    assert.equal((posts[1] as { use_research: boolean }).use_research, false);
 
     await page.goto(origin + '/?catalog=1');
     const modelMenu = dialog.getByRole('combobox', { name: 'Model' });

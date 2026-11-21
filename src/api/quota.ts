@@ -1,5 +1,5 @@
 import type { MongoSource } from '../db.js'
-import { collection } from '../db.js'
+import { collection, sessionOf } from '../db.js'
 import { ApiError } from './errors.js'
 
 export interface Package {
@@ -49,7 +49,7 @@ export async function quotaAt(source: MongoSource, customerId: string, when: Dat
   const day = vietnamDate(when)
   const month = day.slice(0, 7)
   const filter = { customer_id: customerId, quota_month: month, status: { $in: ['used', 'reserved'] }, ...(skipJobId ? { job_id: { $ne: skipJobId } } : {}) }
-  const rows = await collection<{ quota_day: string, status: string }>(source, 'quota_reservations').find(filter).toArray()
+  const rows = await collection<{ quota_day: string, status: string }>(source, 'quota_reservations').find(filter, { session: sessionOf(source) }).toArray()
   return {
     quota_day: day,
     quota_month: month,
@@ -81,6 +81,6 @@ export async function reserveQuota(source: MongoSource, customer: Package, jobId
   if (current?.quota_day !== quota.quota_day && quota.day_used + quota.day_reserved >= (customer.daily_limit ?? 0)) full.push('day')
   if (current?.quota_month !== quota.quota_month && quota.month_used + quota.month_reserved >= (customer.monthly_limit ?? 0)) full.push('month')
   if (full.length) throw new ApiError(429, 'quota_exhausted', 'Đã hết lượt viết trong kỳ đã chọn.', { periods: full, date: quota.quota_day, day_resets_at: quota.next_day, month_resets_at: quota.next_month })
-  await collection(source, 'quota_reservations').updateOne({ job_id: jobId }, { $set: { job_id: jobId, customer_id: customer.id, quota_day: quota.quota_day, quota_month: quota.quota_month, status: 'reserved' } }, { upsert: true })
+  await collection(source, 'quota_reservations').updateOne({ job_id: jobId }, { $set: { job_id: jobId, customer_id: customer.id, quota_day: quota.quota_day, quota_month: quota.quota_month, status: 'reserved' } }, { upsert: true, session: sessionOf(source) })
 }
 // @ts-nocheck

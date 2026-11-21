@@ -22,7 +22,7 @@ interface Config {
   modelsEndpoint?: string;
   fields: Partial<Record<Field, Target>>;
   models?: { value: string; label: string }[];
-  defaults?: { model?: string; tone?: string; style?: string; length?: number };
+  defaults?: { model?: string; tone?: string; style?: string; length?: number; use_research?: boolean };
 }
 
 interface Preview {
@@ -162,6 +162,7 @@ function mount(config: Config) {
           <label class="field">Phong cách viết<select name="style" required>${styleOptions.map(value => `<option value="${value}">${value}</option>`).join('')}</select></label>
         </div>
         <label class="field length-field">Độ dài <span>(600–2500 từ)</span><input name="length" type="number" min="600" max="2500" step="1" required></label>
+        <label class="research-option"><input name="use_research" type="checkbox" checked><span>Sử dụng dữ liệu tìm kiếm để hỗ trợ viết bài</span></label>
         <div class="form-actions"><small>Nội dung sẽ được xem trước trước khi điền vào form.</small><button type="submit" class="primary submit"><span>Viết ngay</span><span class="button-arrow" aria-hidden="true">→</span></button></div>
       </form>
       <p class="status" role="status" aria-live="polite" hidden></p>
@@ -197,9 +198,11 @@ function mount(config: Config) {
   model.value = config.defaults?.model ?? model.value;
   const tone = select<HTMLSelectElement>('[name="tone"]');
   const style = select<HTMLSelectElement>('[name="style"]');
+  const useResearch = select<HTMLInputElement>('[name="use_research"]');
   tone.value = toneOptions.includes(config.defaults?.tone ?? '') ? config.defaults!.tone! : 'Thân thiện';
   style.value = styleOptions.includes(config.defaults?.style ?? '') ? config.defaults!.style! : 'Hướng dẫn';
   select<HTMLInputElement>('[name="length"]').value = String(config.defaults?.length ?? 800);
+  useResearch.checked = config.defaults?.use_research ?? true;
 
   let pending: { body: string; id: string; jobId?: string } | undefined;
   let controller: AbortController | undefined;
@@ -338,7 +341,7 @@ function mount(config: Config) {
       setStatus('Hãy nhập đủ thông tin bài viết.', true);
       return;
     }
-    void run(JSON.stringify({ ...body, length: Number(body.length) }));
+    void run(JSON.stringify({ ...body, length: Number(body.length), use_research: useResearch.checked }));
   };
   accept.onclick = async () => {
     if (!result || applying) return;

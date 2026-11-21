@@ -726,6 +726,7 @@ async function generateJson<T>(
       redirect: 'error',
     })
   } catch {
+    if (input.signal.reason instanceof WorkerError) throw input.signal.reason
     throw new WorkerError('AI_CONNECTION', 'Kết nối AI gián đoạn hoặc hết thời gian chờ.', true)
   }
   if (!response.ok) {
@@ -737,6 +738,7 @@ async function generateJson<T>(
   try {
     value = await streamResponse(response, input.provider, input.onChunk)
   } catch {
+    if (input.signal.reason instanceof WorkerError) throw input.signal.reason
     if (input.signal.aborted) {
       throw new WorkerError('AI_CONNECTION', 'Kết nối AI gián đoạn hoặc hết thời gian chờ.', true)
     }
