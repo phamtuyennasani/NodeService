@@ -7,6 +7,7 @@ import { digest, seal } from '../security.js'
 import { listAvailableModels, modelIdSchema, requireAvailableModel } from './catalog.js'
 import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { assertPackage, reserveQuota, usage, type Package } from './quota.js'
+import { normalizeArticleFields } from '../worker/provider.js'
 
 export interface Site { id: string; customer_id: string; token_hash: string | null; webhook_url: string | null; webhook_secret: string | null }
 interface CustomerDoc extends Package { _id: string; name: string; email: string | null; phone: string | null; notes: string | null; updated_at: Date; created_at: Date }
@@ -147,7 +148,7 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
   app.get('/v1/article-jobs/:job_id/result', async (request, reply) => {
     const site = await authenticateSite(db, request); const { job_id } = jobParams.parse(request.params)
     const job = await collection<JobDoc>(db, 'jobs').findOne({ _id: job_id, site_id: site.id }); if (!job) throw notFound()
-    if (job.status === 'ready') return job.result
+    if (job.status === 'ready') return Array.isArray(job.result) ? job.result.map(normalizeArticleFields) : job.result
     if (job.status === 'failed' || job.status === 'canceled') throw new ApiError(409, job.error_code ?? job.status, job.error_message ?? 'Yêu cầu đã dừng.')
     return reply.code(202).send({ status: job.status })
   })

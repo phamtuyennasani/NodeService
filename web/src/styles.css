@@ -137,7 +137,7 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; 
 .pricing-context-body > .ant-form-item { max-width: 220px; }
 .schedule-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .schedule-modal .ant-select, .schedule-modal .ant-picker, .schedule-modal .ant-input, .schedule-modal .ant-input-number, .schedule-modal .ant-input-affix-wrapper { width: 100%; }
-.schedule-modal .ant-modal-body { max-height: min(72vh, 680px); overflow-y: auto; }
+.schedule-modal .ant-modal-body { overflow-y: auto; }
 .ant-form-vertical .ant-form-item-label > label { font-weight: 600; }
 .ant-drawer .ant-drawer-title, .ant-modal .ant-modal-title { font-family: var(--display-font); font-weight: 650; letter-spacing: -.035em; overflow-wrap: anywhere; }
 .ant-drawer .ant-drawer-title { font-size: 21px; }

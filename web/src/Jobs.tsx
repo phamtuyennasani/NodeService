@@ -16,6 +16,41 @@ const toneOptions = ['Thân thiện', 'Chuyên nghiệp', 'Tư vấn', 'Thuyết
 const styleOptions = ['Hướng dẫn', 'SEO', 'Chuyên gia', 'Kể chuyện', 'Danh sách', 'Tin tức'].map(value => ({ value, label: value }));
 const attemptStageLabels = { outline: 'Lập dàn ý', draft: 'Viết nội dung', seo_repair: 'Chỉnh sửa SEO' };
 
+function OutlineReview({ job }: { job: JobDetails }) {
+  const outline = job.outline;
+  if (!outline) {
+    if (job.status === 'writing' && job.writing_stage === 'outline') {
+      return <EmptyState description="Đang lập dàn ý. Nội dung sẽ xuất hiện khi bước này hoàn tất." />;
+    }
+    if (['scheduled', 'queued'].includes(job.status) || (job.status === 'writing' && job.writing_stage === 'research')) {
+      return <EmptyState description="Dàn ý sẽ xuất hiện sau khi hoàn tất bước lập dàn ý." />;
+    }
+    const attempt = job.attempts?.filter(item => item.stage === 'outline').at(-1);
+    if (attempt?.status === 'failed') {
+      return <Alert type="warning" showIcon title={attempt.error_code === 'AI_OUTLINE_TIMEOUT' ? 'Bước lập dàn ý đã hết thời gian chờ' : 'Lượt lập dàn ý không thành công'}
+        description="Không có dàn ý được lưu. Hệ thống tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Xem chi tiết trong tab Lần gọi AI." />;
+    }
+    if (job.status === 'writing') return <EmptyState description="Dàn ý sẽ hiển thị khi yêu cầu viết hoàn tất." />;
+    return <EmptyState description="Yêu cầu này chưa có dàn ý được lưu" />;
+  }
+  return <section className="outline-review" aria-label="Dàn ý bài viết">
+    <h2>{outline.title}</h2>
+    <Descriptions column={1} size="small" items={[
+      { key: 'intent', label: 'Ý định tìm kiếm', children: outline.searchIntent },
+      { key: 'audience', label: 'Đối tượng đọc', children: outline.audience },
+      { key: 'angle', label: 'Góc tiếp cận', children: outline.angle },
+    ]} />
+    {outline.questions.length > 0 && <div className="outline-questions"><h3>Câu hỏi cần giải đáp</h3><ul>{outline.questions.map((question, index) => <li key={index}>{question}</li>)}</ul></div>}
+    <h3>Bố cục bài viết</h3>
+    <ol className="outline-sections">{outline.sections.map((section, index) => <li key={index}>
+      <div className="outline-section-heading"><h4>{section.heading}</h4><span>{section.estimatedWords.toLocaleString('vi-VN')} từ dự kiến</span></div>
+      <p>{section.purpose}</p>
+      {section.subheadings.length > 0 && <><strong className="outline-section-label">Tiêu đề phụ (H3)</strong><ul>{section.subheadings.map((heading, subIndex) => <li key={subIndex}>{heading}</li>)}</ul></>}
+      {section.evidence.length > 0 && <div className="outline-evidence"><strong>Dữ kiện tham khảo</strong><ul>{section.evidence.map((evidence, evidenceIndex) => <li key={evidenceIndex}>Nguồn {evidence.sourceIndex}: {evidence.fact}</li>)}</ul></div>}
+    </li>)}</ol>
+  </section>;
+}
+
 function SeoReview({ job }: { job: JobDetails }) {
   const report = job.seo_report;
   if (!report) return <EmptyState description={['completed', 'ready'].includes(job.status) ? 'Bài này chưa có báo cáo kiểm tra SEO' : 'Báo cáo SEO sẽ xuất hiện khi bài viết hoàn tất'} />;
@@ -211,14 +246,15 @@ function JobDrawer({ id, close, onRewritten, startWithRewrite = false }: { id: s
           { key: 'length', label: 'Độ dài', children: `${job.length} từ` },
           { key: 'instructions', label: 'Hướng dẫn thêm', children: job.instructions ?? '—' },
         ]} /> },
+        { key: 'outline', label: 'Dàn ý', children: <OutlineReview job={job} /> },
         { key: 'result', label: 'Bài viết', children: article ? <article className="article-preview">
           <h2>{article.Title}</h2>
           <div className="article-summary">{article.Desc}</div>
           <div dangerouslySetInnerHTML={{ __html: article.Content }} />
           <Descriptions className="profile-description" column={1} size="small" items={[
             { key: 'slug', label: 'Slug', children: article.Slug },
-            { key: 'seo', label: 'Mô tả SEO', children: article.Desction },
-            { key: 'tags', label: 'Từ khóa', children: article['Từ khóa']?.map((keyword) => <Tag key={keyword}>{keyword}</Tag>) },
+            { key: 'seo', label: 'Mô tả SEO', children: article.Description },
+            { key: 'tags', label: 'Từ khóa', children: article.Keywords?.map((keyword) => <Tag key={keyword}>{keyword}</Tag>) },
           ]} />
         </article> : <EmptyState description="Chưa có bài viết" /> },
         { key: 'seo', label: 'Kiểm tra SEO', children: <SeoReview job={job} /> },

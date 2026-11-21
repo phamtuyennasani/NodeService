@@ -59,7 +59,7 @@ export interface SeoReport {
   }
 }
 
-type SeoArticle = { Title: string; Desction: string; Slug: string; Content: string }
+type SeoArticle = { Title: string; Description: string; Slug: string; Content: string }
 export interface SeoInput {
   keyword: string
   title: string
@@ -73,8 +73,8 @@ export interface SeoInput {
 export function seoPromptGuidance(length: number): string[] {
   const { title, metaDescription, contentWords, slugMax, openingFraction, paragraphMaxWords } = SEO_LIMITS
   return [
-    'Dùng nguyên cụm từ khóa chính tự nhiên trong Title, Desction, Slug, Content và ít nhất một tiêu đề phụ h2, h3 hoặc h4. Dùng biến thể ngữ nghĩa ở các phần khác khi phù hợp, tránh nhồi từ khóa.',
-    'Title dài ' + title.min + '–' + title.max + ' ký tự và khớp ý định tìm kiếm. Đặt từ khóa chính trong một phần ba đầu Title. Desc là tóm tắt hữu ích cho người đọc. Desction dài ' + metaDescription.min + '–' + metaDescription.max + ' ký tự và nêu rõ bài giải đáp gì.',
+    'Dùng nguyên cụm từ khóa chính tự nhiên trong Title, Description, Slug, Content và ít nhất một tiêu đề phụ h2, h3 hoặc h4. Dùng biến thể ngữ nghĩa ở các phần khác khi phù hợp, tránh nhồi từ khóa.',
+    'Title dài ' + title.min + '–' + title.max + ' ký tự và khớp ý định tìm kiếm. Đặt từ khóa chính trong một phần ba đầu Title. Desc là tóm tắt hữu ích cho người đọc. Description dài ' + metaDescription.min + '–' + metaDescription.max + ' ký tự và nêu rõ bài giải đáp gì.',
     'Content dài ' + contentWords.min + '–' + contentWords.max + ' từ, nên gần ' + length + ' từ nếu chủ đề phù hợp. Đặt từ khóa chính trong ' + (openingFraction * 100) + '% số từ đầu bài. Viết ít nhất hai đoạn p có nội dung, mỗi đoạn tối đa ' + paragraphMaxWords + ' từ.',
     'Slug chứa từ khóa chính ở dạng không dấu, viết thường, ngăn cách từ bằng dấu gạch ngang, dài tối đa ' + slugMax + ' ký tự.',
     'Tham khảo mật độ từ khóa chính khoảng 1% theo số lần xuất hiện trên tổng số từ. Chỉ thêm từ khóa ở vị trí có ích, dùng biến thể liên quan khi phù hợp; không lặp câu hoặc làm giảm độ tự nhiên để đạt tỷ lệ.',
@@ -255,7 +255,7 @@ export function evaluateSeo(article: SeoArticle, options: Pick<SeoInput, 'keywor
   return evaluateSeoFields({
     ...options,
     title: article.Title,
-    description: article.Desction,
+    description: article.Description,
     slug: article.Slug,
     contentHtml: article.Content,
   })

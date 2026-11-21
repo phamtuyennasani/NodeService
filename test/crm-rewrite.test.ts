@@ -79,7 +79,7 @@ async function fixture(t: test.TestContext) {
     instructions: 'Giữ ví dụ thực tế.', key_mode: 'service', encrypted_key: null,
     status: 'ready', scheduled_at: now, available_at: now, attempt_count: 1,
     lease_token: null, lease_expires_at: null, started_at: now, completed_at: now,
-    result: [{ Title: 'Bài viết nguồn', Content: '<p>Nội dung nguồn.</p>', Slug: 'bai-viet-nguon', Desc: 'Mô tả nguồn.', Desction: 'Mô tả SEO nguồn.', 'Từ khóa': ['thiết kế website'] }],
+    result: [{ Title: 'Bài viết nguồn', Content: '<p>Nội dung nguồn.</p>', Slug: 'bai-viet-nguon', Desc: 'Mô tả nguồn.', Description: 'Mô tả SEO nguồn.', Keywords: ['thiết kế website'] }],
     error_code: null, error_message: null, created_at: now, updated_at: now,
   }
   const tables: Tables = {
@@ -195,8 +195,8 @@ test('CRM failed rewrite retains a usable earlier source and falls back for unus
     { name: 'empty source', patch: { result: [] }, retain: false },
     { name: 'null source', patch: { result: [null] }, retain: false },
     { name: 'malformed source', patch: { result: [{ Title: 'Nguồn', Content: '<p>Nội dung</p>' }] }, retain: false },
-    { name: 'unsafe empty content', patch: { result: [{ Title: 'Nguồn', Content: '<script>bad()</script>', Slug: 'nguon', Desc: 'Mô tả', Desction: 'Mô tả', 'Từ khóa': ['nguồn'] }] }, retain: false },
-    { name: 'invalid slug', patch: { result: [{ Title: 'Nguồn', Content: '<p>Nội dung</p>', Slug: '!!!', Desc: 'Mô tả', Desction: 'Mô tả', 'Từ khóa': ['nguồn'] }] }, retain: false },
+    { name: 'unsafe empty content', patch: { result: [{ Title: 'Nguồn', Content: '<script>bad()</script>', Slug: 'nguon', Desc: 'Mô tả', Description: 'Mô tả', Keywords: ['nguồn'] }] }, retain: false },
+    { name: 'invalid slug', patch: { result: [{ Title: 'Nguồn', Content: '<p>Nội dung</p>', Slug: '!!!', Desc: 'Mô tả', Description: 'Mô tả', Keywords: ['nguồn'] }] }, retain: false },
   ]) {
     await t.test(scenario.name, async t => {
       const { app, tables, sourceId } = await fixture(t)
@@ -268,11 +268,16 @@ test('CRM job reads expose rewrite availability for completed articles with cont
   }
 })
 
-test('CRM job details expose final SEO warnings and attempt stages without leaking saved intermediate drafts', async t => {
+test('CRM job details expose the saved outline with final content and SEO results', async t => {
   const { app, tables, sourceId } = await fixture(t)
   const article = tables.jobs[0].result[0]
   const report = evaluateSeo(article, { keyword: tables.jobs[0].keyword })
-  Object.assign(tables.jobs[0], { status: 'writing', writing_stage: 'seo_repair', seo_report: report, seo_repair_status: 'kept_draft', outline: { private: 'internal plan' } })
+  const outline = {
+    title: 'Thiết kế website phù hợp với doanh nghiệp', searchIntent: 'Tìm hiểu cách chọn website',
+    audience: 'Chủ doanh nghiệp', angle: 'Bắt đầu từ nhu cầu sử dụng', questions: ['Website cần những chức năng nào?'],
+    sections: [{ heading: 'Xác định nhu cầu', purpose: 'Chọn chức năng phục vụ khách hàng', estimatedWords: 400, subheadings: ['Chức năng cần thiết'], evidence: [{ sourceIndex: 1, fact: 'Ưu tiên nhu cầu đã xác minh.' }] }],
+  }
+  Object.assign(tables.jobs[0], { status: 'writing', writing_stage: 'seo_repair', seo_report: report, seo_repair_status: 'kept_draft', outline })
   tables.ai_attempts = [{ _id: randomUUID(), job_id: sourceId, provider: 'openai', model: 'gpt-test', stage: 'seo_repair', status: 'running', requested_at: new Date() }]
   const pending = await app.inject({ method: 'GET', url: `/jobs/${sourceId}` })
   assert.equal(pending.statusCode, 200, pending.body)
@@ -282,7 +287,10 @@ test('CRM job details expose final SEO warnings and attempt stages without leaki
   assert.equal(pending.json().seo_report, null)
   assert.equal(pending.json().seo_repair_status, null)
   assert.equal(pending.json().attempts[0].stage, 'seo_repair')
-  assert.equal(pending.json().outline, undefined)
+  assert.equal(pending.json().outline, null)
+  assert.equal(pending.json().encrypted_key, undefined)
+  const list = await app.inject({ method: 'GET', url: '/jobs' })
+  assert.equal(list.json().data[0].outline, undefined)
 
   tables.jobs[0].status = 'ready'
   const ready = await app.inject({ method: 'GET', url: `/jobs/${sourceId}` })
@@ -290,10 +298,22 @@ test('CRM job details expose final SEO warnings and attempt stages without leaki
   assert.equal(ready.json().status, 'completed')
   assert.equal(ready.json().writing_stage, null)
   assert.deepEqual(ready.json().result, [article])
+  assert.deepEqual(ready.json().outline, outline)
   assert.deepEqual(ready.json().seo_report, report)
   assert.equal(ready.json().seo_repair_status, 'kept_draft')
   assert.equal(ready.json().error_code, null)
   assert.equal(ready.json().error_message, null)
+})
+
+test('CRM job details return a null outline when planning failed or the job predates saved outlines', async t => {
+  const { app, tables, sourceId } = await fixture(t)
+  for (const outline of [undefined, null]) {
+    tables.jobs[0].outline = outline
+    const response = await app.inject({ method: 'GET', url: `/jobs/${sourceId}` })
+    assert.equal(response.statusCode, 200, response.body)
+    assert.equal(response.json().outline, null)
+    assert.deepEqual(response.json().result, tables.jobs[0].result)
+  }
 })
 
 test('CRM rewrite honors idempotency and rejects reusing a key for changed instructions', async t => {

@@ -65,8 +65,8 @@ test('ready delivery preserves the six-field Laravel payload and excludes intern
     Content: '<p style="color:#333">Chọn cà phê phù hợp với khẩu vị.</p>',
     Slug: 'ca-phe-tai-nha',
     Desc: 'Hướng dẫn pha cà phê tại nhà.',
-    Desction: 'Bí quyết chọn cà phê và phương pháp pha tại nhà.',
-    'Từ khóa': ['cà phê', 'pha tại nhà'],
+    Description: 'Bí quyết chọn cà phê và phương pháp pha tại nhà.',
+    Keywords: ['cà phê', 'pha tại nhà'],
   }
   const tables: Record<string, Row[]> = {
     jobs: [{
@@ -106,7 +106,7 @@ test('ready delivery preserves the six-field Laravel payload and excludes intern
       assert.equal(input.clientRequestId, 'laravel-schedule-123')
       assert.equal(input.event, 'article.ready')
       assert.deepEqual(JSON.parse(input.body), [article])
-      assert.deepEqual(Object.keys(JSON.parse(input.body)[0]), ['Title', 'Content', 'Slug', 'Desc', 'Desction', 'Từ khóa'])
+      assert.deepEqual(Object.keys(JSON.parse(input.body)[0]), ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'])
       assert.doesNotMatch(input.body, /seo_report|outline|research|writing_stage/)
 
       const headers = webhookHeaders({ ...input, timestamp: '2000000000' })

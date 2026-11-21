@@ -115,8 +115,8 @@ Ví dụ dưới đây đặt nút vào `#ai-tools` trên form hiện có `#arti
       Content: '[name="body"]',
       Slug: '[name="slug"]',
       Desc: '[name="summary"]',
-      Desction: '[name="seo_description"]',
-      'Từ khóa': '[name="keywords"]'
+      Description: '[name="seo_description"]',
+      Keywords: '[name="keywords"]'
     }
   };
 
@@ -128,7 +128,7 @@ Ví dụ dưới đây đặt nút vào `#ai-tools` trên form hiện có `#arti
 
 1. Script gắn nút **Viết bài AI** kiểu `button` vào đúng DIV. Bấm nút mở modal có các trường model, từ khóa, giọng văn, phong cách viết, độ dài và nút **Viết ngay**. Ví dụ, biên tập viên có thể yêu cầu độ dài 800 chữ, giọng văn thân thiện và thêm mục câu hỏi thường gặp.
 2. Widget gửi yêu cầu qua Laravel. Node.js xếp việc để viết ngay bằng cấu hình AI của website. Modal theo dõi cùng một `job_id`, hiển thị tiến trình, lỗi hoặc bản xem trước gồm các trường sắp điền.
-3. Khi bấm **Chấp nhận**, widget lấy bài ở phần tử đầu tiên của mảng kết quả. Với input từ khóa dạng văn bản, widget nối các mục trong `Từ khóa` bằng dấu phẩy. Widget tra các selector bên trong form đã cấu hình và kiểm tra tất cả đích trước khi áp dụng. Nếu selector thiếu, trùng hoặc trường kết quả tương ứng bị thiếu, modal chỉ rõ trường cần sửa để tránh điền dở dang. Với input và textarea, widget gán `value` rồi phát sự kiện `input` và `change`. Với trình soạn thảo như CKEditor, cấu hình trường có thể cung cấp hàm `setValue(element, value)` để gọi API của editor. Nội dung HTML dùng để xem trước và điền vào editor phải được lọc theo danh sách thẻ và thuộc tính cho phép.
+3. Khi bấm **Chấp nhận**, widget lấy bài ở phần tử đầu tiên của mảng kết quả. Với input từ khóa dạng văn bản, widget nối các mục trong `Keywords` bằng dấu phẩy. Nhãn hiển thị vẫn là **Từ khóa**. Widget tra các selector bên trong form đã cấu hình và kiểm tra tất cả đích trước khi áp dụng. Nếu selector thiếu, trùng hoặc trường kết quả tương ứng bị thiếu, modal chỉ rõ trường cần sửa để tránh điền dở dang. Với input và textarea, widget gán `value` rồi phát sự kiện `input` và `change`. Với trình soạn thảo như CKEditor, cấu hình trường có thể cung cấp hàm `setValue(element, value)` để gọi API của editor. Nội dung HTML dùng để xem trước và điền vào editor phải được lọc theo danh sách thẻ và thuộc tính cho phép.
 4. Bấm **Đóng** trước khi chấp nhận sẽ bỏ qua thao tác điền. Sau khi chấp nhận, biên tập viên có thể sửa tiếp và dùng nút **Lưu** hiện có của Laravel.
 
 ### API dùng cho widget
@@ -169,7 +169,7 @@ Backend Laravel xác thực website qua header `Authorization: Bearer <site_toke
 
 ### Mảng JSON khi viết xong
 
-Một yêu cầu tạo một bài, nên mảng kết quả có một phần tử. Năm trường đầu là chuỗi. `Từ khóa` là mảng chuỗi. Ví dụ rút gọn nội dung:
+Một yêu cầu tạo một bài, nên mảng kết quả có một phần tử. Năm trường đầu là chuỗi. `Keywords` là mảng chuỗi và được hiển thị với nhãn **Từ khóa**. Ví dụ rút gọn nội dung:
 
 ```json
 [
@@ -178,13 +178,13 @@ Một yêu cầu tạo một bài, nên mảng kết quả có một phần tử
     "Content": "<p>Trước tiên, hãy xác định nguồn nước gia đình đang dùng.</p>",
     "Slug": "cach-chon-may-loc-nuoc-cho-gia-dinh",
     "Desc": "Các bước chọn máy lọc nước phù hợp với gia đình.",
-    "Desction": "Tìm hiểu cách chọn máy lọc nước theo nguồn nước, nhu cầu sử dụng và chi phí thay lõi.",
-    "Từ khóa": ["cách chọn máy lọc nước", "máy lọc nước gia đình"]
+    "Description": "Tìm hiểu cách chọn máy lọc nước theo nguồn nước, nhu cầu sử dụng và chi phí thay lõi.",
+    "Keywords": ["cách chọn máy lọc nước", "máy lọc nước gia đình"]
   }
 ]
 ```
 
-Quy ước đề xuất cho nội dung là `Content` chứa HTML, `Desc` là mô tả ngắn hiển thị trên bài và `Desction` là mô tả SEO. Laravel và widget đọc đúng chính tả, chữ hoa và dấu của cả sáu khóa. Laravel xử lý trùng slug bằng logic lưu bài hiện có.
+Quy ước đề xuất cho nội dung là `Content` chứa HTML, `Desc` là mô tả ngắn hiển thị trên bài và `Description` là mô tả SEO. Laravel và widget đọc đúng chính tả, chữ hoa và dấu của cả sáu khóa. Laravel xử lý trùng slug bằng logic lưu bài hiện có.
 
 | Hướng | Endpoint | Dữ liệu chính |
 | --- | --- | --- |

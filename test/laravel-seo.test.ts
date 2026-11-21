@@ -45,7 +45,7 @@ test('browser SEO script preserves the Laravel API and uses the same report as C
   }
   const { keyword, stats, summary, ...report } = JSON.parse(JSON.stringify(seo.evaluate(input)))
   const workerReport = evaluateSeo(
-    { Title: input.title, Desction: input.description, Slug: input.slug, Content: input.contentHtml },
+    { Title: input.title, Description: input.description, Slug: input.slug, Content: input.contentHtml },
     { keyword: input.keyword, siteUrl: input.siteHost },
   )
   assert.equal(keyword, input.keyword)

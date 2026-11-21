@@ -39,7 +39,7 @@ Khi thử với Laravel trên máy cục bộ, đặt `ALLOW_LOCAL_WEBHOOKS=true
 
 Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu, lập dàn ý, viết bản nháp và kiểm tra SEO. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Nếu bài có tiêu chí cần chỉnh, hệ thống thử chỉnh SEO tối đa một lần; chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
 
-Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Overview** hiển thị job và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream; luồng đang trả dữ liệu được tiếp tục. Hai bước tùy chọn có giới hạn tổng thời gian riêng là `AI_OUTLINE_TIMEOUT_MS` (mặc định 45 giây) và `AI_SEO_REPAIR_TIMEOUT_MS` (mặc định 90 giây).
+Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Overview** hiển thị job và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream; luồng đang trả dữ liệu được tiếp tục. Hai bước tùy chọn có giới hạn tổng thời gian riêng là `AI_OUTLINE_TIMEOUT_MS` (mặc định 300 giây) và `AI_SEO_REPAIR_TIMEOUT_MS` (mặc định 90 giây).
 
 ## API dành cho Laravel
 
@@ -85,8 +85,8 @@ Với key riêng, Laravel thêm `keyAI` lấy từ cài đặt đã mã hóa c�
     "Content": "<p>Xác định nguồn nước và nhu cầu sử dụng.</p>",
     "Slug": "cach-chon-may-loc-nuoc",
     "Desc": "Các bước để chọn máy lọc nước.",
-    "Desction": "Hướng dẫn chọn máy lọc nước theo nhu cầu.",
-    "Từ khóa": ["máy lọc nước", "chọn máy lọc nước"]
+    "Description": "Hướng dẫn chọn máy lọc nước theo nhu cầu.",
+    "Keywords": ["máy lọc nước", "chọn máy lọc nước"]
   }
 ]
 ```
@@ -132,8 +132,8 @@ Chèn HTML sau các trường của form. Thay tên miền, selector và model c
       Content: '[name="body"]',
       Slug: '[name="slug"]',
       Desc: '[name="summary"]',
-      Desction: '[name="seo_description"]',
-      'Từ khóa': '[name="keywords"]'
+      Description: '[name="seo_description"]',
+      Keywords: '[name="keywords"]'
     }
   };
   AIWriter.mount(config);

@@ -1,4 +1,5 @@
 import type { SeoReport } from '../../src/worker/seo.js';
+import type { ArticleOutline } from '../../src/worker/provider.js';
 
 export type WritingStage = 'research' | 'outline' | 'draft' | 'seo_check' | 'seo_repair';
 export type SeoRepairStatus = 'not_needed' | 'applied' | 'kept_draft' | 'skipped';
@@ -113,8 +114,8 @@ export interface Article {
   Content: string;
   Slug: string;
   Desc: string;
-  Desction: string;
-  'Từ khóa': string[];
+  Description: string;
+  Keywords: string[];
 }
 
 export interface Attempt {
@@ -156,6 +157,7 @@ export interface Delivery {
 
 export type JobDetails = Job & {
   rewrite_key_mode?: 'own' | 'service';
+  outline?: ArticleOutline | null;
   result?: Article[] | null;
   seo_report?: SeoReport | null;
   seo_repair_status?: SeoRepairStatus | null;

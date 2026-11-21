@@ -23,7 +23,7 @@ function failedJob(): JobDetails {
   };
 }
 
-async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' | 'service' = 'service') {
+async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' | 'service' = 'service', options: { outline?: 'timeout' | 'missing' } = {}) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
   const failed = { ...failedJob(), rewrite_key_mode: rewriteKeyMode };
@@ -31,11 +31,18 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
   const completed: JobDetails = {
     ...failedJob(), id: completedId, job_id: completedId, keyword: 'bài đã hoàn tất', status: 'completed',
     error_code: null, error_message: null,
-    result: [{ Title: 'Bài viết hoàn tất', Content: '<p>Nội dung đã viết.</p>', Slug: 'bai-viet-hoan-tat', Desc: 'Tóm tắt', Desction: 'Mô tả SEO', 'Từ khóa': ['bài đã hoàn tất'] }],
+    outline: {
+      title: 'Thiết kế website phù hợp với doanh nghiệp', searchIntent: 'Tìm hiểu cách chọn website',
+      audience: 'Chủ doanh nghiệp', angle: 'Bắt đầu từ nhu cầu sử dụng', questions: ['Website cần những chức năng nào?'],
+      sections: [{ heading: 'Xác định nhu cầu', purpose: 'Chọn chức năng phục vụ khách hàng', estimatedWords: 400, subheadings: ['Chức năng cần thiết'], evidence: [{ sourceIndex: 1, fact: 'Ưu tiên nhu cầu đã xác minh.' }] }],
+    },
+    result: [{ Title: 'Bài viết hoàn tất', Content: '<p>Nội dung đã viết.</p>', Slug: 'bai-viet-hoan-tat', Desc: 'Tóm tắt', Description: 'Mô tả SEO', Keywords: ['bài đã hoàn tất'] }],
   };
   completed.seo_report = evaluateSeo(completed.result![0], { keyword: completed.keyword });
   completed.seo_repair_status = 'kept_draft';
   completed.attempts = [{ id: 'attempt-outline', provider: 'openai-compatible', model: completed.model, stage: 'outline', status: 'succeeded', started_at: completed.created_at }];
+  if (options.outline) completed.outline = null;
+  if (options.outline === 'timeout') completed.attempts[0] = { ...completed.attempts[0], status: 'failed', error_code: 'AI_OUTLINE_TIMEOUT', error_message: 'Bước lập dàn ý đã hết thời gian chờ.' };
   const rewritten: JobDetails = {
     ...failed, id: rewrittenId, job_id: rewrittenId, mode: 'rewrite', status: 'queued', can_rewrite: false,
     retry_of_job_id: failedId, error_code: null, error_message: null, completed_at: null,
@@ -178,6 +185,59 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
         assert.equal(await drawer.locator('.ant-alert-error').count(), 0);
         await drawer.getByRole('tab', { name: 'Lần gọi AI (1)', exact: true }).click();
         await drawer.getByText('Lập dàn ý', { exact: true }).waitFor();
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('saved outline appears before the article tab and renders its plan', async () => {
+      const { page, row, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        assert.deepEqual((await drawer.getByRole('tab').allTextContents()).slice(0, 3), ['Yêu cầu', 'Dàn ý', 'Bài viết']);
+        await drawer.getByRole('tab', { name: 'Dàn ý', exact: true }).click();
+        const outline = drawer.getByRole('region', { name: 'Dàn ý bài viết' });
+        await outline.getByRole('heading', { name: 'Thiết kế website phù hợp với doanh nghiệp' }).waitFor();
+        for (const text of ['Tìm hiểu cách chọn website', 'Chủ doanh nghiệp', 'Bắt đầu từ nhu cầu sử dụng', 'Website cần những chức năng nào?', 'Chọn chức năng phục vụ khách hàng', '400 từ dự kiến', 'Chức năng cần thiết', 'Nguồn 1: Ưu tiên nhu cầu đã xác minh.']) {
+          await outline.getByText(text, { exact: true }).waitFor();
+        }
+        await outline.getByRole('heading', { name: 'Xác định nhu cầu' }).waitFor();
+        await drawer.getByRole('tab', { name: 'Bài viết', exact: true }).click();
+        await drawer.getByRole('heading', { name: 'Bài viết hoàn tất' }).waitFor();
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('outline tab explains a timeout while keeping the completed article available', async () => {
+      const { page, row, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text, 'service', { outline: 'timeout' });
+      try {
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        await drawer.getByRole('tab', { name: 'Dàn ý', exact: true }).click();
+        await drawer.getByText('Bước lập dàn ý đã hết thời gian chờ', { exact: true }).waitFor();
+        await drawer.getByText(/Không có dàn ý được lưu. Hệ thống tiếp tục viết/).waitFor();
+        assert.equal(await drawer.locator('.ant-alert-warning').count(), 1);
+        await drawer.getByRole('tab', { name: 'Bài viết', exact: true }).click();
+        await drawer.getByRole('heading', { name: 'Bài viết hoàn tất' }).waitFor();
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('outline tab distinguishes planning in progress from an older job without an outline', async () => {
+      const { page, row, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text, 'service', { outline: 'missing' });
+      try {
+        await row('bài đang viết').getByRole('button', { name: /bài đang viết/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        await drawer.getByRole('tab', { name: 'Dàn ý', exact: true }).click();
+        await drawer.getByText('Đang lập dàn ý. Nội dung sẽ xuất hiện khi bước này hoàn tất.', { exact: true }).waitFor();
+        await drawer.getByRole('button', { name: 'Close', exact: true }).click();
+        await drawer.waitFor({ state: 'hidden' });
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        await drawer.getByRole('tab', { name: 'Dàn ý', exact: true }).click();
+        await drawer.getByText('Yêu cầu này chưa có dàn ý được lưu', { exact: true }).waitFor();
         assert.deepEqual(unexpected, []);
         assert.deepEqual(pageErrors, []);
       } finally { await page.close(); }

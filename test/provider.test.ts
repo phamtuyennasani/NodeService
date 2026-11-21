@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { generateArticle, generateOutline, repairArticle, type GenerateInput, type RepairInput } from '../src/worker/provider.js'
+import { cleanArticle, generateArticle, generateOutline, repairArticle, type GenerateInput, type RepairInput } from '../src/worker/provider.js'
 import { researchTopic } from '../src/worker/research.js'
 
 function assertOriginalWritingPolicy(value: unknown) {
@@ -16,14 +16,25 @@ function assertOriginalWritingPolicy(value: unknown) {
   assert.doesNotMatch(prompt, /hãy thêm cuối Content một mục h2/)
 }
 
+test('cleanArticle normalizes legacy article field names for reading and rewriting', () => {
+  const article = cleanArticle({
+    Title: 'Bài cũ', Content: '<p>Nội dung cũ.</p>', Slug: 'bai-cu', Desc: 'Tóm tắt cũ.',
+    Desction: 'Mô tả SEO cũ.', 'Từ khóa': ['bài cũ'],
+  })
+  assert.deepEqual(article, {
+    Title: 'Bài cũ', Content: '<p>Nội dung cũ.</p>', Slug: 'bai-cu', Desc: 'Tóm tắt cũ.',
+    Description: 'Mô tả SEO cũ.', Keywords: ['bài cũ'],
+  })
+})
+
 test('OpenAI Compatible generation assembles JSON from SSE chunks', async () => {
   const article = {
     Title: 'Bài viết thử nghiệm',
     Content: '<p>Nội dung bài viết.</p>',
     Slug: 'bai-viet-thu-nghiem',
     Desc: 'Mô tả ngắn.',
-    Desction: 'Mô tả SEO.',
-    'Từ khóa': ['thử nghiệm'],
+    Description: 'Mô tả SEO.',
+    Keywords: ['thử nghiệm'],
   }
   const encoded = JSON.stringify(article)
   const split = Math.floor(encoded.length / 2)
@@ -82,8 +93,8 @@ const streamArticle = JSON.stringify({
   Content: '<p>Nội dung stream.</p>',
   Slug: 'bai-viet-stream',
   Desc: 'Mô tả ngắn.',
-  Desction: 'Mô tả SEO.',
-  'Từ khóa': ['stream'],
+  Description: 'Mô tả SEO.',
+  Keywords: ['stream'],
 })
 
 test('OpenAI Responses generation assembles SSE chunks and returns at response.completed', { timeout: 2_000 }, async () => {
@@ -239,6 +250,34 @@ test('provider streams a structured outline, drops unknown evidence references, 
   assert.equal(JSON.parse(String(requests[0]?.input)).yêu_cầu_bổ_sung, articleInput.instructions)
   assert.deepEqual(JSON.parse(String(requests[1]?.input)).dàn_ý_nội_bộ, result.outline)
   assert.match(String(requests[1]?.instructions), /155\s*[–-]\s*160/)
+})
+
+test('outline parsing accepts optional empty arrays, common aliases, numeric strings and extra provider fields', async () => {
+  const generationInput = input('openai')
+  const result = await generateOutline(generationInput, async () => new Response([
+    { type: 'response.output_text.delta', delta: JSON.stringify({
+      title: 'Dàn ý tối giản', search_intent: 'Tìm hướng dẫn', targetAudience: 'Người mới', approach: 'Giải thích theo bước',
+      key_questions: [], sections: [{ title: 'Bắt đầu', description: 'Nêu bước đầu tiên', estimated_words: '300', h3: [] }], provider_note: 'ignore',
+    }) },
+    { type: 'response.completed', response: { id: 'outline-aliases', status: 'completed' } },
+  ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')))
+  assert.equal(result.outline.searchIntent, 'Tìm hướng dẫn')
+  assert.deepEqual(result.outline.questions, [])
+  assert.deepEqual(result.outline.sections[0], {
+    heading: 'Bắt đầu', purpose: 'Nêu bước đầu tiên', estimatedWords: 300, subheadings: [], evidence: [],
+  })
+})
+
+test('outline parsing falls back to a valid plan when the provider wraps or damages its JSON', async () => {
+  const generationInput = input('openai-compatible')
+  const result = await generateOutline(generationInput, async () => new Response(
+    `data: ${JSON.stringify({ choices: [{ delta: { content: 'Đây là dàn ý: {"title":' } }] })}\n\n` +
+    `data: ${JSON.stringify({ choices: [{ delta: { content: ' "Dàn ý"}' } }] })}\n\n` +
+    'data: [DONE]\n\n',
+  ))
+  assert.match(result.outline.title, /Dàn ý|Hướng dẫn/)
+  assert.ok(result.outline.sections.length >= 1)
+  assert.ok(result.outline.sections.every(section => section.estimatedWords > 0))
 })
 
 function compatibleStream(value: unknown) {

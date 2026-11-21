@@ -5,7 +5,7 @@ import { unseal } from '../security.js'
 import { backoff, withLease } from './lease.js'
 import { priceUsage } from './pricing.js'
 import {
-  cleanArticle, estimateGenerationTokens, generateArticle, generateOutline, repairArticle, WorkerError,
+  cleanArticle, estimateGenerationTokens, generateArticle, generateOutline, normalizeArticleFields, repairArticle, WorkerError,
   type Article, type GenerateInput, type GenerateResult, type GenerationMetadata,
   type OutlineResult, type RepairInput,
 } from './provider.js'
@@ -132,7 +132,7 @@ function repairable(report: SeoReport) {
 
 async function recoverExpired(db: Database, job: Job) {
   let article: Article | null = null
-  try { article = cleanArticle(job.result?.[0]) } catch { /* No durable, valid draft yet. */ }
+  try { article = cleanArticle(normalizeArticleFields(job.result?.[0])) } catch { /* No durable, valid draft yet. */ }
   if (article) {
     const site = await collection(db, 'sites').findOne({ _id: job.site_id })
     const report = evaluateSeo(article, { keyword: job.keyword, siteUrl: site?.domain })
@@ -221,7 +221,9 @@ async function callAi<T extends GenerationMetadata>(
   try {
     const timeout = new WorkerError(stage === 'outline' ? 'AI_OUTLINE_TIMEOUT' : 'AI_SEO_REPAIR_TIMEOUT',
       stage === 'outline' ? 'Bước lập dàn ý đã hết thời gian chờ.' : 'Bước chỉnh SEO đã hết thời gian chờ; giữ bản viết ban đầu.', false)
-    result = await withLease(db, config, 'jobs', claim.job._id, claim.lease, config.aiTimeoutMs,
+    const idleTimeout = config.aiTimeoutMs
+    const operationTimeout = duration === null ? idleTimeout : Math.max(idleTimeout, duration)
+    result = await withLease(db, config, 'jobs', claim.job._id, claim.lease, operationTimeout,
       (signal, touch) => bounded(signal, duration, timeout, boundedSignal => call(boundedSignal, touch)))
   } catch (failure) {
     const error = failureOf(failure)
@@ -252,7 +254,7 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
     let source: Article | null = null
     if (job.source_article_id) {
       const original = await collection<Job>(db, 'jobs').findOne({ _id: job.source_article_id, site_id: job.site_id, status: 'ready' })
-      try { source = cleanArticle(original?.result?.[0]) }
+      try { source = cleanArticle(normalizeArticleFields(original?.result?.[0])) }
       catch { throw new WorkerError('AI_SOURCE_INVALID', 'Không đọc được bài viết nguồn.', false) }
     }
     const researchConfig = config.research ?? { enabled: false, timeoutMs: 8_000, maxResults: 5, provider: 'duckduckgo' }
@@ -276,7 +278,7 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
 
     try {
       const planned = await callAi(db, config, claim, 'outline', estimateGenerationTokens(input, 'outline'),
-        config.outlineTimeoutMs ?? Math.min(45_000, config.aiTimeoutMs),
+        config.outlineTimeoutMs ?? Math.min(300_000, config.aiTimeoutMs),
         (signal, onChunk) => (deps.outline ?? generateOutline)({ ...input, signal, onChunk }))
       input.outline = planned.outline
       if (estimateGenerationTokens(input, 'article') > config.providerLimits[job.provider].tokensPerMinute) input.outline = null

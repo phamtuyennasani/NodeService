@@ -21,11 +21,22 @@ const articleSchema = z.object({
   Content: z.string().trim().min(1).max(180_000),
   Slug: z.string().trim().min(1).max(350),
   Desc: z.string().trim().min(1).max(1_000),
-  Desction: z.string().trim().min(1).max(1_000),
-  'Từ khóa': z.array(z.string().trim().min(1).max(300)).min(1).max(50),
+  Description: z.string().trim().min(1).max(1_000),
+  Keywords: z.array(z.string().trim().min(1).max(300)).min(1).max(50),
 }).strict()
 
 export type Article = z.infer<typeof articleSchema>
+
+/** Normalize article keys written by workers before the canonical schema was introduced. */
+export function normalizeArticleFields(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const record = { ...(value as Record<string, unknown>) }
+  if (record.Description === undefined && typeof record.Desction === 'string') record.Description = record.Desction
+  if (record.Keywords === undefined && Array.isArray(record['Từ khóa'])) record.Keywords = record['Từ khóa']
+  delete record.Desction
+  delete record['Từ khóa']
+  return record
+}
 
 const outlineText = z.string().trim().min(1).max(260)
 const outlineSchema = z.strictObject({
@@ -33,17 +44,112 @@ const outlineSchema = z.strictObject({
   searchIntent: outlineText,
   audience: outlineText,
   angle: outlineText,
-  questions: z.array(outlineText).min(1).max(6),
+  questions: z.array(outlineText).max(6),
   sections: z.array(z.strictObject({
     heading: outlineText,
     purpose: outlineText,
     estimatedWords: z.number().int().min(1).max(SEO_LIMITS.contentWords.max),
-    subheadings: z.array(outlineText).max(3),
-    evidence: z.array(z.strictObject({ sourceIndex: z.number().int().positive(), fact: outlineText })).max(2),
+    subheadings: z.array(outlineText).max(3).default([]),
+    evidence: z.array(z.strictObject({ sourceIndex: z.number().int().positive(), fact: outlineText })).max(2).default([]),
   })).min(1).max(8),
 })
 
 export type ArticleOutline = z.infer<typeof outlineSchema>
+
+function textValue(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 260)
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value).slice(0, 260)
+  return undefined
+}
+
+function firstValue(source: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) if (source[key] !== undefined && source[key] !== null) return source[key]
+  return undefined
+}
+
+function textList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(textValue).filter((item): item is string => Boolean(item)).slice(0, 6)
+  const text = textValue(value)
+  if (!text) return []
+  return text.split(/\r?\n|\s*;\s*/).map(item => item.trim().slice(0, 260)).filter(Boolean).slice(0, 6)
+}
+
+function integerValue(value: unknown, fallback: number): number {
+  const number = typeof value === 'number' ? value : typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : NaN
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback
+}
+
+function outlineSections(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  if (typeof value === 'string') {
+    return value.split(/\r?\n|\s*;\s*/).map(item => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+function fallbackOutline(input: GenerateInput): ArticleOutline {
+  const target = Math.max(4, Math.min(SEO_LIMITS.contentWords.max, input.length))
+  const headings = ['Tổng quan và nhu cầu chính', 'Các yếu tố cần cân nhắc', 'Cách thực hiện từng bước', 'Lưu ý và câu hỏi thường gặp']
+  const base = Math.max(1, Math.floor(target / headings.length))
+  return {
+    title: (input.source?.Title || `Hướng dẫn ${input.keyword}`).slice(0, 260),
+    searchIntent: `Tìm hiểu và áp dụng ${input.keyword}`.slice(0, 260),
+    audience: `Người đang tìm hiểu về ${input.keyword}`.slice(0, 260),
+    angle: 'Giải thích rõ ràng, thực tế và dễ áp dụng theo từng bước.',
+    questions: [],
+    sections: headings.map((heading, index) => ({
+      heading,
+      purpose: `Làm rõ ${heading.toLowerCase()} để người đọc có thể áp dụng phù hợp.`,
+      estimatedWords: index === headings.length - 1 ? target - base * (headings.length - 1) : base,
+      subheadings: [],
+      evidence: [],
+    })),
+  }
+}
+
+function normalizeOutlineFields(value: unknown, input: GenerateInput): unknown {
+  if (typeof value === 'string') {
+    try { value = parseGeneratedJson(value) } catch { return fallbackOutline(input) }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return fallbackOutline(input)
+  const source = value as Record<string, unknown>
+  const nested = source.data && typeof source.data === 'object' && !Array.isArray(source.data) ? source.data as Record<string, unknown> : {}
+  const wrapped = source.outline && typeof source.outline === 'object' && !Array.isArray(source.outline) ? source.outline as Record<string, unknown> : {}
+  const candidate = { ...nested, ...source, ...wrapped }
+  const rawSections = firstValue(candidate, ['sections', 'outline', 'parts', 'phan', 'các phần'])
+  const rawSectionValues = outlineSections(rawSections)
+  const fallback = fallbackOutline(input)
+  const sections = rawSectionValues.length ? rawSectionValues.slice(0, 8) : fallback.sections
+  const target = Math.max(4, Math.min(SEO_LIMITS.contentWords.max, input.length))
+  const fallbackWords = Math.max(1, Math.floor(target / Math.max(1, sections.length)))
+  return {
+    title: textValue(firstValue(candidate, ['title', 'Title', 'tiêu đề', 'tieu_de'])) ?? fallback.title,
+    searchIntent: textValue(firstValue(candidate, ['searchIntent', 'search_intent', 'intent', 'ý định tìm kiếm', 'y_dinh_tim_kiem'])) ?? fallback.searchIntent,
+    audience: textValue(firstValue(candidate, ['audience', 'targetAudience', 'target_audience', 'đối tượng', 'doi_tuong'])) ?? fallback.audience,
+    angle: textValue(firstValue(candidate, ['angle', 'approach', 'góc tiếp cận', 'goc_tiep_can'])) ?? fallback.angle,
+    questions: textList(firstValue(candidate, ['questions', 'keyQuestions', 'key_questions', 'câu hỏi', 'cau_hoi'])),
+    sections: sections.map((sectionValue, index) => {
+      const section = sectionValue && typeof sectionValue === 'object' && !Array.isArray(sectionValue) ? sectionValue as Record<string, unknown> : { heading: sectionValue }
+      const heading = textValue(firstValue(section, ['heading', 'title', 'name', 'h2', 'tiêu đề'])) ?? `Phần ${index + 1}`
+      const purpose = (textValue(firstValue(section, ['purpose', 'description', 'goal', 'mục tiêu', 'muc_tieu'])) ?? `Triển khai nội dung cho phần ${heading}.`).slice(0, 260)
+      const estimatedWords = Math.min(SEO_LIMITS.contentWords.max, integerValue(firstValue(section, ['estimatedWords', 'estimated_words', 'wordCount', 'word_count', 'số từ']), fallbackWords))
+      const evidence = Array.isArray(section.evidence) ? section.evidence.slice(0, 2).map(item => {
+        if (typeof item === 'string') return { sourceIndex: 1, fact: item }
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+        const record = item as Record<string, unknown>
+        const fact = textValue(firstValue(record, ['fact', 'claim', 'evidence', 'dữ kiện']))
+        return fact ? { sourceIndex: integerValue(firstValue(record, ['sourceIndex', 'source_index', 'source']), 1), fact: fact.slice(0, 260) } : null
+      }).filter((item): item is { sourceIndex: number; fact: string } => Boolean(item)) : []
+      return {
+        heading,
+        purpose,
+        estimatedWords,
+        subheadings: textList(firstValue(section, ['subheadings', 'subsections', 'h3', 'tiêu đề phụ'])).slice(0, 3),
+        evidence,
+      }
+    }),
+  }
+}
 
 export interface GenerateInput {
   provider: Provider
@@ -121,12 +227,12 @@ export const systemPrompt = [
   'Mục tiêu là tạo bài hữu ích cho đúng ý định tìm kiếm, dễ đọc trên điện thoại và có cấu trúc rõ để công cụ tìm kiếm hiểu chủ đề.',
   ...editorialPolicy,
   'Khi có dàn ý nội bộ, hãy triển khai theo ý định tìm kiếm, góc viết và mục tiêu từng phần. Kiểm chứng lại ghi chú dữ kiện bằng nghiên cứu gốc. Chủ động điều chỉnh dàn ý nếu cần để đáp ứng yêu cầu bài viết và giữ lời văn tự nhiên. Nếu chưa có dàn ý, hãy tự xác định ý định tìm kiếm, đối tượng, câu hỏi và bố cục trước khi viết.',
-  'Title khớp ý định tìm kiếm. Desc là đoạn tóm tắt cho người đọc. Desction là meta description, nêu lợi ích cụ thể người đọc nhận được từ bài.',
+  'Title khớp ý định tìm kiếm. Desc là đoạn tóm tắt cho người đọc. Description là meta description, nêu lợi ích cụ thể người đọc nhận được từ bài.',
   'Content là HTML ngữ nghĩa hợp lệ, không dùng Markdown. Mở bài trả lời trực tiếp điều người đọc muốn biết. Dùng h2, h3, h4, p, ul, ol, li, strong, em, blockquote, table và a khi thực sự cần. Mỗi phần có một ý chính, đoạn văn ngắn, ưu tiên ví dụ, bước thực hiện, bảng hoặc danh sách khi giúp quét nhanh. Không chèn h1 vì Title được hệ thống hiển thị riêng. Chỉ dùng liên kết nội bộ đã có trong yêu cầu hoặc bài tham chiếu và thực sự giúp người đọc, không tự ghép URL từ tên miền.',
   'Khi yêu cầu bổ sung cần định dạng CSS, phải đặt CSS inline bằng thuộc tính style trực tiếp trên các thẻ HTML trong Content, gồm table, thead, tbody, tr, th và td nếu có bảng. Dùng màu chữ/nền, font, line-height, text-align, vertical-align, border, border-collapse, border-radius, padding, margin và width/max-width để trình bày rõ, đẹp và dễ đọc trên điện thoại. Có thể dùng !important khi cần giữ định dạng trước CSS của nền tảng. Không chỉ mô tả CSS bằng lời hoặc dùng class thay cho style inline.',
-  'Từ khóa là mảng gồm từ khóa chính và các cụm liên quan có thật trong bài, không tạo danh sách dài để nhồi SEO.',
+  'Keywords là mảng gồm từ khóa chính và các cụm liên quan có thật trong bài, không tạo danh sách dài để nhồi SEO.',
   'Trước khi trả kết quả, tự kiểm tra bài có dàn ý và cách diễn đạt độc lập, có giá trị giải thích riêng, không bịa dữ kiện và không có danh sách tham khảo; chỉnh lại phần còn bám sát nguồn. Vẫn đáp ứng các yêu cầu SEO, độ dài, giọng văn, phong cách và hướng dẫn bổ sung hợp lệ.',
-  'Trả đúng một đối tượng JSON duy nhất với các trường Title, Content, Slug, Desc, Desction và Từ khóa. Không thêm trường, không bọc bằng Markdown hoặc lời giải thích bên ngoài JSON.',
+  'Trả đúng một đối tượng JSON duy nhất với các trường Title, Content, Slug, Desc, Description và Keywords. Không thêm trường, không bọc bằng Markdown hoặc lời giải thích bên ngoài JSON.',
   'Không dùng thẻ script, iframe, form, thẻ <style>, stylesheet bên ngoài, sự kiện HTML hoặc nội dung nguy hiểm. Thuộc tính style inline an toàn được phép; không dùng url(), expression(), @import, biến CSS, position hoặc z-index. Không tiết lộ tài liệu nội bộ.',
 ].join('\n')
 
@@ -151,14 +257,14 @@ export function outputTokenLimit(length: number): number {
 
 export const outlineTokenLimit = 2_048
 
-type RepairField = 'Title' | 'Desction' | 'Slug' | 'Content'
+type RepairField = 'Title' | 'Description' | 'Slug' | 'Content'
 
 const repairFieldByCriterion: Partial<Record<SeoFinding['key'], RepairField>> = {
   keywordInTitle: 'Title',
   titleStartWithKeyword: 'Title',
   lengthTitle: 'Title',
-  keywordInMetaDescription: 'Desction',
-  lengthMetaDescription: 'Desction',
+  keywordInMetaDescription: 'Description',
+  lengthMetaDescription: 'Description',
   keywordInPermalink: 'Slug',
   lengthPermalink: 'Slug',
   keywordIn10Percent: 'Content',
@@ -379,7 +485,7 @@ function outputText(provider: Provider, response: UnknownObject): string {
 }
 
 export function cleanArticle(value: unknown): Article {
-  const article = articleSchema.parse(value)
+  const article = articleSchema.parse(normalizeArticleFields(value))
   const content = sanitizeHtml(article.Content, {
     allowedTags: ['p', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'strong', 'em', 'b', 'i', 'a', 'blockquote', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'br', 'hr', 'code', 'pre'],
     allowedAttributes: { '*': ['style'], a: ['href'], th: ['scope', 'colspan', 'rowspan'], td: ['colspan', 'rowspan'] },
@@ -404,8 +510,25 @@ export function cleanArticle(value: unknown): Article {
 }
 
 function parseGeneratedJson(text: string): unknown {
-  const raw = JSON.parse(text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1')) as unknown
-  return Array.isArray(raw) && raw.length === 1 ? raw[0] : raw
+  const trimmed = text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1').trim()
+  const candidates = [trimmed]
+  const firstObject = trimmed.indexOf('{')
+  const lastObject = trimmed.lastIndexOf('}')
+  if (firstObject >= 0 && lastObject > firstObject) candidates.push(trimmed.slice(firstObject, lastObject + 1))
+  const firstArray = trimmed.indexOf('[')
+  const lastArray = trimmed.lastIndexOf(']')
+  if (firstArray >= 0 && lastArray > firstArray) candidates.push(trimmed.slice(firstArray, lastArray + 1))
+  let error: unknown
+  for (const candidate of candidates) {
+    try {
+      let raw = JSON.parse(candidate) as unknown
+      for (let depth = 0; depth < 2 && typeof raw === 'string'; depth += 1) raw = JSON.parse(raw)
+      return Array.isArray(raw) && raw.length === 1 ? raw[0] : raw
+    } catch (failure) {
+      error = failure
+    }
+  }
+  throw error instanceof Error ? error : new Error('Invalid JSON')
 }
 
 function articlePresentation(html: string) {
@@ -640,17 +763,27 @@ async function generateJson<T>(
 
 export async function generateOutline(input: GenerateInput, fetcher: typeof fetch = fetch): Promise<OutlineResult> {
   const parse = (value: unknown): ArticleOutline => {
-    const outline = outlineSchema.parse(value)
+    const outline = outlineSchema.parse(normalizeOutlineFields(value, input))
     const sourceCount = input.research?.sources.length ?? 0
     for (const section of outline.sections) {
       section.evidence = section.evidence.filter(item => item.sourceIndex <= sourceCount)
     }
     return outline
   }
-  const { value: outline, ...metadata } = await generateJson(input, outlineTask(input), fetcher, parse, {
-    code: 'AI_OUTLINE', message: 'AI trả dàn ý thiếu trường hoặc không hợp lệ.', retryable: false,
-  })
-  return { outline, ...metadata }
+  try {
+    const { value: outline, ...metadata } = await generateJson(input, outlineTask(input), fetcher, parse, {
+      code: 'AI_OUTLINE', message: 'AI trả dàn ý thiếu trường hoặc không hợp lệ.', retryable: false,
+    })
+    return { outline, ...metadata }
+  } catch (error) {
+    if (!(error instanceof WorkerError) || error.code !== 'AI_OUTLINE') throw error
+    return {
+      outline: fallbackOutline(input),
+      usage: error.metadata?.usage ?? null,
+      responseId: error.metadata?.responseId ?? null,
+      model: error.metadata?.model ?? null,
+    }
+  }
 }
 
 export async function generateArticle(input: GenerateInput, fetcher: typeof fetch = fetch): Promise<GenerateResult> {

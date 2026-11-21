@@ -35,8 +35,8 @@ export function loadConfig() {
     throw new Error('Set ENCRYPTION_KEY to a base64-encoded 32-byte key');
   }
   const aiTimeoutMs = positive('AI_TIMEOUT_MS', 120_000);
-  const outlineTimeoutMs = positive('AI_OUTLINE_TIMEOUT_MS', 45_000);
-  const seoRepairTimeoutMs = positive('AI_SEO_REPAIR_TIMEOUT_MS', 90_000);
+  const outlineTimeoutMs = positive('AI_OUTLINE_TIMEOUT_MS', 300_000);
+  const seoRepairTimeoutMs = positive('AI_SEO_REPAIR_TIMEOUT_MS', 120_000);
   const leaseMs = positive('LEASE_MS', 150_000);
   const researchTimeoutMs = positive('RESEARCH_TIMEOUT_MS', 8_000);
   if (leaseMs <= aiTimeoutMs + researchTimeoutMs) throw new Error('LEASE_MS must exceed AI_TIMEOUT_MS plus RESEARCH_TIMEOUT_MS');

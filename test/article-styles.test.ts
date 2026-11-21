@@ -8,8 +8,8 @@ const article = {
   Content: '<p>Nội dung.</p>',
   Slug: 'bai-viet-co-bang',
   Desc: 'Mô tả ngắn.',
-  Desction: 'Mô tả SEO.',
-  'Từ khóa': ['bảng'],
+  Description: 'Mô tả SEO.',
+  Keywords: ['bảng'],
 }
 
 test('article style filter keeps table, typography and spacing declarations', () => {

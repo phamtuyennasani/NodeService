@@ -94,14 +94,14 @@ const outline: ArticleOutline = {
 }
 const shortArticle: Article = {
   Title: 'Pha cà phê tại nhà', Content: '<p>Dùng nước lạnh và cà phê xay thô.</p>',
-  Slug: 'pha-ca-phe', Desc: 'Cách chuẩn bị cà phê.', Desction: 'Hướng dẫn pha cà phê.', 'Từ khóa': ['cà phê'],
+  Slug: 'pha-ca-phe', Desc: 'Cách chuẩn bị cà phê.', Description: 'Hướng dẫn pha cà phê.', Keywords: ['cà phê'],
 }
 function seoArticle(): Article {
   return {
     Title: 'Cà phê cold brew: cách pha ngon và bảo quản tại nhà',
     Content: '<h2>Cà phê cold brew cho người mới</h2>' + Array.from({ length: 10 }, () => '<p>Cà phê cold brew ' + 'thơm '.repeat(58).trim() + '.</p>').join(''),
     Slug: 'ca-phe-cold-brew', Desc: 'Hướng dẫn pha tại nhà.',
-    Desction: 'Cà phê cold brew ' + 'à'.repeat(140), 'Từ khóa': [keyword],
+    Description: 'Cà phê cold brew ' + 'à'.repeat(140), Keywords: [keyword],
   }
 }
 function fixture(jobValues: Row = {}, configValues: Row = {}, accountingFailure = false) {
@@ -144,7 +144,7 @@ function assertReady(f: ReturnType<typeof fixture>, article: Article, repairStat
   assert.equal(f.job.writing_stage, null)
   assert.equal(f.job.seo_repair_status, repairStatus)
   assert.equal(f.reservation.status, 'used')
-  assert.deepEqual(Object.keys(f.job.result[0]).sort(), ['Title', 'Content', 'Slug', 'Desc', 'Desction', 'Từ khóa'].sort())
+  assert.deepEqual(Object.keys(f.job.result[0]).sort(), ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'].sort())
   assert.deepEqual(f.tables.webhook_deliveries.map(({ job_id, event, status }) => ({ job_id, event, status })), [
     { job_id: f.job._id, event: 'article.ready', status: 'pending' },
   ])
@@ -211,8 +211,22 @@ test('an outline with keepalives has a hard deadline and falls back to writing',
   assert.equal(f.tables.ai_attempts[0].error_code, 'AI_OUTLINE_TIMEOUT')
 })
 
+test('an outline deadline can exceed the shared AI idle timeout', { timeout: 2_000 }, async () => {
+  const f = fixture({}, { aiTimeoutMs: 20, outlineTimeoutMs: 80 })
+  await f.run({
+    outline: async input => {
+      await new Promise(resolve => setTimeout(resolve, 45))
+      input.signal.throwIfAborted()
+      return { outline, ...metadata }
+    },
+  })
+  assert.equal(f.job.status, 'ready')
+  assert.equal(f.tables.ai_attempts[0]?.stage, 'outline')
+  assert.equal(f.tables.ai_attempts[0]?.status, 'succeeded')
+})
+
 test('one SEO repair applies improvements after the original draft is durably stored', async () => {
-  const draft = { ...seoArticle(), Desction: 'Cà phê cold brew dễ pha.' }
+  const draft = { ...seoArticle(), Description: 'Cà phê cold brew dễ pha.' }
   const f = fixture()
   let repairs = 0
   await f.run({
@@ -225,7 +239,7 @@ test('one SEO repair applies improvements after the original draft is durably st
       assert.equal(f.tables.webhook_deliveries.length, 0)
       assert.equal(f.reservation.status, 'reserved')
       assert.deepEqual(input.issues.map(issue => issue.key), ['lengthMetaDescription'])
-      return { article: { ...input.draft, Desction: seoArticle().Desction }, ...metadata }
+      return { article: { ...input.draft, Description: seoArticle().Description }, ...metadata }
     },
   })
   assert.equal(repairs, 1)
@@ -235,11 +249,11 @@ test('one SEO repair applies improvements after the original draft is durably st
 })
 
 test('SEO repair is discarded when it breaks a criterion the draft passed', async () => {
-  const draft = { ...seoArticle(), Desction: 'Cà phê cold brew dễ pha.' }
+  const draft = { ...seoArticle(), Description: 'Cà phê cold brew dễ pha.' }
   const f = fixture()
   await f.run({
     generate: async () => ({ article: draft, ...metadata }),
-    repair: async input => ({ article: { ...input.draft, Desction: seoArticle().Desction, Content: '<p>Quá ngắn.</p>' }, ...metadata }),
+    repair: async input => ({ article: { ...input.draft, Description: seoArticle().Description, Content: '<p>Quá ngắn.</p>' }, ...metadata }),
   })
   assertReady(f, draft, 'kept_draft')
 })
@@ -429,7 +443,7 @@ test('a stalled draft without chunks is requeued under the existing retry policy
 
 test('the report uses the requested main keyword instead of the related keyword list', async () => {
   const f = fixture()
-  const article = { ...seoArticle(), 'Từ khóa': ['pha chế', 'đồ uống'] }
+  const article = { ...seoArticle(), Keywords: ['pha chế', 'đồ uống'] }
   await f.run({ generate: async () => ({ article, ...metadata }) })
   assert.deepEqual(f.job.seo_report, evaluateSeo(cleanArticle(article), { keyword, siteUrl: 'example.vn' }))
 })

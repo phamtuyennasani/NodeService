@@ -126,6 +126,19 @@
 .article-preview .article-summary { margin-bottom: 16px; font-weight: 600; }
 .article-preview img { height: auto; max-width: 100%; }
 .article-preview table { display: block; overflow-x: auto; }
+.outline-review { color: var(--text); line-height: 1.65; overflow-wrap: anywhere; }
+.outline-review > h2 { margin-bottom: 18px; font-size: 21px; line-height: 1.4; }
+.outline-review > h3, .outline-questions { margin-top: 22px; }
+.outline-questions ul, .outline-sections ul { padding-inline-start: 20px; margin-block: 8px 0; }
+.outline-sections { padding-inline-start: 22px; margin-block: 0; }
+.outline-sections > li { padding-block: 16px; border-top: 1px solid var(--line); }
+.outline-sections > li::marker { color: var(--muted); }
+.outline-section-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; }
+.outline-section-heading h4 { margin: 0; font-size: 15px; }
+.outline-section-heading > span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.outline-sections p { margin-block: 8px; }
+.outline-section-label, .outline-evidence { font-size: 12px; }
+.outline-evidence { margin-top: 14px; color: var(--muted); }
 .episode-list { display: grid; gap: 12px; }
 .attempt-details summary { cursor: pointer; color: var(--accent); font-weight: 550; margin-block: 8px; }
 .seo-review-summary { display: flex; align-items: center; gap: 24px; margin-bottom: 18px; }

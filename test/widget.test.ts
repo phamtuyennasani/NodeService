@@ -11,8 +11,8 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
   const jobId = 'aa9a15c2-61f0-4cb4-9956-f96dcf560ee0';
   const article = {
     Title: 'Cách chọn máy lọc nước', Content: '<p>Chọn theo nguồn nước.</p><img src="untrusted" onerror="alert(1)">',
-    Slug: 'cach-chon-may-loc-nuoc', Desc: 'Mô tả', Desction: 'Mô tả SEO',
-    'Từ khóa': ['máy lọc nước', 'nguồn nước'],
+    Slug: 'cach-chon-may-loc-nuoc', Desc: 'Mô tả', Description: 'Mô tả SEO',
+    Keywords: ['máy lọc nước', 'nguồn nước'],
   };
   const browser = await chromium.launch();
   try {
@@ -30,7 +30,7 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
           <div name="body"></div><input name="keywords"><div id="tools"></div></form>
           <script src="/widget/v1/ai-writer.js"></script>
           <script>
-          window.mapping = { Title: '[name="title"]', Slug: '#missing', 'Từ khóa': '[name="keywords"]',
+          window.mapping = { Title: '[name="title"]', Slug: '#missing', Keywords: '[name="keywords"]',
             Content: { selector: '[name="body"]', setValue: (element, value) => { element.dataset.html = value } } };
           window.AIWriter.mount({ mount: '#tools', form: '#article', endpoint: '/admin/ai/previews', fields: window.mapping,
             modelsEndpoint: location.search ? '/admin/ai/models' : undefined,
@@ -66,7 +66,7 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     const waitForPreview = () => dialog.getByRole('heading', { name: article.Title }).waitFor();
     await page.goto(origin);
     await launch.click();
-    await dialog.getByLabel('Từ khóa').fill(article['Từ khóa'][0]);
+    await dialog.getByLabel('Từ khóa').fill(article.Keywords[0]);
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     await waitForPreview();
     assert.equal(await dialog.locator('img').count(), 0);
@@ -86,12 +86,12 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     await accept.click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(await page.locator('[name="title"]').inputValue(), article.Title);
-    assert.equal(await page.locator('[name="keywords"]').inputValue(), article['Từ khóa'].join(', '));
+    assert.equal(await page.locator('[name="keywords"]').inputValue(), article.Keywords.join(', '));
     assert.equal(await page.locator('[name="body"]').getAttribute('data-html'), '<p>Chọn theo nguồn nước.</p>');
     assert.equal(posts.length, 2);
     assert.notEqual(keys[0], keys[1]);
     assert.deepEqual(posts[0], {
-      model: 'gpt-4.1', keyword: article['Từ khóa'][0], tone: 'Thân thiện', style: 'Hướng dẫn', length: 800,
+      model: 'gpt-4.1', keyword: article.Keywords[0], tone: 'Thân thiện', style: 'Hướng dẫn', length: 800,
     });
 
     await page.goto(origin + '/?catalog=1');
@@ -138,7 +138,7 @@ test('Laravel widget preserves safe inline table CSS in previews and applied HTM
       '<td style="position:fixed;behavior:url(https://unsafe.invalid/run)">Nước máy</td></tr><tr><td>Giếng khoan</td></tr></tbody></table>' +
       '<a href="javascript:alert(1)" onclick="window.__unsafe=true">Liên kết</a>' +
       '<script>window.__unsafe=true</script><style>body{display:none}</style><img src="https://unsafe.invalid/image"><iframe src="https://unsafe.invalid/frame"></iframe>',
-    Slug: 'bang-so-sanh-may-loc-nuoc', Desc: 'Tóm tắt', Desction: 'Mô tả SEO', 'Từ khóa': ['máy lọc nước'],
+    Slug: 'bang-so-sanh-may-loc-nuoc', Desc: 'Tóm tắt', Description: 'Mô tả SEO', Keywords: ['máy lọc nước'],
   };
   const browser = await chromium.launch();
   try {

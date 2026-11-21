@@ -9,11 +9,11 @@ articlePurifier.addHook('uponSanitizeAttribute', (_node, attribute) => {
   attribute.keepAttr = Boolean(attribute.attrValue);
 });
 
-const fields = ['Title', 'Content', 'Slug', 'Desc', 'Desction', 'Từ khóa'] as const;
+const fields = ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'] as const;
 const toneOptions = ['Thân thiện', 'Chuyên nghiệp', 'Tư vấn', 'Thuyết phục', 'Trang trọng', 'Hài hước'];
 const styleOptions = ['Hướng dẫn', 'SEO', 'Chuyên gia', 'Kể chuyện', 'Danh sách', 'Tin tức'];
 type Field = typeof fields[number];
-type Article = Record<Exclude<Field, 'Từ khóa'>, string> & { 'Từ khóa': string[] };
+type Article = Record<Exclude<Field, 'Keywords'>, string> & { Keywords: string[] };
 type Target = string | { selector: string; setValue?: (element: Element, value: string) => void | Promise<void> };
 interface Config {
   mount: string;
@@ -45,7 +45,7 @@ function articleFrom(value: unknown): Article {
   const record = value[0] as Record<string, unknown>;
   for (const field of fields) {
     const entry = record[field];
-    const valid = field === 'Từ khóa'
+    const valid = field === 'Keywords'
       ? Array.isArray(entry) && entry.length > 0 && entry.every(item => typeof item === 'string' && item.trim())
       : typeof entry === 'string' && entry.trim();
     if (!valid) throw new Error(`Kết quả thiếu trường ${field}.`);
@@ -68,7 +68,7 @@ function prepareWrites(config: Config, article: Article) {
     const element = find(typeof target === 'string' ? target : target.selector, form);
     if (seen.has(element)) throw new Error(`Đích của trường ${field} bị trùng.`);
     seen.add(element);
-    const value = field === 'Từ khóa' ? article[field].join(', ') : article[field];
+    const value = field === 'Keywords' ? article[field].join(', ') : article[field];
     if (typeof target === 'object' && target.setValue) {
       const { setValue } = target;
       return [() => setValue(element, value)];
@@ -256,8 +256,8 @@ function mount(config: Config) {
     const metadata = select('.metadata');
     metadata.replaceChildren();
     for (const [label, value] of [
-      ['Slug', article.Slug], ['Mô tả', article.Desc], ['Mô tả SEO', article.Desction],
-      ['Từ khóa', article['Từ khóa'].join(', ')],
+      ['Slug', article.Slug], ['Mô tả', article.Desc], ['Mô tả SEO', article.Description],
+      ['Từ khóa', article.Keywords.join(', ')],
     ]) {
       const term = document.createElement('dt');
       const detail = document.createElement('dd');

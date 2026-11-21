@@ -8,7 +8,7 @@ import { createJob, type Site } from './public.js'
 import { modelIdSchema } from './catalog.js'
 import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { pageOf, readCursor } from './public.js'
-import { cleanArticle } from '../worker/provider.js'
+import { cleanArticle, normalizeArticleFields } from '../worker/provider.js'
 
 const keys = z.object({ customer_id: idSchema.optional(), website_id: idSchema.optional() })
 const listSchema = keys.extend({ from: periodSchema.optional(), to: periodSchema.optional(), limit: z.coerce.number().int().min(1).max(250).default(100), cursor: z.string().max(512).optional(), q: z.string().trim().max(160).optional() })
@@ -77,7 +77,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
     let sourceId: string | undefined = retryFailed ? undefined : id
     if (retryFailed && article.source_article_id) {
       const source = await collection<any>(db, 'jobs').findOne({ _id: article.source_article_id, site_id: article.site_id, customer_id: article.customer_id, status: 'ready' })
-      try { cleanArticle(source?.result?.[0]); sourceId = source._id } catch { /* Retry as a fresh article when the previous source is unusable. */ }
+      try { cleanArticle(normalizeArticleFields(source?.result?.[0])); sourceId = source._id } catch { /* Retry as a fresh article when the previous source is unusable. */ }
     }
     const instructions = [article.instructions, additions.instructions].filter(Boolean).join('\n\n').slice(-8000)
     const clientId = typeof request.headers['idempotency-key'] === 'string' && request.headers['idempotency-key'].trim()
@@ -166,7 +166,8 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
     return {
       ...reportJob({ ...row, customer, site }),
       rewrite_key_mode: customer?.key_mode ?? row.key_mode,
-      result: ready ? row.result : null,
+      outline: ready ? row.outline ?? null : null,
+      result: ready && Array.isArray(row.result) ? row.result.map(normalizeArticleFields) : ready ? row.result : null,
       seo_report: ready ? row.seo_report ?? null : null,
       seo_repair_status: ready ? row.seo_repair_status ?? null : null,
       instructions: row.instructions,

@@ -22,8 +22,8 @@ const widgetSnippet = () => `<div id="ai-tools"></div>
       Content: '[name="body"]',
       Slug: '[name="slug"]',
       Desc: '[name="summary"]',
-      Desction: '[name="seo_description"]',
-      'Từ khóa': '[name="keywords"]'
+      Description: '[name="seo_description"]',
+      Keywords: '[name="keywords"]'
     }
   };
   AIWriter.mount(config);

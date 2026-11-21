@@ -2,7 +2,7 @@
 
 Chạy `npm run build:seo` hoặc `npm run build` trong CRM. Chép tệp `dist/widget/v1/seo-score.js` vào `public/assets/admin/js/seo-score.js` của Laravel. Đổi phiên bản trong URL của thẻ script ở `seo-box.blade.php` để trình duyệt tải bản mới.
 
-Blade tiếp tục dùng `window.SeoScore.evaluate(...)` với các trường hiện có. Khi nhận `article.ready`, tìm yêu cầu đã lưu ở Laravel theo `X-Client-Request-Id` và dùng từ khóa chính của yêu cầu đó cho `focus_keyword`. Với bản xem trước, dùng từ khóa đã gửi khi tạo yêu cầu. Trường `keywords` lấy danh sách `Từ khóa` trong bài. `stats.permalinkLength` là số ký tự của slug do bộ chấm chỉ nhận được phần slug của URL bài.
+Blade tiếp tục dùng `window.SeoScore.evaluate(...)` với các trường hiện có. Khi nhận `article.ready`, tìm yêu cầu đã lưu ở Laravel theo `X-Client-Request-Id` và dùng từ khóa chính của yêu cầu đó cho `focus_keyword`. Với bản xem trước, dùng từ khóa đã gửi khi tạo yêu cầu. Trường `keywords` lấy danh sách `Keywords` trong bài; giao diện có thể hiển thị nhãn **Từ khóa**. `stats.permalinkLength` là số ký tự của slug do bộ chấm chỉ nhận được phần slug của URL bài.
 
 Trong component PHP chứa `$checkConfig()` và `$check()`, đặt `title.min = 41`, `title.max = 70`, `description.min = 155`, `description.max = 160` và cập nhật các thông báo độ dài tương ứng. JavaScript có các ngưỡng này trong `window.SeoScore.limits.title` và `window.SeoScore.limits.metaDescription`. Để bộ đếm khi gõ dùng cùng cách đếm ký tự tiếng Việt, đổi hàm đếm trong `initSeoChecker` thành hàm sau.
 
