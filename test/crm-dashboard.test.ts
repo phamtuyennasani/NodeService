@@ -41,7 +41,7 @@ function memoryDatabase(tables: Record<string, Row[]>, reads: Read[]): Database 
   return { db } as unknown as Database
 }
 
-async function fixture(t: test.TestContext, jobs: Row[] = []) {
+async function fixture(t: test.TestContext, jobs: Row[] = [], usdToVnd = 25_000) {
   const now = new Date('2026-11-20T07:00:00.000Z')
   t.mock.timers.enable({ apis: ['Date'], now })
   const customerId = randomUUID()
@@ -57,7 +57,7 @@ async function fixture(t: test.TestContext, jobs: Row[] = []) {
   const reads: Read[] = []
   const app = Fastify()
   installErrorHandler(app)
-  registerReports(app, memoryDatabase(tables, reads), { workerConcurrency: 5, webhookConcurrency: 3 } as Config)
+  registerReports(app, memoryDatabase(tables, reads), { workerConcurrency: 5, webhookConcurrency: 3, usdToVnd } as Config)
   await app.ready()
   t.after(() => app.close())
   const job = (patch: Row = {}) => ({
@@ -164,7 +164,7 @@ test('CRM historical dashboard counts ready jobs as written articles', async t =
 })
 
 test('CRM historical dashboard reports priced service and customer costs by day', async t => {
-  const { app, rows, job, tables } = await fixture(t)
+  const { app, rows, job, tables } = await fixture(t, [], 27_001)
   const serviceJob = job({ status: 'ready', completed_at: new Date('2026-11-20T01:00:00.000Z'), key_mode: 'service' })
   const customerJob = job({ status: 'ready', completed_at: new Date('2026-11-20T02:00:00.000Z'), key_mode: 'own' })
   rows.push(serviceJob, customerJob)
@@ -178,10 +178,14 @@ test('CRM historical dashboard reports priced service and customer costs by day'
   const body = response.json()
   assert.equal(body.metrics.service_cost_usd, '0.125000000000')
   assert.equal(body.metrics.customer_cost_usd, '0.375000000000')
+  assert.equal(body.metrics.service_cost_vnd, '3375.125000000000')
+  assert.equal(body.metrics.customer_cost_vnd, '10125.375000000000')
+  assert.equal(body.metrics.total_cost_vnd, '13500.500000000000')
   assert.equal(body.metrics.unpriced_attempts, 1)
   assert.deepEqual(body.series, [{
     date: '2026-11-20', articles: 2, delivered: 0,
-    service_cost_usd: '0.125000000000', customer_cost_usd: '0.375000000000', unpriced_attempts: 1,
+    service_cost_usd: '0.125000000000', customer_cost_usd: '0.375000000000',
+    service_cost_vnd: '3375.125000000000', customer_cost_vnd: '10125.375000000000', unpriced_attempts: 1,
   }])
 })
 
@@ -197,10 +201,36 @@ test('CRM costs follow attempt dates even when creation and completion are outsi
   assert.equal(report.statusCode, 200, report.body)
   assert.equal(report.json().metrics.articles, 0)
   assert.equal(report.json().metrics.service_cost_usd, '0.125000000000')
+  assert.equal(report.json().metrics.service_cost_vnd, '3125.000000000000')
+  assert.equal(report.json().metrics.total_cost_vnd, '3125.000000000000')
   assert.equal(report.json().series[0].service_cost_usd, '0.125000000000')
+  assert.equal(report.json().series[0].service_cost_vnd, '3125.000000000000')
   const drilldown = await app.inject({ method: 'GET', url: '/jobs?date_basis=cost&from=2026-11-20&to=2026-11-20' })
   assert.equal(drilldown.statusCode, 200, drilldown.body)
-  assert.deepEqual(drilldown.json().data.map((row: Row) => [row.id, row.cost_usd]), [[crossing._id, '0.125000000000']])
+  assert.deepEqual(drilldown.json().data.map((row: Row) => [row.id, row.cost_usd, row.cost_vnd]), [[crossing._id, '0.125000000000', '3125.000000000000']])
+})
+
+test('CRM job list converts precise aggregate costs and distinguishes zero from unpriced usage', async t => {
+  const { app, rows, job, tables } = await fixture(t, [], 27_123)
+  const priced = job()
+  const zero = job()
+  const unpriced = job()
+  rows.push(priced, zero, unpriced)
+  tables.ai_attempts.push(
+    { _id: randomUUID(), job_id: priced._id, cost_usd: '0.100000000001' },
+    { _id: randomUUID(), job_id: priced._id, cost_usd: '0.2' },
+    { _id: randomUUID(), job_id: priced._id, cost_usd: null },
+    { _id: randomUUID(), job_id: zero._id, cost_usd: '0' },
+    { _id: randomUUID(), job_id: unpriced._id, cost_usd: null },
+    { _id: randomUUID(), job_id: unpriced._id, cost_usd: '' },
+  )
+  const response = await app.inject({ method: 'GET', url: '/jobs' })
+  assert.equal(response.statusCode, 200, response.body)
+  const data = response.json().data
+  assert.equal(data.find((row: Row) => row.id === priced._id).cost_usd, '0.300000000001')
+  assert.equal(data.find((row: Row) => row.id === priced._id).cost_vnd, '8136.900000027123')
+  assert.equal(data.find((row: Row) => row.id === zero._id).cost_vnd, '0.000000000000')
+  assert.equal(data.find((row: Row) => row.id === unpriced._id).cost_vnd, null)
 })
 
 test('CRM report cursors reject invalid date prefixes instead of passing invalid dates to MongoDB', async t => {

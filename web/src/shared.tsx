@@ -5,17 +5,15 @@ import dayjs from 'dayjs';
 import type { Job, WritingStage } from './types';
 
 export const number = new Intl.NumberFormat('vi-VN');
-const money = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 12 });
 const vietnameseMoney = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 });
 const vietnamWallTime = new Intl.DateTimeFormat('sv-SE', { dateStyle: 'short', timeStyle: 'medium', timeZone: 'Asia/Ho_Chi_Minh' });
 const dateTime = new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Asia/Ho_Chi_Minh' });
 
-export function usd(value?: string | number | null) {
-  return value == null ? '—' : money.format(Number(value));
-}
-
 export function vnd(value?: string | number | null) {
-  return value == null ? '—' : vietnameseMoney.format(Number(value));
+  if (value == null || value === '') return '—';
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '—';
+  return amount > 0 && amount < 1 ? '< 1 ₫' : vietnameseMoney.format(amount);
 }
 
 export function datetime(value?: string | null) {

@@ -11,12 +11,11 @@ import {
   Tooltip as ChartTooltip, XAxis, YAxis,
 } from 'recharts';
 import { useCatalog, useResource, withQuery } from './api';
-import { datetime, displayVietnamTime, EmptyState, go, jobId, number, PageHeading, Panel, ResourceError, Status, usd, writingStageLabel } from './shared';
+import { datetime, displayVietnamTime, EmptyState, go, jobId, number, PageHeading, Panel, ResourceError, Status, vnd, writingStageLabel } from './shared';
 import type { DashboardData, DashboardRuntime, Job } from './types';
 import './dashboard.css';
 
 const vietnamToday = () => dayjs(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date()));
-const costNumber = new Intl.NumberFormat('vi-VN', { minimumFractionDigits: 2, maximumFractionDigits: 12 });
 const shortDate = (date: string) => dayjs(date).format('DD/MM');
 const fullDate = (date: unknown) => dayjs(String(date)).format('DD/MM/YYYY');
 const runtimeTime = (date: string) => displayVietnamTime(date).format('HH:mm:ss');
@@ -85,13 +84,12 @@ function VolumePanel({ series }: { series: DashboardData['series'] }) {
 function CostPanel({ metrics, series, onOpen }: {
   metrics: DashboardData['metrics']; series: DashboardData['series']; onOpen: (keyMode: string) => void;
 }) {
-  const total = Number(metrics.service_cost_usd) + Number(metrics.customer_cost_usd);
   const data = series.map(point => ({
-    date: point.date, service: Number(point.service_cost_usd), own: Number(point.customer_cost_usd),
+    date: point.date, service: Number(point.service_cost_vnd), own: Number(point.customer_cost_vnd),
   }));
   return <section className="dash-cost">
     <header className="dash-panel-header"><h2>Chi phí AI</h2></header>
-    <div className="dash-cost-total">{costNumber.format(total)} <span>USD</span></div>
+    <div className="dash-cost-total">{vnd(metrics.total_cost_vnd).replace(/\s*₫$/, '')} <span>VNĐ</span></div>
     <div className="dash-cost-plot">
       <ResponsiveContainer width="100%" height="100%" minWidth={0}>
         <AreaChart title="Chi phí theo ngày của từng nguồn API key" data={data} margin={{ top: 6, right: 3, bottom: 2, left: 3 }}>
@@ -100,7 +98,7 @@ function CostPanel({ metrics, series, onOpen }: {
           </linearGradient></defs>
           <XAxis dataKey="date" hide />
           <YAxis hide domain={[0, (max: number) => max || 1]} />
-          <ChartTooltip labelFormatter={fullDate} formatter={value => usd(Number(value))}
+          <ChartTooltip labelFormatter={fullDate} formatter={value => vnd(Number(value))}
             cursor={{ stroke: '#a2b39b', strokeDasharray: '3 4' }} />
           <Area dataKey="service" name="Key dịch vụ" stroke="#f2c372" fill="url(#dash-cost-fill)" strokeWidth={2.25}
             dot={data.length === 1} activeDot={{ r: 3 }} isAnimationActive={false} />
@@ -110,8 +108,8 @@ function CostPanel({ metrics, series, onOpen }: {
       </ResponsiveContainer>
     </div>
     <div className="dash-cost-sources">
-      <button onClick={() => onOpen('service')}><i />Key dịch vụ<strong>{usd(metrics.service_cost_usd)}</strong><ArrowRightOutlined /></button>
-      <button onClick={() => onOpen('own')}><i />Key khách hàng<strong>{usd(metrics.customer_cost_usd)}</strong><ArrowRightOutlined /></button>
+      <button onClick={() => onOpen('service')}><i />Key dịch vụ<strong>{vnd(metrics.service_cost_vnd)}</strong><ArrowRightOutlined /></button>
+      <button onClick={() => onOpen('own')}><i />Key khách hàng<strong>{vnd(metrics.customer_cost_vnd)}</strong><ArrowRightOutlined /></button>
     </div>
   </section>;
 }

@@ -43,6 +43,8 @@ Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử 
 
 CRM nhận thay đổi job, chi phí AI và trạng thái giao webhook qua SSE từ MongoDB change stream, kể cả khi API và worker chạy ở các tiến trình riêng. Danh sách chỉ tải lại thông tin của job thay đổi; khi kết nối được khôi phục hoặc quay lại tab, CRM đối chiếu lại dữ liệu để bù các sự kiện bị lỡ. Trang không tự tải lại định kỳ.
 
+CRM hiển thị chi phí AI trên dashboard, danh sách yêu cầu và từng lượt gọi bằng **Việt Nam đồng (₫)**. Cấu hình `USD_TO_VND` trong `.env` là số đồng cho 1 USD, mặc định `25000`; đây là tỷ giá do quản trị viên đặt, không tự cập nhật theo thị trường. Khởi động lại dịch vụ sau khi đổi tỷ giá. Dữ liệu đối soát vẫn lưu USD và được quy đổi khi đọc báo cáo, vì vậy tỷ giá mới cũng áp dụng cho chi phí lịch sử đang hiển thị. Các tổng được cộng trước khi làm tròn để hiển thị; chi phí dương dưới 1 đồng hiển thị `< 1 ₫`, còn chi phí chưa có giá giữ trạng thái chờ đối soát.
+
 Xóa bài đã hoàn tất không hoàn lại lượt viết đã dùng trong kỳ. Xóa yêu cầu còn chờ sẽ giải phóng lượt giữ tương ứng.
 
 ## API dành cho Laravel
@@ -83,7 +85,7 @@ Mẫu dữ liệu tạo lịch cho khách dùng gói dịch vụ
 
 `use_research` là tùy chọn boolean trong payload tạo yêu cầu và dời lịch. Khi tạo mới, bỏ qua trường này sẽ dùng `true`. Khi sửa hoặc dời lịch, bỏ qua trường này sẽ giữ lựa chọn hiện tại. Yêu cầu viết lại kế thừa lựa chọn của bài nguồn.
 
-Với key riêng, Laravel thêm `keyAI` lấy từ cài đặt đã mã hóa của đúng nhà cung cấp. Các model bắt đầu bằng `claude-` và `grok-` đi qua Anthropic và xAI. Đặt đơn giá theo **USD trên một triệu token** và chọn mốc hiệu lực trong CRM. Khi xAI trả chi phí theo request, dịch vụ ghi nhận chi phí đó. Kiểm tra các dòng chờ đối soát nếu thiếu usage hoặc biểu giá.
+Với key riêng, Laravel thêm `keyAI` lấy từ cài đặt đã mã hóa của đúng nhà cung cấp. Các model bắt đầu bằng `claude-` và `grok-` đi qua Anthropic và xAI. Đặt đơn giá theo **VND trên một triệu token** và chọn mốc hiệu lực trong CRM. Dịch vụ giữ đơn giá VND đã nhập và dùng `USD_TO_VND` tại thời điểm lưu để quy đổi sang USD phục vụ tính chi phí. Giá đồng bộ từ nhà cung cấp được quy đổi theo tỷ giá đang cấu hình. Khi xAI trả chi phí theo request, dịch vụ ghi nhận chi phí đó. Kiểm tra các dòng chờ đối soát nếu thiếu usage hoặc biểu giá.
 
 ```json
 [

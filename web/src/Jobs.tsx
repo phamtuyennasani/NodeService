@@ -5,7 +5,7 @@ import dayjs from 'dayjs';
 import { Decimal } from 'decimal.js';
 import { mutate, useCatalog, useResource, useSearchValue, withQuery } from './api';
 import { useLiveJobs } from './job-events';
-import { compactId, CursorPagination, datetime, EmptyState, go, jobId, JobStatus, PageHeading, Panel, ResourceError, Status, submitVietnamTime, usd } from './shared';
+import { compactId, CursorPagination, datetime, EmptyState, go, jobId, JobStatus, PageHeading, Panel, ResourceError, Status, submitVietnamTime, vnd } from './shared';
 import type { Attempt, Collection, Delivery, Job, JobDetails } from './types';
 import { DateTimeField } from './DateTimeField';
 import './records.css';
@@ -333,7 +333,7 @@ function AttemptList({ attempts }: { attempts: Attempt[] }) {
       { key: 'stage', label: 'Bước xử lý', children: attempt.stage ? attemptStageLabels[attempt.stage] ?? attempt.stage : 'Viết bài' },
       { key: 'request', label: 'Giờ gọi', children: datetime(attempt.called_at ?? attempt.started_at) },
       { key: 'done', label: 'Hoàn tất', children: datetime(attempt.finished_at) },
-      { key: 'price', label: 'Chi phí', children: attempt.cost_usd == null ? 'Chờ đối soát' : usd(attempt.cost_usd) },
+      { key: 'price', label: 'Chi phí', children: attempt.cost_vnd == null || attempt.cost_vnd === '' ? 'Chờ đối soát' : vnd(attempt.cost_vnd) },
       { key: 'source', label: 'Nguồn chi phí', children: attempt.cost_source === 'provider' ? 'Nhà cung cấp' : attempt.cost_source === 'catalog' || attempt.cost_source === 'estimated' ? 'Ước tính theo bảng giá' : attempt.cost_source === 'pending' ? 'Chờ đối soát' : attempt.cost_source ?? '—' },
       { key: 'version', label: 'Phiên bản giá', children: compactId(attempt.pricing_id ?? undefined) },
       { key: 'response', label: 'Mã phản hồi AI', children: compactId(attempt.provider_response_id ?? undefined) },
@@ -394,8 +394,8 @@ export function Jobs({ query }: { query: URLSearchParams }) {
     .sort((a, b) => b.created_at.localeCompare(a.created_at) || jobId(b).localeCompare(jobId(a)));
   const displayedJobs = matchingJobs.slice(0, filters.parameters.limit).map(job => {
     if (query.get('date_basis') !== 'cost' || !(job as JobDetails).attempts) return job;
-    const priced = (job as JobDetails).attempts!.filter(attempt => dateMatches(attempt.called_at ?? attempt.started_at, filters.parameters) && attempt.cost_usd != null && attempt.cost_usd !== '');
-    return { ...job, cost_usd: priced.length ? priced.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new Decimal(0)).toFixed(12) : null };
+    const priced = (job as JobDetails).attempts!.filter(attempt => dateMatches(attempt.called_at ?? attempt.started_at, filters.parameters) && attempt.cost_vnd != null && attempt.cost_vnd !== '');
+    return { ...job, cost_vnd: priced.length ? priced.reduce((sum, attempt) => sum.plus(String(attempt.cost_vnd)), new Decimal(0)).toFixed(12) : null };
   });
   const lastJob = displayedJobs.at(-1);
   const nextCursor = lastJob && (matchingJobs.length > filters.parameters.limit || jobs.data?.next_cursor)
@@ -449,7 +449,7 @@ export function Jobs({ query }: { query: URLSearchParams }) {
           { title: 'Nguồn', dataIndex: 'mode', responsive: ['md'], render: (value) => modeLabels[value] ?? value },
           { title: 'Model', dataIndex: 'model', responsive: ['md'], render: (value) => <span className="mono">{value}</span> },
           { title: 'Giờ hẹn', dataIndex: 'scheduled_at', responsive: ['md'], render: datetime },
-          { title: 'Chi phí', dataIndex: 'cost_usd', responsive: ['md'], align: 'right', render: usd },
+          { title: 'Chi phí (VNĐ)', dataIndex: 'cost_vnd', responsive: ['md'], align: 'right', render: vnd },
           { title: 'Thao tác', key: 'actions', width: screens.md ? 220 : 140, render: (_, row) => {
             const available = row.status === 'failed' || (row.can_rewrite ?? ['completed', 'ready'].includes(row.status));
             const deletable = ['scheduled', 'queued', 'completed', 'ready', 'failed', 'canceled'].includes(row.status);

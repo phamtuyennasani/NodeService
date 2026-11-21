@@ -22,7 +22,9 @@ const fieldsSchema = z.object({
 function display(row: any, usdToVnd: number) {
   const rates = row.rates ?? {}
   const totalUsd = rates.total ?? rates.input
-  const totalVnd = rates.totalVnd ?? (totalUsd == null ? null : new Decimal(totalUsd).times(usdToVnd).toFixed(0))
+  const totalVnd = rates.totalVnd == null
+    ? (totalUsd == null ? null : new Decimal(totalUsd).times(rates.exchange_rate ?? usdToVnd).toFixed())
+    : String(rates.totalVnd)
   return {
     id: row._id,
     provider: row.provider,
@@ -55,8 +57,13 @@ export function registerPrices(app: FastifyInstance, db: Database, config: Confi
     const fields = fieldsSchema.parse(request.body)
     const known = await collection(db, 'ai_models').findOne({ _id: fields.model, provider: fields.provider }) || await collection(db, 'model_prices').findOne({ model: fields.model, provider: fields.provider })
     if (!known) throw new ApiError(400, 'model_provider_mismatch', 'Thêm model vào danh mục của nhà cung cấp trước khi nhập giá.')
+    const total = new Decimal(fields.total_vnd).div(config.usdToVnd).toFixed(12)
+    if (new Decimal(fields.total_vnd).gt(0) && new Decimal(total).isZero()) {
+      throw new ApiError(400, 'price_below_precision', 'Đơn giá quá nhỏ để tính chi phí chính xác. Vui lòng nhập giá lớn hơn hoặc bằng độ chính xác USD hỗ trợ.')
+    }
     const rates = {
-      total: new Decimal(fields.total_vnd).div(config.usdToVnd).toFixed(12),
+      total,
+      totalVnd: fields.total_vnd,
       currency: 'USD',
       exchange_rate: config.usdToVnd,
     }

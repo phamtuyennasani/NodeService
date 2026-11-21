@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { build } from 'esbuild';
 import { chromium, type Browser } from 'playwright';
@@ -12,8 +13,9 @@ const report: DashboardData = {
   metrics: {
     customers: 1, websites: 1, articles: 12, delivered: 10, pending: 4,
     write_errors: 0, delivery_errors: 0, service_cost_usd: 0, customer_cost_usd: 0, unpriced_attempts: 0,
+    service_cost_vnd: '3125', customer_cost_vnd: '9375', total_cost_vnd: '12500',
   },
-  series: [], upcoming: [], failures: [],
+  series: [{ date: '2020-01-01', articles: 12, delivered: 10, service_cost_usd: '0.125', customer_cost_usd: '0.375', service_cost_vnd: '3125', customer_cost_vnd: '9375', unpriced_attempts: 0 }], upcoming: [], failures: [],
 };
 
 function writingJob(id: string, keyword: string): Job {
@@ -156,6 +158,28 @@ test('CRM overview shows current jobs and processing slots independently from hi
   });
   const browser = await chromium.launch();
   try {
+    await t.test('dashboard cost totals, source breakdown and chart tooltips display Vietnamese dong', async () => {
+      const { page, unexpected, pageErrors } = await mockDashboard(browser, outputFiles[0].text);
+      try {
+        await page.addStyleTag({ content: (await readFile('web/src/styles.css', 'utf8')).replace(/^@import[^;]+;\s*/m, '') });
+        await page.addStyleTag({ content: await readFile('web/src/dashboard.css', 'utf8') });
+        await page.addStyleTag({ content: '#root { max-width: 1200px; margin: 24px auto; padding: 0 24px; }' });
+        const cost = page.locator('.dash-cost');
+        await cost.locator('.dash-cost-total').getByText('VNĐ', { exact: true }).waitFor();
+        assert.match(await cost.locator('.dash-cost-total').innerText(), /12\.500\s+VNĐ/);
+        await cost.locator('.dash-cost-sources').getByText(/3\.125\s₫/, { exact: true }).waitFor();
+        await cost.locator('.dash-cost-sources').getByText(/9\.375\s₫/, { exact: true }).waitFor();
+        const dot = cost.locator('.recharts-area-dots circle').first();
+        await dot.hover({ force: true });
+        await cost.locator('.recharts-default-tooltip').getByText(/3\.125\s₫/, { exact: true }).waitFor();
+        await cost.locator('.recharts-default-tooltip').getByText(/9\.375\s₫/, { exact: true }).waitFor();
+        assert.doesNotMatch(await cost.innerText(), /USD|US\$/);
+        if (process.env.CRM_CURRENCY_SCREENSHOT) await page.screenshot({ path: process.env.CRM_CURRENCY_SCREENSHOT, fullPage: true });
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
     await t.test('job completion, deletion and reconnect update report counters and queues with a trailing refresh', async () => {
       const { page, reportRequests, reportData, emitJobEvent, holdNextReport, pageErrors } = await mockDashboard(browser, outputFiles[0].text);
       try {
@@ -163,6 +187,9 @@ test('CRM overview shows current jobs and processing slots independently from hi
         await page.locator('.dash-metric').filter({ hasText: 'Bài đã viết' }).getByText('12', { exact: true }).waitFor();
         const held = holdNextReport();
         reportData.metrics.articles = 13;
+        reportData.metrics.service_cost_vnd = '500';
+        reportData.metrics.customer_cost_vnd = '0.25';
+        reportData.metrics.total_cost_vnd = '500.25';
         reportData.upcoming = [{ ...writingJob(activeId, 'lịch cần xóa'), status: 'scheduled' }];
         await emitJobEvent('job.updated', { job_id: activeId });
         await page.clock.fastForward(200);
@@ -177,6 +204,8 @@ test('CRM overview shows current jobs and processing slots independently from hi
         held.release();
         await completed;
         await page.locator('.dash-metric').filter({ hasText: 'Bài đã viết' }).getByText('13', { exact: true }).waitFor();
+        await page.locator('.dash-cost-sources').getByText('< 1 ₫', { exact: true }).waitFor();
+        assert.match(await page.locator('.dash-cost-total').innerText(), /500\s+VNĐ/);
         await page.getByRole('button', { name: /lịch cần xóa/ }).waitFor();
         const trailing = reportResponse();
         await page.clock.fastForward(200);

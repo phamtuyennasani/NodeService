@@ -4,12 +4,21 @@ import { build } from 'esbuild';
 import { chromium, type Browser } from 'playwright';
 import type { JobDetails } from '../web/src/types';
 import { evaluateSeo } from '../src/worker/seo.js';
+import { vnd } from '../web/src/shared';
 
 const origin = 'http://localhost:3221';
 const failedId = '9e18af13-7d6c-4d74-8ead-4c75e706f20c';
 const activeId = '12850dc1-a858-42dd-881a-48daff6bb34a';
 const completedId = '6ca7e10e-baf6-47d1-a04e-47bd5a194385';
 const rewrittenId = '03098082-fe1c-4eae-8e60-a8af43906332';
+
+test('Vietnamese money formatting distinguishes small costs, zero and missing costs', () => {
+  assert.match(vnd('1234567.5'), /^1\.234\.568\s₫$/);
+  assert.equal(vnd('0.000000000001'), '< 1 ₫');
+  assert.equal(vnd('0.999999999999'), '< 1 ₫');
+  assert.match(vnd('0'), /^0\s₫$/);
+  for (const value of [undefined, null, '', 'not-money', Infinity]) assert.equal(vnd(value), '—');
+});
 
 function failedJob(): JobDetails {
   return {
@@ -127,13 +136,14 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
       const { page, row, details, detailReads, emitJobEvent, unexpected, pageErrors } = fixture;
       try {
         const completed = { ...details.get(activeId)!, status: 'completed', can_rewrite: true, writing_stage: null,
-          updated_at: '2026-11-20T05:00:00Z', completed_at: '2026-11-20T05:00:00Z', cost_usd: '0.012300000000',
+          updated_at: '2026-11-20T05:00:00Z', completed_at: '2026-11-20T05:00:00Z', cost_usd: '0.012300000000', cost_vnd: '307.500000000000',
           result: details.get(completedId)!.result } satisfies JobDetails;
         details.set(activeId, completed);
         await emitJobEvent('job.updated', { job_id: activeId, status: 'completed' });
         await row('bài đang viết').getByRole('button', { name: 'Xóa bài viết' }).waitFor();
         assert.equal(await row('bài đang viết').getByRole('button', { name: /Viết lại/ }).isEnabled(), true);
-        assert.match(await row('bài đang viết').innerText(), /0[,.]0123/);
+        assert.match(await row('bài đang viết').innerText(), /308\s₫/);
+        assert.doesNotMatch(await row('bài đang viết').innerText(), /USD|US\$/);
         assert.equal(fixture.listReads(), 1, 'a job event must not reload the collection');
         assert.deepEqual(detailReads, [activeId]);
 
@@ -175,15 +185,40 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
       const { page, row, details, emitJobEvent, unexpected, pageErrors } = fixture;
       try {
         details.set(activeId, { ...details.get(activeId)!, updated_at: '2026-11-20T03:00:00Z', attempts: [
-          { id: 'old-cost', provider: 'openai', model: 'test', status: 'failed', started_at: '2026-11-20T03:00:00Z', cost_usd: '9' },
-          { id: 'new-cost', provider: 'openai', model: 'test', status: 'succeeded', started_at: '2026-11-21T03:00:00Z', cost_usd: '0.0123' },
+          { id: 'old-cost', provider: 'openai', model: 'test', status: 'failed', started_at: '2026-11-20T03:00:00Z', cost_usd: '9', cost_vnd: '225000' },
+          { id: 'new-cost', provider: 'openai', model: 'test', status: 'succeeded', started_at: '2026-11-21T03:00:00Z', cost_usd: '0.0123', cost_vnd: '307.5' },
+          { id: 'new-fraction', provider: 'openai', model: 'test', status: 'succeeded', started_at: '2026-11-21T04:00:00Z', cost_usd: '0.00002', cost_vnd: '0.5' },
         ] });
         await emitJobEvent('job.updated', { job_id: activeId });
-        await row('bài đang viết').getByText(/0[,.]0123/).waitFor();
+        await row('bài đang viết').getByText(/308\s₫/).waitFor();
         assert.equal(await row('bài đang viết').count(), 1, 'an old job remains in the cost period of its new attempt');
-        details.set(activeId, { ...details.get(activeId)!, cost_usd: '0.0234' });
+        details.set(activeId, { ...details.get(activeId)!, cost_usd: '0.0234', cost_vnd: '585' });
         await page.getByRole('button', { name: /Làm mới/ }).first().click();
-        await row('bài đang viết').getByText(/0[,.]0234/).waitFor();
+        await row('bài đang viết').getByText(/585\s₫/).waitFor();
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('job costs and AI attempts use VND while preserving pending and sub-dong costs', async () => {
+      const { page, row, details, emitJobEvent, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        details.set(completedId, { ...details.get(completedId)!, cost_usd: '0.000012', cost_vnd: '0.3', attempts: [
+          { id: 'priced', provider: 'openai', model: 'Lượt tính phí', status: 'succeeded', started_at: '2026-11-20T03:00:00Z', cost_usd: '0.0123', cost_vnd: '307.5' },
+          { id: 'tiny', provider: 'openai', model: 'Lượt rất nhỏ', status: 'succeeded', started_at: '2026-11-20T03:00:00Z', cost_usd: '0.000012', cost_vnd: '0.3' },
+          { id: 'zero', provider: 'openai', model: 'Lượt miễn phí', status: 'succeeded', started_at: '2026-11-20T03:00:00Z', cost_usd: '0', cost_vnd: '0' },
+          { id: 'unpriced', provider: 'openai', model: 'Lượt chưa có giá', status: 'succeeded', started_at: '2026-11-20T03:00:00Z', cost_usd: null, cost_vnd: null },
+        ] });
+        await emitJobEvent('job.updated', { job_id: completedId });
+        await row('bài đã hoàn tất').getByText('< 1 ₫', { exact: true }).waitFor();
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        await drawer.getByRole('tab', { name: 'Lần gọi AI (4)', exact: true }).click();
+        await drawer.getByText(/308\s₫/, { exact: true }).waitFor();
+        await drawer.getByText('< 1 ₫', { exact: true }).waitFor();
+        await drawer.getByText(/^0\s₫$/, { exact: true }).waitFor();
+        await drawer.getByText('Chờ đối soát', { exact: true }).waitFor();
+        assert.doesNotMatch(await drawer.innerText(), /USD|US\$/);
         assert.deepEqual(unexpected, []);
         assert.deepEqual(pageErrors, []);
       } finally { await page.close(); }

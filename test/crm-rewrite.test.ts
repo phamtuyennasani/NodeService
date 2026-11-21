@@ -83,7 +83,7 @@ function memoryDatabase(tables: Tables): Database {
   return { db, client } as unknown as Database
 }
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, usdToVnd = 25_000) {
   const customerId = randomUUID()
   const siteId = randomUUID()
   const sourceId = randomUUID()
@@ -108,7 +108,7 @@ async function fixture(t: test.TestContext) {
     ai_providers: [{ _id: 'openai', enabled: true }],
     quota_reservations: [],
   }
-  const config = { encryptionKey: Buffer.alloc(32, 17), serviceKeys: { openai: 'fake-service-key' } } as unknown as Config
+  const config = { encryptionKey: Buffer.alloc(32, 17), serviceKeys: { openai: 'fake-service-key' }, usdToVnd } as unknown as Config
   const app = Fastify()
   installErrorHandler(app)
   registerReports(app, memoryDatabase(tables), config)
@@ -118,18 +118,36 @@ async function fixture(t: test.TestContext) {
 }
 
 test('CRM job detail carries the same precise priced cost used for targeted row updates', async t => {
-  const { app, tables, sourceId } = await fixture(t)
+  const { app, tables, sourceId } = await fixture(t, 27_123)
   tables.ai_attempts = [
     { _id: randomUUID(), job_id: sourceId, cost_usd: '0.100000000001' },
     { _id: randomUUID(), job_id: sourceId, cost_usd: '0.2' },
     { _id: randomUUID(), job_id: sourceId, cost_usd: null },
   ]
   const request = () => app.inject({ method: 'GET', url: `/jobs/${sourceId}` })
-  assert.equal((await request()).json().cost_usd, '0.300000000001')
+  const priced = await request()
+  assert.equal(priced.statusCode, 200, priced.body)
+  assert.equal(priced.json().cost_usd, '0.300000000001')
+  assert.equal(priced.json().cost_vnd, '8136.900000027123')
+  assert.deepEqual(priced.json().attempts.map((attempt: Row) => attempt.cost_vnd), ['2712.300000027123', '5424.600000000000', null])
   tables.ai_attempts = [{ _id: randomUUID(), job_id: sourceId, cost_usd: '0' }]
-  assert.equal((await request()).json().cost_usd, '0.000000000000')
-  tables.ai_attempts = [{ _id: randomUUID(), job_id: sourceId, cost_usd: null }]
-  assert.equal((await request()).json().cost_usd, null)
+  const zero = (await request()).json()
+  assert.equal(zero.cost_usd, '0.000000000000')
+  assert.equal(zero.cost_vnd, '0.000000000000')
+  assert.equal(zero.attempts[0].cost_vnd, '0.000000000000')
+  tables.ai_attempts = [
+    { _id: randomUUID(), job_id: sourceId, cost_usd: null },
+    { _id: randomUUID(), job_id: sourceId, cost_usd: '' },
+    { _id: randomUUID(), job_id: sourceId },
+  ]
+  const unpriced = (await request()).json()
+  assert.equal(unpriced.cost_usd, null)
+  assert.equal(unpriced.cost_vnd, null)
+  assert.deepEqual(unpriced.attempts.map((attempt: Row) => attempt.cost_vnd), [null, null, null])
+  tables.ai_attempts = [{ _id: randomUUID(), job_id: sourceId, cost_usd: '0.000000000001' }]
+  const tiny = (await request()).json()
+  assert.equal(tiny.cost_vnd, '0.000000027123')
+  assert.equal(tiny.attempts[0].cost_vnd, '0.000000027123')
 })
 
 test('CRM rewrite queues a separate version and retains source settings and instructions', async t => {

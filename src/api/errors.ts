@@ -56,7 +56,7 @@ export const timestampSchema = z.iso.datetime({ offset: true })
 export const quantitySchema = z.number().int().positive().max(25_000)
 export const articleLengthSchema = z.number().int().min(600).max(2_500)
 export const moneySchema = z.union([z.number(), z.string()]).transform(String).pipe(
-  z.string().regex(/^\d{1,9}(?:\.\d{1,10})?$/),
+  z.string().regex(/^\d{1,9}(?:\.\d{1,12})?$/),
 )
 
 export function notFound() {

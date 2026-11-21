@@ -70,6 +70,9 @@ function costSummary(rows: any[], attempts: any[], from: Date, to: Date) {
 function costValue(value: Decimal) { return value.toFixed(12) }
 
 export function registerReports(app: FastifyInstance, db: Database, config: Config) {
+  const costVnd = (value: Decimal.Value | null | undefined) => value == null || value === ''
+    ? null
+    : new Decimal(value).times(config.usdToVnd).toFixed(12)
   const liveJobs = new DatabaseJobEvents(db, error => app.log.warn({ err: error }, 'CRM job event stream reconnecting'))
   const closeStreams = new Set<() => void>()
   app.addHook('onReady', async () => { liveJobs.start() })
@@ -248,6 +251,8 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
         delivered: dayDeliveries.length,
         service_cost_usd: costValue(point?.service ?? new Decimal(0)),
         customer_cost_usd: costValue(point?.customer ?? new Decimal(0)),
+        service_cost_vnd: costVnd(point?.service ?? new Decimal(0)),
+        customer_cost_vnd: costVnd(point?.customer ?? new Decimal(0)),
         unpriced_attempts: point?.unpriced ?? 0,
       })
     }
@@ -263,6 +268,9 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
         delivery_errors: deliveries.filter(delivery => delivery.status === 'failed').length,
         service_cost_usd: costValue(costs.totals.service),
         customer_cost_usd: costValue(costs.totals.customer),
+        service_cost_vnd: costVnd(costs.totals.service),
+        customer_cost_vnd: costVnd(costs.totals.customer),
+        total_cost_vnd: costVnd(costs.totals.service.plus(costs.totals.customer)),
         unpriced_attempts: costs.totals.unpriced,
       },
       series,
@@ -295,7 +303,9 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
     attempts ??= await collection<any>(db, 'ai_attempts').find({ job_id: { $in: mapped.map(row => row.id) } }).toArray()
     for (const row of mapped) {
       const priced = attempts.filter(attempt => attempt.job_id === row.id && attempt.cost_usd != null && attempt.cost_usd !== '')
-      row.cost_usd = priced.length ? costValue(priced.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new Decimal(0))) : null
+      const cost = priced.length ? priced.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new Decimal(0)) : null
+      row.cost_usd = cost == null ? null : costValue(cost)
+      row.cost_vnd = costVnd(cost)
     }
     return pageOf(mapped, filters.limit)
   })
@@ -336,10 +346,12 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
     ])
     const ready = row.status === 'ready'
     const pricedAttempts = attempts.filter(attempt => attempt.cost_usd != null && attempt.cost_usd !== '')
+    const cost = pricedAttempts.length ? pricedAttempts.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new Decimal(0)) : null
     reply.header('Cache-Control', 'no-store')
     return {
       ...reportJob({ ...row, customer, site }),
-      cost_usd: pricedAttempts.length ? costValue(pricedAttempts.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new Decimal(0))) : null,
+      cost_usd: cost == null ? null : costValue(cost),
+      cost_vnd: costVnd(cost),
       rewrite_key_mode: customer?.key_mode ?? row.key_mode,
       outline: ready ? row.outline ?? null : null,
       result: ready && Array.isArray(row.result) ? row.result.map(normalizeArticleFields) : ready ? row.result : null,
@@ -350,7 +362,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
         id: attempt._id, provider: attempt.provider, model: attempt.model, stage: attempt.stage ?? null,
         status: attempt.status, started_at: attempt.requested_at, called_at: attempt.requested_at,
         pricing_id: attempt.pricing_id, pricing_snapshot: attempt.pricing_snapshot, provider_response_id: attempt.provider_response_id,
-        usage: attempt.usage, finished_at: attempt.finished_at, cost_usd: attempt.cost_usd, cost_source: attempt.cost_source,
+        usage: attempt.usage, finished_at: attempt.finished_at, cost_usd: attempt.cost_usd, cost_vnd: costVnd(attempt.cost_usd), cost_source: attempt.cost_source,
         error_code: attempt.error_code, error_message: attempt.error,
       })),
       deliveries: await Promise.all(deliveries.map(delivery => deliveryView(db, delivery))),

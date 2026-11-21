@@ -102,6 +102,7 @@ export interface Job {
   retry_of_job_id?: string | null;
   idempotency_key?: string;
   cost_usd?: string | null;
+  cost_vnd?: string | null;
   provider?: string;
   key_mode?: string;
   attempt_count?: number;
@@ -134,6 +135,7 @@ export interface Attempt {
   usage?: object | null;
   finished_at?: string | null;
   cost_usd?: string | number | null;
+  cost_vnd?: string | number | null;
   cost_source?: string | null;
   error_code?: string | null;
   error_message?: string | null;
@@ -200,6 +202,9 @@ export interface DashboardData {
     delivery_errors: number;
     service_cost_usd: string | number;
     customer_cost_usd: string | number;
+    service_cost_vnd: string | number;
+    customer_cost_vnd: string | number;
+    total_cost_vnd: string | number;
     unpriced_attempts: number;
   };
   series: {
@@ -208,6 +213,8 @@ export interface DashboardData {
     delivered: number;
     service_cost_usd: string | number;
     customer_cost_usd: string | number;
+    service_cost_vnd: string | number;
+    customer_cost_vnd: string | number;
     unpriced_attempts: number;
   }[];
   upcoming: Job[];
