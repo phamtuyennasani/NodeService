@@ -37,6 +37,13 @@ export async function transaction<T>(db: Database, fn: (context: TransactionCont
   }
 }
 
+export async function assertTransactionSupport(db: Database) {
+  const hello = await db.db.command({ hello: 1 })
+  if (hello.logicalSessionTimeoutMinutes == null || (!hello.setName && hello.msg !== 'isdbgrid')) {
+    throw new Error('MONGODB_URI must point to a MongoDB replica set or sharded cluster to support transactions.')
+  }
+}
+
 export async function close(db: Database) {
   await db.client.close()
 }

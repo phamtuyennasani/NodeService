@@ -1,5 +1,7 @@
 import { Parser } from 'htmlparser2'
 
+// Editorial checklist thresholds retained for CRM/widget API compatibility.
+// They are not Google requirements or evidence of search ranking or content quality.
 export const SEO_LIMITS = {
   title: { min: 41, max: 70 },
   metaDescription: { min: 155, max: 160 },
@@ -71,13 +73,14 @@ export interface SeoInput {
 }
 
 export function seoPromptGuidance(length: number): string[] {
-  const { title, metaDescription, contentWords, slugMax, openingFraction, paragraphMaxWords } = SEO_LIMITS
+  const { paragraphMaxWords } = SEO_LIMITS
   return [
-    'Dùng nguyên cụm từ khóa chính tự nhiên trong Title, Description, Slug, Content và ít nhất một tiêu đề phụ h2, h3 hoặc h4. Dùng biến thể ngữ nghĩa ở các phần khác khi phù hợp, tránh nhồi từ khóa.',
-    'Title dài ' + title.min + '–' + title.max + ' ký tự và khớp ý định tìm kiếm. Đặt từ khóa chính trong một phần ba đầu Title. Desc là tóm tắt hữu ích cho người đọc. Description dài ' + metaDescription.min + '–' + metaDescription.max + ' ký tự và nêu rõ bài giải đáp gì.',
-    'Content dài ' + contentWords.min + '–' + contentWords.max + ' từ, nên gần ' + length + ' từ nếu chủ đề phù hợp. Đặt từ khóa chính trong ' + (openingFraction * 100) + '% số từ đầu bài. Viết ít nhất hai đoạn p có nội dung, mỗi đoạn tối đa ' + paragraphMaxWords + ' từ.',
-    'Slug chứa từ khóa chính ở dạng không dấu, viết thường, ngăn cách từ bằng dấu gạch ngang, dài tối đa ' + slugMax + ' ký tự.',
-    'Tham khảo mật độ từ khóa chính khoảng 1% theo số lần xuất hiện trên tổng số từ. Chỉ thêm từ khóa ở vị trí có ích, dùng biến thể liên quan khi phù hợp; không lặp câu hoặc làm giảm độ tự nhiên để đạt tỷ lệ.',
+    'Ưu tiên trả lời đúng nhu cầu và ý định tìm kiếm của người đọc bằng nội dung chính xác, liên quan và có giá trị bổ sung; không viết chỉ để đạt điểm SEO hoặc thu hút lượt tìm kiếm.',
+    'Title mô tả trung thực nội dung, rõ ràng, riêng biệt và không giật tít. Desc tóm tắt hữu ích cho người đọc. Description tóm tắt chính xác điều bài viết giải đáp; không kéo dài hoặc cắt ý chỉ để đạt một số ký tự cố định.',
+    'Viết đủ để giải đáp chủ đề, tham khảo mục tiêu ' + length + ' từ của yêu cầu khi phù hợp. Không thêm câu cho đủ số từ, không cắt phần cần thiết để đạt ngưỡng. Chia ý thành các đoạn p dễ đọc, ưu tiên đoạn ngắn khoảng ' + paragraphMaxWords + ' từ khi phù hợp.',
+    'Dùng từ khóa và biến thể ngữ nghĩa tự nhiên để diễn đạt chủ đề. Không bắt buộc lặp nguyên cụm từ khóa trong mọi trường, ở đầu Title, trong 10% đầu bài hay trong tiêu đề phụ; không nhồi từ khóa hoặc viết để đạt mật độ cố định.',
+    'Slug ngắn gọn, mô tả đúng chủ đề, không dấu, viết thường và ngăn cách từ bằng dấu gạch ngang. Chỉ chèn liên kết nội bộ có thật, liên quan và giúp người đọc tìm hiểu thêm; dùng văn bản liên kết mô tả rõ trang đích.',
+    'Các ngưỡng ký tự, số từ, vị trí và mật độ từ khóa trong báo cáo chỉ là gợi ý biên tập nội bộ, không phải yêu cầu của Google, kiểm chứng chất lượng hay bảo đảm thứ hạng. Nội dung và metadata cần được người biên tập kiểm tra tính chính xác trước khi xuất bản.',
   ]
 }
 
@@ -211,6 +214,7 @@ export function evaluateSeoFields(input: SeoInput): SeoReport {
   const titleKeywordCutoff = Math.ceil(size(normalizedTitle) * titleKeywordFraction)
   const slug = rawSlug.trim()
   const normalizedSlug = slugify(slug)
+  const hasValidSlugFormat = Boolean(slug) && normalizedSlug === slug
   const keywordSlug = slugify(keyword)
   const site = siteAddress(input.siteUrl)
   const hasInternalLink = html.links.some(href => isInternalLink(href, site))
@@ -227,21 +231,21 @@ export function evaluateSeoFields(input: SeoInput): SeoReport {
 
   const findings = [
     finding('keywordNotUsed', keywordPresent, keywordPresent ? 'Đã có từ khóa chính.' : 'Nhập từ khóa chính để kiểm tra và tối ưu bài viết.', false),
-    finding('keywordInTitle', Boolean(titleMatch), 'Đặt nguyên cụm từ khóa chính trong tiêu đề SEO.', keywordPresent),
-    finding('titleStartWithKeyword', titleKeywordIndex >= 0 && titleKeywordIndex < titleKeywordCutoff, 'Đặt từ khóa chính trong một phần ba đầu tiêu đề SEO.', keywordPresent),
-    finding('lengthTitle', inRange(metrics.titleCharacters, titleLimit), 'Tiêu đề SEO có ' + metrics.titleCharacters + ' ký tự. Mục tiêu là ' + titleLimit.min + '–' + titleLimit.max + ' ký tự.'),
-    finding('keywordInMetaDescription', matches(normalize(description, locale)).length > 0, 'Đặt nguyên cụm từ khóa chính trong mô tả SEO.', keywordPresent),
-    finding('lengthMetaDescription', inRange(metrics.metaDescriptionCharacters, metaDescription), 'Mô tả SEO có ' + metrics.metaDescriptionCharacters + ' ký tự. Mục tiêu là ' + metaDescription.min + '–' + metaDescription.max + ' ký tự.'),
-    finding('keywordInPermalink', Boolean(keywordSlug) && ('-' + normalizedSlug + '-').includes('-' + keywordSlug + '-'), 'Thêm từ khóa chính không dấu vào slug.', Boolean(keywordSlug)),
-    finding('lengthPermalink', Boolean(slug) && normalizedSlug === slug && metrics.slugCharacters <= slugMax, 'Slug có ' + metrics.slugCharacters + ' ký tự. Dùng 1–' + slugMax + ' ký tự không dấu, viết thường và ngăn từ bằng dấu gạch ngang.'),
-    finding('keywordIn10Percent', contentMatches.some(match => match.index + match[0].length <= openingEnd), 'Đặt cụm từ khóa chính trong ' + (openingFraction * 100) + '% số từ đầu bài.', keywordPresent),
-    finding('keywordInContent', contentMatches.length > 0, 'Dùng nguyên cụm từ khóa chính ở vị trí phù hợp trong nội dung.', keywordPresent),
-    finding('lengthContent', inRange(metrics.words, contentWords), 'Nội dung có ' + metrics.words + ' từ. Mục tiêu là ' + contentWords.min + '–' + contentWords.max + ' từ.'),
-    finding('linksHasInternal', hasInternalLink, hasInternalLink ? 'Đã có liên kết nội bộ.' : site ? 'Thêm liên kết đến một trang có thật và liên quan trên cùng website.' : 'Chưa có thông tin tên miền để kiểm tra liên kết.', false, Boolean(site || hasInternalLink)),
-    finding('keywordInSubheadings', html.headings.some(heading => matches(normalize(heading, locale)).length > 0), 'Đặt từ khóa chính tự nhiên trong một tiêu đề phụ.', keywordPresent),
+    finding('keywordInTitle', Boolean(titleMatch), 'Gợi ý biên tập: cân nhắc từ khóa hoặc biến thể phù hợp trong tiêu đề mô tả đúng nội dung; không bắt buộc lặp nguyên cụm.', false),
+    finding('titleStartWithKeyword', titleKeywordIndex >= 0 && titleKeywordIndex < titleKeywordCutoff, 'Vị trí từ khóa trong một phần ba đầu tiêu đề chỉ là gợi ý nội bộ; ưu tiên tiêu đề rõ nghĩa, tự nhiên.', false),
+    finding('lengthTitle', inRange(metrics.titleCharacters, titleLimit), 'Tiêu đề SEO có ' + metrics.titleCharacters + ' ký tự. Khoảng ' + titleLimit.min + '–' + titleLimit.max + ' là gợi ý nội bộ, không phải giới hạn của Google; ưu tiên mô tả chính xác và rõ ràng.', false),
+    finding('keywordInMetaDescription', matches(normalize(description, locale)).length > 0, 'Gợi ý biên tập: mô tả đúng nội dung bằng từ ngữ tự nhiên, có thể dùng từ khóa hoặc biến thể khi phù hợp.', false),
+    finding('lengthMetaDescription', inRange(metrics.metaDescriptionCharacters, metaDescription), 'Mô tả SEO có ' + metrics.metaDescriptionCharacters + ' ký tự. Khoảng ' + metaDescription.min + '–' + metaDescription.max + ' là gợi ý nội bộ, không phải giới hạn của Google; không kéo dài hay cắt ý chỉ để đạt số ký tự.', false),
+    finding('keywordInPermalink', Boolean(keywordSlug) && ('-' + normalizedSlug + '-').includes('-' + keywordSlug + '-'), 'Gợi ý biên tập: slug nên ngắn gọn, mô tả đúng chủ đề; không bắt buộc chứa nguyên cụm từ khóa.', false),
+    finding('lengthPermalink', hasValidSlugFormat && metrics.slugCharacters <= slugMax, 'Slug có ' + metrics.slugCharacters + ' ký tự. Dùng slug có nội dung, không dấu, viết thường và ngăn từ bằng dấu gạch ngang. Mốc ' + slugMax + ' ký tự là gợi ý nội bộ.', !hasValidSlugFormat),
+    finding('keywordIn10Percent', contentMatches.some(match => match.index + match[0].length <= openingEnd), 'Vị trí từ khóa trong ' + (openingFraction * 100) + '% đầu bài chỉ là gợi ý nội bộ; phần mở đầu nên giúp người đọc hiểu đúng chủ đề.', false),
+    finding('keywordInContent', contentMatches.length > 0, 'Gợi ý biên tập: diễn đạt đúng chủ đề bằng từ khóa và biến thể tự nhiên, không bắt buộc lặp nguyên cụm.', false),
+    finding('lengthContent', inRange(metrics.words, contentWords), 'Nội dung có ' + metrics.words + ' từ. Khoảng ' + contentWords.min + '–' + contentWords.max + ' là gợi ý nội bộ; Google không quy định số từ ưu tiên. Viết đủ để giải đáp nhu cầu, không thêm hoặc cắt nội dung chỉ để đạt ngưỡng.', false),
+    finding('linksHasInternal', hasInternalLink, hasInternalLink ? 'Phát hiện liên kết cùng website; chưa xác minh URL hoạt động hoặc nội dung trang đích phù hợp.' : site ? 'Chỉ thêm liên kết đến trang có thật, liên quan trên cùng website khi giúp ích cho người đọc; kiểm tra trang đích trước khi xuất bản.' : 'Chưa có thông tin tên miền để kiểm tra liên kết.', false, Boolean(site || hasInternalLink)),
+    finding('keywordInSubheadings', html.headings.some(heading => matches(normalize(heading, locale)).length > 0), 'Gợi ý biên tập: tiêu đề phụ nên mô tả rõ phần nội dung; chỉ dùng từ khóa hoặc biến thể khi phù hợp.', false),
     finding('keywordInImageAlt', false, 'Chưa chấm văn bản thay thế của ảnh.', false, false),
-    finding('keywordDensity', inRange(metrics.keywordDensity, density), 'Mật độ từ khóa hiện là ' + metrics.keywordDensity + '% (' + metrics.keywordOccurrences + ' lần). Tham khảo khoảng ' + density.min + '–' + density.max + '%, ưu tiên câu văn tự nhiên.', false, keywordPresent && metrics.words > 0),
-    finding('contentHasShortParagraphs', paragraphWords.length >= 2 && metrics.longestParagraphWords <= paragraphMaxWords, 'Dùng ít nhất hai đoạn văn có nội dung, mỗi đoạn tối đa ' + paragraphMaxWords + ' từ. Đoạn dài nhất hiện có ' + metrics.longestParagraphWords + ' từ.'),
+    finding('keywordDensity', inRange(metrics.keywordDensity, density), 'Mật độ từ khóa hiện là ' + metrics.keywordDensity + '% (' + metrics.keywordOccurrences + ' lần). Khoảng ' + density.min + '–' + density.max + '% là ngưỡng tham khảo nội bộ, không phải mục tiêu bắt buộc hay yêu cầu của Google; ưu tiên câu văn tự nhiên.', false, keywordPresent && metrics.words > 0),
+    finding('contentHasShortParagraphs', paragraphWords.length >= 2 && metrics.longestParagraphWords <= paragraphMaxWords, 'Gợi ý dễ đọc của CRM: chia ít nhất hai đoạn văn có nội dung, ưu tiên mỗi đoạn không quá ' + paragraphMaxWords + ' từ và giữ trọn ý. Đoạn dài nhất hiện có ' + metrics.longestParagraphWords + ' từ; đây không phải yêu cầu của Google.'),
     finding('contentHasAssets', false, 'Chưa chấm ảnh minh họa.', false, false),
   ]
   const applicable = findings.filter(item => item.applicable).length

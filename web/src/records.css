@@ -96,6 +96,27 @@
 .record-provider-detail .panel-heading h2 { font-size: 21px; letter-spacing: -.04em; }
 .record-provider-key, .record-provider-toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .record-provider-key { margin: 0; }
+.record-compatible-group { margin-bottom: 20px; }
+.record-compatible-description { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+.record-compatible-providers { display: grid; gap: 8px; }
+.record-compatible-providers > button {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--text); text-align: left; cursor: pointer;
+}
+.record-compatible-providers > button:hover { border-color: #819584; }
+.record-compatible-providers > button[aria-pressed="true"] { border-color: #819584; background: #edf2e9; }
+.record-compatible-identity { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.record-compatible-identity strong { overflow-wrap: anywhere; font-size: 14px; }
+.record-compatible-identity small { color: var(--muted); overflow-wrap: anywhere; font-size: 12px; }
+.record-compatible-status { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+.record-compatible-providers .anticon { color: #315d49; }
+@media (max-width: 575px) {
+  .record-compatible-group .panel-heading { flex-wrap: wrap; }
+  .record-compatible-providers > button { flex-wrap: wrap; padding: 11px; }
+  .record-compatible-identity { flex-basis: calc(100% - 28px); }
+  .record-compatible-status { margin-right: auto; }
+}
 .record-provider-endpoint { margin: 8px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .record-provider-endpoint .mono { color: var(--text); margin-left: 6px; }
 .record-provider-note { margin-top: 16px; }
@@ -123,6 +144,7 @@
 .quota-reset { margin-top: 8px; }
 .secret-value { margin-top: 14px; }
 .article-preview { color: var(--text); line-height: 1.75; overflow-wrap: anywhere; }
+.editorial-review-notice { margin-bottom: 16px; }
 .article-preview .article-summary { margin-bottom: 16px; font-weight: 600; }
 .article-preview img { height: auto; max-width: 100%; }
 .article-preview table { display: block; overflow-x: auto; }

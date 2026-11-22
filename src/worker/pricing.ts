@@ -43,7 +43,7 @@ export function priceUsage(provider: Provider, rawRates: unknown, usage: Usage |
   }
   const rates = parsed.data
   if (rates.total != null) {
-    const totalTokens = (usage.input ?? 0) + (usage.cachedInput ?? 0) + (usage.cacheWrite5m ?? 0) + (usage.cacheWrite1h ?? 0) + (usage.output ?? 0) + (usage.reasoning ?? 0)
+    const totalTokens = (usage.input ?? 0) + (usage.cachedInput ?? 0) + (usage.cacheWrite5m ?? 0) + (usage.cacheWrite1h ?? 0) + (usage.output ?? 0)
     if (totalTokens <= 0) return { amount: null, source: 'pending' }
     return { amount: new Decimal(rates.total).times(totalTokens).div(1_000_000).plus(rates.request ?? 0).toFixed(12), source: 'estimated' }
   }

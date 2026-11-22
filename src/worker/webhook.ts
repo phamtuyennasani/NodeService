@@ -59,6 +59,27 @@ export interface WebhookInput {
 export interface WebhookResult {
   status: number
   retryAfterMs: number
+  acknowledgement?: WebhookAcknowledgement | null
+}
+
+export interface WebhookAcknowledgement {
+  success: true
+  id_post: string | number
+}
+
+/** Only this small acknowledgement is retained; response bodies may contain sensitive data. */
+export function parseWebhookAcknowledgement(value: unknown): WebhookAcknowledgement | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  if (row.success !== true) return null
+  if (typeof row.id_post === 'number') {
+    return Number.isSafeInteger(row.id_post) && row.id_post > 0 ? { success: true, id_post: row.id_post } : null
+  }
+  if (typeof row.id_post !== 'string') return null
+  const id = row.id_post.trim()
+  return id && id.length <= 160 && !/[\u0000-\u001f\u007f]/.test(row.id_post)
+    ? { success: true, id_post: id }
+    : null
 }
 
 export function webhookHeaders(input: WebhookInput): Record<string, string | number> {
@@ -114,11 +135,43 @@ export async function sendWebhook(input: WebhookInput): Promise<WebhookResult> {
       family: destination.family,
       lookup: (_host, _options, callback) => callback(null, destination.address, destination.family),
     }, response => {
-      resolve({
+      const result: WebhookResult = {
         status: response.statusCode ?? 502,
         retryAfterMs: retryAfter(typeof response.headers['retry-after'] === 'string' ? response.headers['retry-after'] : null),
+      }
+      // Failure notifications retain their HTTP-only contract. Non-2xx ready
+      // responses cannot acknowledge delivery, irrespective of their body.
+      if (input.event !== 'article.ready' || result.status < 200 || result.status >= 300) {
+        resolve(result)
+        response.destroy()
+        return
+      }
+      const chunks: Buffer[] = []
+      let bytes = 0
+      let finished = false
+      const finish = (acknowledgement: WebhookAcknowledgement | null) => {
+        if (finished) return
+        finished = true
+        resolve({ ...result, acknowledgement })
+      }
+      response.on('data', (chunk: Buffer) => {
+        bytes += chunk.length
+        if (bytes > 64 * 1_024) {
+          finish(null)
+          response.destroy()
+          return
+        }
+        chunks.push(chunk)
       })
-      response.destroy()
+      response.on('end', () => {
+        try {
+          finish(parseWebhookAcknowledgement(JSON.parse(Buffer.concat(chunks).toString('utf8'))))
+        } catch {
+          finish(null)
+        }
+      })
+      response.on('aborted', () => finish(null))
+      response.on('error', () => finish(null))
     })
     connection.on('error', () => {
       reject(new WorkerError('WEBHOOK_CONNECTION', 'Kết nối đến webhook gián đoạn hoặc hết thời gian chờ.', true))

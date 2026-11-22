@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { evaluateSeoFields, type SeoCriterion, type SeoInput, type SeoReport } from '../src/worker/seo.js'
+import { evaluateSeoFields, seoPromptGuidance, type SeoCriterion, type SeoInput, type SeoReport } from '../src/worker/seo.js'
 
 const article: SeoInput = {
   keyword: 'cà phê',
@@ -96,4 +96,72 @@ test('deferred images are excluded and missing site context cannot force an inte
     assert.equal(report.warnings.some(warning => warning.key === key), false)
   }
   assert.equal(evaluateSeoFields({ ...article, keyword: '' }).score, 0)
+})
+
+test('SEO generation guidance prioritizes people and treats mechanical ranges as editorial hints', () => {
+  const guidance = seoPromptGuidance(1_200).join('\n')
+  assert.match(guidance, /nhu cầu và ý định tìm kiếm của người đọc/)
+  assert.match(guidance, /chính xác, liên quan và có giá trị bổ sung/)
+  assert.match(guidance, /1200 từ/)
+  assert.match(guidance, /Không thêm câu cho đủ số từ, không cắt phần cần thiết/)
+  assert.match(guidance, /không kéo dài hoặc cắt ý chỉ để đạt một số ký tự cố định/)
+  assert.match(guidance, /không giật tít/)
+  assert.match(guidance, /không bắt buộc lặp nguyên cụm từ khóa/iu)
+  assert.match(guidance, /không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
+  assert.match(guidance, /không phải yêu cầu của Google/)
+  assert.match(guidance, /người biên tập kiểm tra tính chính xác trước khi xuất bản/)
+  assert.doesNotMatch(guidance, /Title dài 41|Description dài 155|mật độ từ khóa chính khoảng 1%/)
+})
+
+test('mechanical SEO warnings retain checklist metrics without triggering automatic repair', () => {
+  const report = evaluateSeoFields({
+    ...article,
+    title: 'Hướng dẫn',
+    description: 'Cách chọn thức uống phù hợp.',
+    slug: 'huong-dan',
+    contentHtml: '<h2>Chọn thức uống</h2><p>Chọn hương vị theo sở thích.</p><p>Ưu tiên nguyên liệu có thông tin rõ ràng.</p>',
+  })
+  const advisoryKeys = [
+    'keywordInTitle', 'titleStartWithKeyword', 'lengthTitle', 'keywordInMetaDescription',
+    'lengthMetaDescription', 'keywordInPermalink', 'keywordIn10Percent', 'keywordInContent',
+    'lengthContent', 'keywordInSubheadings', 'keywordDensity',
+  ] as const
+  for (const key of advisoryKeys) {
+    const advisory = finding(report, key)
+    assert.equal(advisory.applicable, true, key)
+    assert.equal(advisory.passed, false, key)
+    assert.equal(advisory.repairable, false, key)
+    assert.ok(report.warnings.some(warning => warning.key === key), key)
+  }
+  assert.equal(report.metrics.titleCharacters, Array.from('Hướng dẫn').length)
+  assert.equal(report.metrics.keywordOccurrences, 0)
+  assert.equal(report.metrics.keywordDensity, 0)
+  assert.equal(report.score, Math.ceil(report.passed / report.applicable * 100))
+  assert.equal(report.warnings.some(warning => warning.repairable), false)
+})
+
+test('only malformed slugs and readability issues remain automatically repairable', () => {
+  for (const slug of ['', 'Cách chọn cà phê']) {
+    const slugFinding = finding(evaluateSeoFields({ ...article, slug }), 'lengthPermalink')
+    assert.equal(slugFinding.passed, false, slug)
+    assert.equal(slugFinding.repairable, true, slug)
+  }
+  const longSlug = finding(evaluateSeoFields({ ...article, slug: 'a'.repeat(76) }), 'lengthPermalink')
+  assert.equal(longSlug.passed, false)
+  assert.equal(longSlug.repairable, false)
+
+  const longParagraph = finding(evaluateSeoFields({
+    ...article,
+    contentHtml: '<p>' + 'từ '.repeat(91) + '</p><p>Một đoạn khác.</p>',
+  }), 'contentHasShortParagraphs')
+  assert.equal(longParagraph.passed, false)
+  assert.equal(longParagraph.repairable, true)
+})
+
+test('internal link finding states presence without claiming destination verification', () => {
+  const report = evaluateSeoFields({ ...article, contentHtml: '<p><a href="/bai-viet">Tìm hiểu thêm về chủ đề</a></p>' })
+  const link = finding(report, 'linksHasInternal')
+  assert.equal(link.passed, true)
+  assert.equal(link.repairable, false)
+  assert.match(link.message, /chưa xác minh URL hoạt động hoặc nội dung trang đích phù hợp/)
 })

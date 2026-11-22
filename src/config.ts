@@ -1,7 +1,17 @@
 import type { ResearchConfig } from './worker/research.js';
 
 export const providers = ['openai', 'anthropic', 'xai', 'openai-compatible'] as const;
-export type Provider = typeof providers[number];
+export type BuiltinProvider = typeof providers[number];
+export type Provider = BuiltinProvider | `openai-compatible-${string}`;
+
+export function isCompatibleProvider(provider: string): boolean {
+  return provider === 'openai-compatible' || provider.startsWith('openai-compatible-');
+}
+
+/** A connection has its own identity while sharing an API protocol and defaults. */
+export function providerKind(provider: Provider): BuiltinProvider {
+  return isCompatibleProvider(provider) ? 'openai-compatible' : provider as BuiltinProvider;
+}
 
 export interface ProviderLimit {
   concurrency: number;
@@ -36,9 +46,11 @@ export function loadConfig() {
   }
   const aiTimeoutMs = positive('AI_TIMEOUT_MS', 120_000);
   const outlineTimeoutMs = positive('AI_OUTLINE_TIMEOUT_MS', aiTimeoutMs);
-  const seoRepairTimeoutMs = positive('AI_SEO_REPAIR_TIMEOUT_MS', aiTimeoutMs);
+  const seoRepairTimeoutMs = positive('AI_SEO_REPAIR_TIMEOUT_MS', 90_000);
   const leaseMs = positive('LEASE_MS', 150_000);
   const researchTimeoutMs = positive('RESEARCH_TIMEOUT_MS', 8_000);
+  const webhookRetryMinutes = positive('WEBHOOK_RETRY_MINUTES', 5);
+  if (webhookRetryMinutes > 1_440) throw new Error('WEBHOOK_RETRY_MINUTES must be between 1 and 1440');
   if (leaseMs <= aiTimeoutMs + researchTimeoutMs) throw new Error('LEASE_MS must exceed AI_TIMEOUT_MS plus RESEARCH_TIMEOUT_MS');
   const researchProvider: ResearchConfig['provider'] = process.env.RESEARCH_PROVIDER === 'tavily' ? 'tavily' : 'duckduckgo';
   const researchEndpoint = process.env.RESEARCH_ENDPOINT || (researchProvider === 'tavily' ? 'https://api.tavily.com/search' : undefined);
@@ -66,6 +78,10 @@ export function loadConfig() {
     poolSize: positive('DB_POOL_SIZE', 12),
     workerConcurrency: positive('WORKER_CONCURRENCY', 5),
     webhookConcurrency: positive('WEBHOOK_CONCURRENCY', 5),
+    writerMaxAttempts: 3,
+    webhookMaxAttempts: 5,
+    webhookTimeoutMs: 15_000,
+    webhookRetryMinutes,
     workerPollMs: positive('WORKER_POLL_MS', 500),
     aiTimeoutMs,
     outlineTimeoutMs,

@@ -30,6 +30,9 @@ function Quota({ title, period }: { title: string; period: UsagePeriod | null })
 function Profile({ customer }: { customer: Customer }) {
   const usage = useResource<Usage>(`/customers/${customer.id}/usage`);
   const websites = useResource<Collection<Website>>(withQuery('/websites', { customer_id: customer.id }));
+  const models = useResource<Collection<CatalogProvider>>(customer.key_mode === 'service' ? '/providers' : null);
+  const names = new Map((models.data?.data ?? []).flatMap(provider => provider.models.map(model => [model.model,
+    `${model.display_name} · ${provider.display_name}`] as const)));
   return <>
     <Descriptions className="profile-description" column={1} size="small" items={[
       { key: 'mode', label: 'Gói viết', children: customer.key_mode === 'service' ? 'Key dịch vụ' : 'Key riêng' },
@@ -42,7 +45,7 @@ function Profile({ customer }: { customer: Customer }) {
       {usage.loading && <div className="muted">Đang tải hạn mức…</div>}
       {usage.data && <div className="quota-grid"><Quota title="Hôm nay" period={usage.data.day} /><Quota title="Tháng này" period={usage.data.month} /></div>}
       <Descriptions className="profile-description" column={1} size="small" items={[
-        { key: 'models', label: 'Model được phép', children: customer.allowed_models?.join(', ') || '—' },
+        { key: 'models', label: 'Model được phép', children: customer.allowed_models?.map(model => names.get(model) ?? model).join(', ') || '—' },
         { key: 'words', label: 'Độ dài tối đa', children: customer.max_length ? `${number.format(customer.max_length)} từ` : '—' },
         { key: 'period', label: 'Hiệu lực', children: `${datetime(customer.active_from)} → ${datetime(customer.active_until)}` },
       ]} />
@@ -91,14 +94,15 @@ export function Customers({ query }: { query: URLSearchParams }) {
   const modelGroups = (catalog.data?.data ?? []).map(provider => ({
     label: provider.display_name,
     options: provider.models.filter(item => provider.enabled && item.enabled).map(item => ({
-      value: item.model, label: item.display_name === item.model ? item.model : `${item.display_name} (${item.model})`,
+      value: item.model, label: `${item.display_name === (item.upstream_model ?? item.model) ? item.display_name : `${item.display_name} (${item.upstream_model ?? item.model})`} · ${provider.display_name}`,
     })),
   })).filter(group => group.options.length);
   const available = new Set(modelGroups.flatMap(group => group.options.map(option => option.value)));
   const previousModels = editing && editing !== 'new' ? editing.allowed_models ?? [] : [];
   if (catalog.data) {
     const inactive = previousModels.filter(model => selectedModels.includes(model) && !available.has(model));
-    if (inactive.length) modelGroups.push({ label: 'Đã ngừng cung cấp', options: inactive.map(model => ({ value: model, label: model })) });
+    const inactiveNames = new Map(catalog.data.data.flatMap(provider => provider.models.map(model => [model.model, `${model.display_name} · ${provider.display_name}`] as const)));
+    if (inactive.length) modelGroups.push({ label: 'Đã ngừng cung cấp', options: inactive.map(model => ({ value: model, label: inactiveNames.get(model) ?? model })) });
   }
   const { message, modal } = App.useApp();
   const customers = useResource<Collection<Customer>>(withQuery('/customers', { q, cursor: cursor.at(-1), limit: 12 }));

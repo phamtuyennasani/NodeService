@@ -33,8 +33,9 @@ export function Pricing() {
   const providerOptions = catalog.map(item => ({ value: item.provider, label: item.display_name }));
   const providerNames = Object.fromEntries(providerOptions.map(item => [item.value, item.label]));
   const priceModels = (catalog.find(item => item.provider === draftProvider)?.models ?? []).map(item => ({
-    value: item.model, label: item.display_name === item.model ? item.model : `${item.display_name} (${item.model})`,
+    value: item.model, label: item.display_name === (item.upstream_model ?? item.model) ? item.display_name : `${item.display_name} (${item.upstream_model ?? item.model})`,
   }));
+  const modelNames = new Map(catalog.flatMap(item => item.models.map(model => [model.model, model.upstream_model ?? model.model] as const)));
   if (copiedPrice && copiedPrice.provider === draftProvider && !priceModels.some(item => item.value === copiedPrice.model)) {
     priceModels.push({ value: copiedPrice.model, label: copiedPrice.model });
   }
@@ -93,7 +94,7 @@ export function Pricing() {
       <Table rowKey="id" dataSource={prices.data?.data ?? []} loading={prices.loading} scroll={screens.md ? { x: 910 } : undefined} pagination={false}
         locale={{ emptyText: <EmptyState description={q || provider ? 'Không tìm thấy phiên bản giá phù hợp' : 'Chưa có phiên bản giá'} /> }}
         columns={[
-          { title: 'Model', key: 'model', render: (_, row) => <button className="table-link table-identity" onClick={() => setSelected(row)}><strong className="mono">{row.model}</strong><small>{providerNames[row.provider] ?? row.provider}</small></button> },
+          { title: 'Model', key: 'model', render: (_, row) => <button className="table-link table-identity" onClick={() => setSelected(row)}><strong className="mono">{modelNames.get(row.model) ?? row.model}</strong><small>{providerNames[row.provider] ?? row.provider}</small></button> },
           { title: 'Hiệu lực từ', dataIndex: 'effective_at', responsive: ['md'], render: datetime },
           { title: 'Tổng token', dataIndex: 'total_vnd', align: 'right', render: vnd },
           { title: 'Nguồn', dataIndex: 'source_url', responsive: ['md'], render: (value) => value ? <a href={value} target="_blank" rel="noreferrer" className="record-source">Bảng giá gốc <ExportOutlined /></a> : '—' },
@@ -101,7 +102,7 @@ export function Pricing() {
         ]} />
       <CursorPagination cursor={cursor} setCursor={setCursor} next={prices.data?.next_cursor} />
     </Panel>
-    <Drawer title={selected?.model ?? 'Chi tiết đơn giá'} open={Boolean(selected)} size={560} onClose={() => setSelected(undefined)}
+    <Drawer title={(selected && (modelNames.get(selected.model) ?? selected.model)) ?? 'Chi tiết đơn giá'} open={Boolean(selected)} size={560} onClose={() => setSelected(undefined)}
       extra={selected && <Button onClick={() => open(selected)}>Tạo bản mới</Button>}>
       {selected && <>
         <Descriptions column={1} size="small" className="profile-description" items={[

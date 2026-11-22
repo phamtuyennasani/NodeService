@@ -83,7 +83,7 @@ export function useSearchValue(value: string, delay = 250) {
 export function useCatalog(path: '/customers' | '/websites', selected?: string | null, customerId?: string) {
   const [search, setSearch] = useState('');
   const q = useSearchValue(search);
-  type CatalogEntry = { id: string; name: string };
+  type CatalogEntry = { id: string; name: string; customer_id?: string };
   const list = useResource<{ data: CatalogEntry[] }>(withQuery(path, { q, limit: 50, customer_id: customerId }));
   const current = list.data?.data ?? [];
   const needSelected = selected && !current.some((item) => item.id === selected);
@@ -91,6 +91,7 @@ export function useCatalog(path: '/customers' | '/websites', selected?: string |
   const data = [...(exact.data?.data ?? []), ...current];
   return {
     options: data.map((item) => ({ value: item.id, label: item.name })),
+    selected: data.find((item) => item.id === selected),
     loading: list.loading || exact.loading,
     error: list.error ?? exact.error,
     searchConfig: { onSearch: setSearch, filterOption: false },

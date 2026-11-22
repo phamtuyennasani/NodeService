@@ -9,7 +9,7 @@ import 'dayjs/locale/vi';
 import {
   AppstoreOutlined, ArrowRightOutlined, BookOutlined, CalendarOutlined, ClusterOutlined,
   DollarOutlined, DownOutlined, FileTextOutlined, GlobalOutlined, LockOutlined, LogoutOutlined,
-  MenuOutlined, RightOutlined, SendOutlined, TeamOutlined, UserOutlined,
+  MenuOutlined, RightOutlined, SendOutlined, SettingOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
@@ -34,6 +34,7 @@ const Jobs = lazy(() => import('./Jobs').then((page) => ({ default: page.Jobs })
 const Deliveries = lazy(() => import('./Jobs').then((page) => ({ default: page.Deliveries })));
 const Providers = lazy(() => import('./Providers').then((page) => ({ default: page.Providers })));
 const Pricing = lazy(() => import('./Pricing').then((page) => ({ default: page.Pricing })));
+const Settings = lazy(() => import('./Settings').then((page) => ({ default: page.Settings })));
 
 const navigationGroups = [
   { label: 'Vận hành', items: [
@@ -48,6 +49,9 @@ const navigationGroups = [
   { label: 'Cấu hình AI', items: [
     { key: 'providers', label: 'Nhà cung cấp AI', icon: ClusterOutlined },
     { key: 'prices', label: 'Bảng giá model', icon: DollarOutlined },
+  ] },
+  { label: 'Hệ thống', items: [
+    { key: 'settings', label: 'Cài đặt', icon: SettingOutlined },
   ] },
 ];
 const navigation = navigationGroups.flatMap((group) => group.items.map((item) => ({ ...item, group: group.label })));
@@ -250,6 +254,7 @@ function Workspace({ session, onSession, onSignOut }: { session: Session; onSess
             {location.key === 'deliveries' && <Deliveries query={location.query} />}
             {location.key === 'providers' && <Providers />}
             {location.key === 'prices' && <Pricing />}
+            {location.key === 'settings' && <Settings />}
           </Suspense>
         </main>
       </div>

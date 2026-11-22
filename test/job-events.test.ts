@@ -83,6 +83,8 @@ test('database event feed uses safe invalidation and resumes after reconnecting'
     assert.equal(warnings.length, 1)
     const pipeline = JSON.stringify(watches[0].pipeline)
     assert.ok(pipeline.includes('writing_stage'))
+    assert.ok(pipeline.includes('id_post'))
+    assert.ok(pipeline.includes('acknowledged_at'))
     assert.ok(!pipeline.includes('lease_expires_at'))
     assert.deepEqual(watches[0].pipeline.at(-1), { $project: { _id: 1, operationType: 1, documentKey: 1, 'ns.coll': 1, 'fullDocument.job_id': 1, 'fullDocument.delivery_id': 1 } })
   } finally { await feed.close() }

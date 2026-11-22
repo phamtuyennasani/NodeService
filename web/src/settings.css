@@ -1,0 +1,19 @@
+.settings-page { max-width: 1180px; }
+.settings-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.settings-apply-note { margin-bottom: 10px; }
+.settings-page .ant-tabs-nav { margin-bottom: 20px; }
+.settings-sections { display: grid; gap: 18px; }
+.settings-description { max-width: 75ch; margin-bottom: 20px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.settings-grid-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.settings-page .ant-input-number { width: 100%; }
+.settings-page .ant-form-item-extra { padding-top: 5px; font-size: 12px; }
+.settings-page .ant-form-item { margin-bottom: 18px; }
+.settings-infrastructure { margin: 22px 0 0; max-width: 90ch; color: var(--muted); font-size: 12px; line-height: 1.7; }
+@media (max-width: 900px) { .settings-grid-three { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) {
+  .settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .settings-page .page-heading .heading-actions { width: 100%; }
+  .settings-page .page-heading .heading-actions > .ant-btn-primary { margin-left: auto; }
+  .settings-page .panel { padding: 17px; }
+}

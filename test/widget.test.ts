@@ -19,6 +19,8 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
     const posts: unknown[] = [];
     const keys: string[] = [];
+    const { Description, Keywords, ...legacyArticle } = article;
+    let previewArticle: object = article;
     let catalogReads = 0;
     await page.route(origin + '/**', async route => {
       const request = route.request();
@@ -27,13 +29,17 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
         contentType: 'text/html',
         body: `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
           <meta name="csrf-token" content="laravel-csrf"><form id="article"><input name="title" value="Bản nháp">
-          <div name="body"></div><input name="keywords"><div id="tools"></div></form>
+          <div name="body"></div><input name="keywords"><input name="legacy-keywords" value="Từ khóa cũ">
+          <input name="description"><div name="legacy-description"></div><div id="tools"></div></form>
           <script src="/widget/v1/ai-writer.js"></script>
           <script>
-          window.mapping = { Title: '[name="title"]', Slug: '#missing', Keywords: '[name="keywords"]',
+          const legacy = { Desction: { selector: '[name="legacy-description"]', setValue: async (element, value) => { element.textContent = value } },
+            'Từ khóa': '[name="legacy-keywords"]' };
+          window.mapping = new URLSearchParams(location.search).has('legacy') ? legacy : { ...legacy,
+            Title: '[name="title"]', Slug: '#missing', Description: '[name="description"]', Keywords: '[name="keywords"]',
             Content: { selector: '[name="body"]', setValue: (element, value) => { element.dataset.html = value } } };
-          window.AIWriter.mount({ mount: '#tools', form: '#article', endpoint: '/admin/ai/previews', fields: window.mapping,
-            modelsEndpoint: location.search ? '/admin/ai/models' : undefined,
+          window.AIWriter.mount({ mount: '#tools', form: '#article', endpoint: '/admin/ai/previews', keyMode: 'service', provider: 'leak-provider', api_key: 'leak-key', fields: window.mapping,
+            modelsEndpoint: new URLSearchParams(location.search).has('catalog') ? '/admin/ai/models' : undefined,
             models: [{ value: 'gpt-4.1', label: 'GPT-4.1' }] });
           </script>`,
       });
@@ -56,7 +62,7 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
         return route.fulfill({ status: 202, json: { job_id: jobId, status: 'queued' } });
       }
       if (path === '/admin/ai/previews/' + jobId) {
-        return route.fulfill({ json: { job_id: jobId, status: 'ready', result: [article] } });
+        return route.fulfill({ json: { job_id: jobId, status: 'ready', result: [previewArticle] } });
       }
       return route.abort();
     });
@@ -65,6 +71,7 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     const accept = dialog.getByRole('button', { name: 'Chấp nhận' });
     const waitForPreview = () => dialog.getByRole('heading', { name: article.Title }).waitFor();
     await page.goto(origin);
+    previewArticle = { ...article, Desction: 'Mô tả từ trường cũ', 'Từ khóa': ['từ khóa từ trường cũ'] };
     await launch.click();
     await dialog.getByLabel('Từ khóa').fill(article.Keywords[0]);
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
@@ -87,7 +94,10 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     await accept.click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(await page.locator('[name="title"]').inputValue(), article.Title);
+    assert.equal(await page.locator('[name="description"]').inputValue(), Description);
     assert.equal(await page.locator('[name="keywords"]').inputValue(), article.Keywords.join(', '));
+    assert.equal(await page.locator('[name="legacy-description"]').textContent(), '');
+    assert.equal(await page.locator('[name="legacy-keywords"]').inputValue(), 'Từ khóa cũ');
     assert.equal(await page.locator('[name="body"]').getAttribute('data-html'), '<p>Chọn theo nguồn nước.</p>');
     assert.equal(posts.length, 2);
     assert.notEqual(keys[0], keys[1]);
@@ -95,6 +105,7 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
       model: 'gpt-4.1', keyword: article.Keywords[0], tone: 'Thân thiện', style: 'Hướng dẫn', length: 800, use_research: true,
     });
     assert.equal((posts[1] as { use_research: boolean }).use_research, false);
+    assert.equal('api_key' in (posts[0] as object), false);
 
     await page.goto(origin + '/?catalog=1');
     const modelMenu = dialog.getByRole('combobox', { name: 'Model' });
@@ -120,6 +131,18 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     assert.equal(catalogReads, 4);
     assert.equal(posts.length, 3);
     assert.equal((posts[2] as { model: string }).model, 'claude-test');
+    assert.equal('api_key' in (posts[2] as object), false);
+
+    previewArticle = { ...legacyArticle, Desction: Description, 'Từ khóa': Keywords };
+    await page.goto(origin + '/?legacy=1');
+    await launch.click();
+    await dialog.getByLabel('Từ khóa').fill(Keywords[0]);
+    await write.click();
+    await waitForPreview();
+    await accept.click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('[name="legacy-description"]').textContent(), Description);
+    assert.equal(await page.locator('[name="legacy-keywords"]').inputValue(), Keywords.join(', '));
   } finally {
     await browser.close();
   }
@@ -196,6 +219,54 @@ test('Laravel widget preserves safe inline table CSS in previews and applied HTM
     assert.equal(await page.locator('[name="body"]').getAttribute('data-html'), sanitizedHtml);
     assert.equal(await page.evaluate(() => '__unsafe' in window), false);
     assert.deepEqual(externalRequests, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('widget sends personal provider credentials only in own-key mode', async () => {
+  const { outputFiles } = await build({
+    entryPoints: ['widget/ai-writer.ts'], bundle: true, format: 'iife', loader: { '.css': 'text' }, write: false,
+  });
+  const origin = 'http://localhost:3221';
+  const jobId = '8d3d6a8f-6a2b-4e6f-a00a-8b6fc34b4a9e';
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    let payload: Record<string, unknown> | undefined;
+    await page.route(origin + '/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === '/') return route.fulfill({
+        contentType: 'text/html',
+        body: '<!doctype html><meta name="csrf-token" content="csrf-own"><form id="article"><input name="title"><div name="body"></div><div id="tools"></div></form>' +
+          '<script src="/widget.js"></script><script>AIWriter.mount({' +
+          'mount:"#tools",form:"#article",endpoint:"/admin/ai/previews",keyMode:"own",provider:"openai",api_key:"sk-test-personal",model:"gpt-4.1-mini",fields:{Title:"[name=title]",Content:"[name=body]"}})</script>',
+      });
+      if (path === '/widget.js') return route.fulfill({ contentType: 'text/javascript', body: outputFiles[0].text });
+      if (path === '/admin/ai/previews' && request.method() === 'POST') {
+        payload = request.postDataJSON() as Record<string, unknown>;
+        return route.fulfill({ status: 202, json: { job_id: jobId, status: 'queued' } });
+      }
+      if (path === '/admin/ai/previews/' + jobId) {
+        return route.fulfill({ json: { job_id: jobId, status: 'ready', result: [{
+          Title: 'Bài thử nghiệm', Content: '<p>Nội dung</p>', Slug: 'bai-thu-nghiem', Desc: 'Mô tả', Description: 'SEO', Keywords: ['thử nghiệm'],
+        }] } });
+      }
+      return route.abort();
+    });
+    await page.goto(origin);
+    const dialog = page.getByRole('dialog');
+    await page.getByRole('button', { name: 'Viết bài AI' }).click();
+    assert.equal(await dialog.locator('[name="model"]').inputValue(), 'gpt-4.1-mini');
+    assert.equal(await dialog.locator('[name="model"]').getAttribute('readonly'), '');
+    await dialog.getByLabel('Từ khóa').fill('nội dung thử nghiệm');
+    await dialog.getByRole('button', { name: 'Viết ngay' }).click();
+    await dialog.getByRole('heading', { name: 'Bài thử nghiệm' }).waitFor();
+    assert.deepEqual(payload, {
+      provider: 'openai', api_key: 'sk-test-personal', model: 'gpt-4.1-mini', keyword: 'nội dung thử nghiệm',
+      tone: 'Thân thiện', style: 'Hướng dẫn', length: 800, use_research: true,
+    });
   } finally {
     await browser.close();
   }

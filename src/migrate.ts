@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url'
-import { connect, close, collection, type Database } from './db.js'
+import { MongoServerError } from 'mongodb'
+import { assertTransactionSupport, connect, close, collection, type Database } from './db.js'
 
 const providers = [
   { _id: 'openai', display_name: 'OpenAI', enabled: true },
@@ -13,6 +14,33 @@ const models = [
   { _id: 'grok-4.3', provider: 'xai', display_name: 'Grok 4.3', enabled: false },
 ]
 
+async function migrateWebsiteTokens(db: Database) {
+  const sites = collection(db, 'sites')
+  await sites.createIndex({ token_hash: 1 }, {
+    name: 'unique_site_token_hash',
+    unique: true,
+    partialFilterExpression: { token_hash: { $type: 'string' } },
+  })
+  const legacy = (await sites.indexes()).find(index => index.name === 'token_hash_1' && index.unique && index.sparse &&
+    index.key.token_hash === 1 && Object.keys(index.key).length === 1)
+  if (legacy) {
+    try {
+      await sites.dropIndex('token_hash_1')
+    } catch (error) {
+      if (!(error instanceof MongoServerError) || error.codeName !== 'IndexNotFound') throw error
+    }
+  }
+  await sites.updateMany({ token_hash: { $type: 'null' } }, { $unset: { token_hash: '' } })
+}
+
+async function removeLegacyJobKeys(db: Database) {
+  const migrations = collection(db, 'schema_migrations')
+  const id = 'mongodb-remove-plaintext-job-keys'
+  if (await migrations.findOne({ _id: id })) return
+  await collection(db, 'jobs').updateMany({ keyAI: { $exists: true } }, { $unset: { keyAI: '' } })
+  await migrations.updateOne({ _id: id }, { $setOnInsert: { applied_at: new Date(), version: 2 } }, { upsert: true })
+}
+
 export async function migrate(db: Database) {
   await db.client.connect()
   const database = db.db
@@ -22,6 +50,7 @@ export async function migrate(db: Database) {
     database.createCollection('sessions').catch(() => undefined),
     database.createCollection('customers').catch(() => undefined),
     database.createCollection('sites').catch(() => undefined),
+    database.createCollection('site_content').catch(() => undefined),
     database.createCollection('jobs').catch(() => undefined),
     database.createCollection('quota_reservations').catch(() => undefined),
     database.createCollection('model_prices').catch(() => undefined),
@@ -31,17 +60,31 @@ export async function migrate(db: Database) {
     database.createCollection('webhook_attempts').catch(() => undefined),
     database.createCollection('ai_providers').catch(() => undefined),
     database.createCollection('ai_models').catch(() => undefined),
+    database.createCollection('runtime_settings').catch(() => undefined),
+    database.createCollection('runtime_maintenance').catch(() => undefined),
+    database.createCollection('worker_heartbeats').catch(() => undefined),
   ])
 
   await Promise.all([
     collection(db, 'users').createIndex({ username: 1 }, { unique: true }),
     collection(db, 'sessions').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
-    collection(db, 'sites').createIndex({ token_hash: 1 }, { unique: true, sparse: true }),
+    collection(db, 'worker_heartbeats').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
+    collection(db, 'jobs').createIndex({ status: 1, retention_checked_at: 1, completed_at: 1, updated_at: 1, _id: 1 }),
+    collection(db, 'jobs').createIndex({ source_article_id: 1, status: 1 }),
+    collection(db, 'webhook_deliveries').createIndex({ status: 1, updated_at: 1, delivered_at: 1, _id: 1 }),
+    migrateWebsiteTokens(db),
+    removeLegacyJobKeys(db),
     collection(db, 'sites').createIndex({ customer_id: 1 }),
+    collection(db, 'site_content').createIndex({ site_id: 1, customer_id: 1, external_id: 1 }, { unique: true }),
+    collection(db, 'site_content').createIndex({ site_id: 1, customer_id: 1, url: 1 }, { unique: true }),
+    collection(db, 'site_content').createIndex({ site_id: 1, customer_id: 1, search_terms: 1, updated_at: -1 }),
     collection(db, 'jobs').createIndex({ site_id: 1, client_request_id: 1 }, { unique: true }),
+    collection(db, 'ai_models').createIndex({ provider: 1, upstream_model: 1 }, { unique: true, partialFilterExpression: { upstream_model: { $type: 'string' } } }),
     collection(db, 'jobs').createIndex({ status: 1, available_at: 1 }),
     collection(db, 'jobs').createIndex({ status: 1, lease_expires_at: 1 }),
     collection(db, 'jobs').createIndex({ site_id: 1, scheduled_at: 1, _id: 1 }),
+    collection(db, 'jobs').createIndex({ scheduled_at: 1, status: 1 }),
+    collection(db, 'jobs').createIndex({ status: 1, completed_at: 1 }),
     collection(db, 'jobs').createIndex({ site_id: 1, completed_at: -1, _id: -1 }),
     collection(db, 'jobs').createIndex({ customer_id: 1, created_at: -1, _id: -1 }),
     collection(db, 'jobs').createIndex({ site_id: 1, status: 1, completed_at: -1, _id: -1 }),
@@ -57,6 +100,7 @@ export async function migrate(db: Database) {
     collection(db, 'webhook_deliveries').createIndex({ job_id: 1, event: 1 }, { unique: true }),
     collection(db, 'webhook_deliveries').createIndex({ status: 1, next_attempt_at: 1 }),
     collection(db, 'webhook_deliveries').createIndex({ status: 1, lease_expires_at: 1 }),
+    collection(db, 'webhook_deliveries').createIndex({ event: 1, status: 1, delivered_at: 1 }),
     collection(db, 'webhook_attempts').createIndex({ delivery_id: 1, attempted_at: 1 }),
   ])
 
@@ -78,6 +122,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   if (!uri) throw new Error('Set MONGODB_URI before running migrations')
   const db = connect(uri, process.env.MONGODB_DATABASE || 'node_service')
   try {
+    await assertTransactionSupport(db)
     await migrate(db)
     console.log('MongoDB indexes and seed data applied')
   } finally {

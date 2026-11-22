@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { close, collection, connect } from '../src/db.js';
+import { assertTransactionSupport, close, collection, connect } from '../src/db.js';
 import { randomUUID } from 'node:crypto';
 import { hashPassword } from '../src/security.js';
 import { migrate } from '../src/migrate.js';
@@ -28,6 +28,7 @@ const uri = process.env.MONGODB_URI;
 if (!uri) throw new Error('Set MONGODB_URI before creating a user');
 const db = connect(uri, process.env.MONGODB_DATABASE || 'node_service');
 try {
+  await assertTransactionSupport(db);
   await migrate(db);
   const result = await collection(db, 'users').updateOne(
     { username },

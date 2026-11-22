@@ -3,76 +3,191 @@ import { Decimal } from 'decimal.js'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { Config } from '../config.js'
-import { providers } from '../config.js'
+import { isCompatibleProvider, providers } from '../config.js'
 import { collection, sessionOf, transaction, type Database } from '../db.js'
 import { createJob, type Site } from './public.js'
-import { modelIdSchema } from './catalog.js'
+import { modelIdSchema, providerIdSchema } from './catalog.js'
 import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { pageOf, readCursor } from './public.js'
 import { cleanArticle, normalizeArticleFields } from '../worker/provider.js'
 import { DatabaseJobEvents, jobEvents } from '../job-events.js'
+import { excludedContentIdsSchema } from '../site-content.js'
 
 const keys = z.object({ customer_id: idSchema.optional(), website_id: idSchema.optional() })
 const listSchema = keys.extend({ from: periodSchema.optional(), to: periodSchema.optional(), limit: z.coerce.number().int().min(1).max(250).default(100), cursor: z.string().max(512).optional(), q: z.string().trim().max(160).optional() })
-const jobsSchema = listSchema.extend({ status: z.enum(['scheduled', 'queued', 'writing', 'ready', 'completed', 'failed', 'canceled']).optional(), source: z.enum(['scheduled', 'schedule', 'preview', 'widget', 'rewrite']).optional(), provider: z.enum(providers).optional(), key_mode: z.enum(['own', 'service']).optional(), date_basis: z.literal('cost').optional() })
-const deliveriesSchema = listSchema.extend({ status: z.enum(['pending', 'sending', 'delivered', 'failed']).optional(), event: z.enum(['article.ready', 'article.failed']).optional() })
+const reportFilters = listSchema.pick({ customer_id: true, website_id: true, from: true, to: true }).refine(
+  ({ from, to }) => !from || !to || from <= to,
+  'Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.',
+)
+const jobsSchema = listSchema.extend({ status: z.enum(['scheduled', 'queued', 'writing', 'ready', 'completed', 'failed', 'canceled']).optional(), source: z.enum(['scheduled', 'schedule', 'preview', 'immediate', 'widget', 'rewrite']).optional(), provider: providerIdSchema.optional(), key_mode: z.enum(['own', 'service']).optional(), date_basis: z.literal('cost').optional(), issue: z.enum(['queue', 'overdue', 'future', 'stale', 'unpriced']).optional() })
+const deliveriesSchema = listSchema.extend({ status: z.enum(['pending', 'sending', 'delivered', 'failed']).optional(), event: z.enum(['article.ready', 'article.failed']).optional(), issue: z.enum(['queue', 'stale']).optional() })
 const idParams = z.object({ id: idSchema })
 const scheduleFields = z.object({ customer_id: idSchema.optional(), website_id: idSchema, model: modelIdSchema, keyword: z.string().trim().min(1).max(500), tone: z.string().trim().min(1).max(240), style: z.string().trim().min(1).max(500), length: articleLengthSchema, instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(), use_research: z.boolean().default(true), scheduled_at: timestampSchema }).strict()
-const rewriteFields = z.object({ instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional() }).strict()
-const dateStart = (date?: string) => date ? new Date(`${date}T00:00:00+07:00`) : undefined
-const dateEnd = (date?: string) => date ? new Date(new Date(`${date}T00:00:00+07:00`).getTime() + 86_400_000) : undefined
+const immediateFields = scheduleFields.omit({ scheduled_at: true }).extend({ exclude_content_ids: excludedContentIdsSchema.optional() })
+const rewriteFields = z.object({ instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(), exclude_content_ids: excludedContentIdsSchema.optional() }).strict()
+const DAY = 86_400_000
+const VIETNAM_OFFSET = 7 * 60 * 60 * 1000
+const ReportDecimal = Decimal.clone({ precision: 40 })
+const dateStart = (date: string) => new Date(`${date}T00:00:00+07:00`)
+const dateEnd = (date: string) => new Date(dateStart(date).getTime() + DAY)
+const localDay = (time: number) => new Date(time + VIETNAM_OFFSET).toISOString().slice(0, 10)
 
-async function joinedJobs(db: Database) {
-  const jobs = await collection<any>(db, 'jobs').find({}).toArray(); const sites = await collection<any>(db, 'sites').find({}).toArray(); const customers = await collection<any>(db, 'customers').find({}).toArray(); const siteMap = new Map(sites.map(site => [site._id, site])); const customerMap = new Map(customers.map(customer => [customer._id, customer]));
+function scopedJobs(filters: z.infer<typeof keys>) {
+  return {
+    ...(filters.customer_id ? { customer_id: filters.customer_id } : {}),
+    ...(filters.website_id ? { site_id: filters.website_id } : {}),
+  }
+}
+
+function reportPeriod(from?: string, to?: string) {
+  const last = dateStart(to ?? localDay(Date.now()))
+  const start = from ? dateStart(from).getTime() : last.getTime() - 13 * DAY
+  const end = last.getTime() + DAY
+  if (end <= start || end - start > 366 * DAY) {
+    throw new ApiError(400, 'invalid_report_period', 'Chọn khoảng báo cáo tối đa 366 ngày.')
+  }
+  return { start, end }
+}
+
+async function joinedJobs(db: Database, filters: z.infer<typeof keys>) {
+  const [jobs, sites, customers] = await Promise.all([
+    collection<any>(db, 'jobs').find(scopedJobs(filters)).toArray(),
+    collection<any>(db, 'sites').find(filters.website_id ? { _id: filters.website_id } : {}).toArray(),
+    collection<any>(db, 'customers').find(filters.customer_id ? { _id: filters.customer_id } : {}).toArray(),
+  ])
+  const siteMap = new Map(sites.map(site => [site._id, site]))
+  const customerMap = new Map(customers.map(customer => [customer._id, customer]))
   return jobs.map(job => ({ ...job, customer: customerMap.get(job.customer_id), site: siteMap.get(job.site_id) }))
 }
 function reportJob(row: any) {
   return {
     id: row._id, job_id: row._id, customer_id: row.customer_id, customer_name: row.customer?.name ?? '',
-    website_id: row.site_id, website_name: row.site?.name ?? '', mode: row.mode, source: row.mode === 'preview' ? 'widget' : row.mode,
+    website_id: row.site_id, website_name: row.site?.name ?? '', mode: row.mode, source: row.mode === 'preview' ? 'immediate' : row.mode,
     status: row.status === 'ready' ? 'completed' : row.status,
     writing_stage: row.status === 'writing' ? row.writing_stage ?? null : null,
     can_rewrite: row.status === 'failed' || (row.status === 'ready' && Boolean(row.result?.[0])),
-    keyword: row.keyword, provider: row.provider, model: row.model, tone: row.tone, style: row.style, length: row.length,
+    keyword: row.keyword, provider: row.provider, model: row.model,
+    ...(row.provider_display_name ? { provider_display_name: row.provider_display_name } : {}),
+    ...(row.upstream_model ? { upstream_model: row.upstream_model } : {}),
+    tone: row.tone, style: row.style, length: row.length,
     use_research: row.use_research ?? true,
     key_mode: row.key_mode, created_at: row.created_at, updated_at: row.updated_at, scheduled_at: row.scheduled_at, started_at: row.started_at, completed_at: row.completed_at,
     source_article_id: row.source_article_id, retry_of_job_id: row.retry_of_job_id ?? null, idempotency_key: row.client_request_id,
     error_code: row.error_code, error_message: row.error_message,
   }
 }
-function inRange(value: Date | null | undefined, from?: string, to?: string) { return (!from || (value && value >= dateStart(from)!)) && (!to || (value && value < dateEnd(to)!)) }
 
-function costSummary(rows: any[], attempts: any[], from: Date, to: Date) {
-  const jobs = new Map(rows.map(row => [row._id, row]))
-  const totals = { service: new Decimal(0), customer: new Decimal(0), unpriced: 0 }
-  const daily = new Map<string, { service: Decimal, customer: Decimal, unpriced: number }>()
-  for (const attempt of attempts) {
-    const job = jobs.get(attempt.job_id)
-    if (!job) continue
-    const requestedAt = attempt.requested_at instanceof Date ? attempt.requested_at : new Date(attempt.requested_at)
-    if (!Number.isFinite(requestedAt.getTime()) || requestedAt < from || requestedAt >= to) continue
-    const key = new Date(requestedAt.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
-    const point = daily.get(key) ?? { service: new Decimal(0), customer: new Decimal(0), unpriced: 0 }
-    if (attempt.cost_usd == null || attempt.cost_usd === '') {
-      totals.unpriced += 1
-      point.unpriced += 1
-    } else {
-      const amount = new Decimal(String(attempt.cost_usd))
-      const bucket = job.key_mode === 'service' ? 'service' : 'customer'
-      totals[bucket] = totals[bucket].plus(amount)
-      point[bucket] = point[bucket].plus(amount)
-    }
-    daily.set(key, point)
+/** Resolve custom connection names with a positive projection; never load credentials. */
+async function connectionLabels(db: Database, rows: any[]) {
+  const custom = rows.filter(row => typeof row.provider === 'string' && row.provider !== 'openai-compatible' && isCompatibleProvider(row.provider))
+  if (!custom.length) return (row: any) => row
+  const [connections, models] = await Promise.all([
+    collection<any>(db, 'ai_providers').find({ _id: { $in: [...new Set(custom.map(row => row.provider))] } }, { projection: { _id: 1, display_name: 1 } }).toArray(),
+    collection<any>(db, 'ai_models').find({ _id: { $in: [...new Set(custom.map(row => row.model))] } }, { projection: { _id: 1, provider: 1, upstream_model: 1 } }).toArray(),
+  ])
+  const names = new Map(connections.map(row => [row._id, row.display_name]))
+  const modelMap = new Map(models.map(row => [row._id, row]))
+  return (row: any) => {
+    const model = modelMap.get(row.model)
+    return { ...row, ...(names.has(row.provider) ? { provider_display_name: names.get(row.provider) } : {}),
+      ...(model?.provider === row.provider && model.upstream_model ? { upstream_model: model.upstream_model } : {}) }
   }
-  return { totals, daily }
+}
+function inRange(value: Date | null | undefined, from?: Date, to?: Date) {
+  if (!from && !to) return true
+  return value != null && (!from || value >= from) && (!to || value < to)
+}
+
+function sortedPage<T extends { _id: string, created_at: Date }>(rows: T[], cursor?: string, limit = 100) {
+  const [cursorAt, cursorId] = readCursor(cursor)
+  return rows.sort((a, b) => b.created_at.getTime() - a.created_at.getTime() || b._id.localeCompare(a._id))
+    .filter(row => {
+      if (!cursorAt) return true
+      const time = row.created_at.toISOString()
+      return time < cursorAt || (time === cursorAt && row._id < cursorId!)
+    }).slice(0, limit + 1)
+}
+
+function cursorFields(row: { _id: string, created_at: Date }) {
+  return { cursor_at: row.created_at.toISOString(), cursor_id: row._id }
+}
+
+function issueTime(row: { completed_at?: Date | null, updated_at?: Date | null }) {
+  return row.completed_at ?? row.updated_at
 }
 
 function costValue(value: Decimal) { return value.toFixed(12) }
 
-export function registerReports(app: FastifyInstance, db: Database, config: Config) {
-  const costVnd = (value: Decimal.Value | null | undefined) => value == null || value === ''
+const convertVnd = (rate: number) => (value: Decimal.Value | null | undefined) => value == null || value === ''
     ? null
-    : new Decimal(value).times(config.usdToVnd).toFixed(12)
+    : new ReportDecimal(value).times(rate).toFixed(12)
+
+function runtimeTime(value: unknown): number | null {
+  return value instanceof Date && Number.isFinite(value.getTime()) ? value.getTime() : null
+}
+
+function hasRuntimeLease(row: any, now: number) {
+  const expires = runtimeTime(row.lease_expires_at)
+  return typeof row.lease_token === 'string' && row.lease_token.trim().length > 0 && expires !== null && expires > now
+}
+
+function writingQueue(row: any, now: number) {
+  const scheduled = runtimeTime(row.scheduled_at)
+  return row.status === 'queued' || (row.status === 'scheduled' && scheduled !== null && scheduled <= now)
+}
+
+function overdueSchedule(row: any, now: number) {
+  const scheduled = runtimeTime(row.scheduled_at)
+  return row.status === 'scheduled' && scheduled !== null && scheduled < now
+}
+
+function deliveryQueue(row: any, now: number) {
+  const next = runtimeTime(row.next_attempt_at)
+  return row.status === 'pending' && next !== null && next <= now
+}
+
+function pendingCostFilter() {
+  return { cost_usd: { $in: [null, ''] }, $or: [{ cost_source: 'pending' }, { cost_source: { $exists: false } }] }
+}
+
+function oldestWait(rows: any[], timestamp: (row: any) => number | null, now: number) {
+  const oldest = rows.reduce<number | null>((previous, row) => {
+    const value = timestamp(row)
+    return value !== null && value <= now ? Math.min(previous ?? value, value) : previous
+  }, null)
+  return oldest === null ? null : Math.max(0, Math.floor((now - oldest) / 1000))
+}
+
+// Summaries never echo stored provider responses, which may contain credentials.
+const runtimeFailureMessages: Record<string, string> = {
+  AI_AUTH: 'Nhà cung cấp từ chối API key hoặc quyền dùng model.',
+  AI_KEY_UNAVAILABLE: 'API key chưa được cấu hình hoặc không đọc được.',
+  AI_ENDPOINT_UNAVAILABLE: 'Chưa cấu hình địa chỉ nhà cung cấp AI.',
+  AI_RATE_LIMIT: 'Nhà cung cấp AI đang giới hạn lượt gọi.',
+  AI_TOKEN_CAPACITY: 'Yêu cầu vượt giới hạn token đã cấu hình.',
+  AI_UNAVAILABLE: 'Nhà cung cấp AI tạm thời không phản hồi.',
+  AI_CONNECTION: 'Kết nối AI gián đoạn hoặc hết thời gian chờ.',
+  AI_REQUEST: 'Nhà cung cấp không chấp nhận yêu cầu hoặc model.',
+  AI_RESPONSE: 'Phản hồi AI không hợp lệ hoặc bị gián đoạn.',
+  AI_LEASE_EXPIRED: 'Tiến trình viết bị gián đoạn trước khi hoàn tất.',
+  AI_LEASE_LOST: 'Yêu cầu đã được tiến trình khác tiếp quản.',
+  AI_RESEARCH_TIMEOUT: 'Bước nghiên cứu đã hết thời gian chờ.',
+  AI_OUTLINE_TIMEOUT: 'Bước lập dàn ý đã hết thời gian chờ.',
+  AI_SEO_REPAIR_TIMEOUT: 'Bước chỉnh SEO đã hết thời gian chờ.',
+  AI_SOURCE_INVALID: 'Không đọc được bài viết nguồn.',
+  QUOTA_RESERVATION_MISSING: 'Yêu cầu chưa được giữ lượt viết.',
+}
+
+function runtimeJob(row: any) {
+  const knownCode = typeof row.error_code === 'string' && Object.hasOwn(runtimeFailureMessages, row.error_code) ? row.error_code : null
+  return {
+    ...reportJob(row),
+    error_code: knownCode,
+    error_message: row.status === 'failed' ? runtimeFailureMessages[knownCode ?? ''] ?? 'Yêu cầu viết chưa hoàn tất. Mở chi tiết để kiểm tra.' : null,
+  }
+}
+
+export function registerReports(app: FastifyInstance, db: Database, config: Config, getRuntimeConfig: () => Promise<Config> = async () => config) {
   const liveJobs = new DatabaseJobEvents(db, error => app.log.warn({ err: error }, 'CRM job event stream reconnecting'))
   const closeStreams = new Set<() => void>()
   app.addHook('onReady', async () => { liveJobs.start() })
@@ -115,8 +230,8 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
     response.once('close', cleanup)
     response.once('error', cleanup)
   })
-  app.post('/schedules', async (request, reply) => {
-    const fields = scheduleFields.parse(request.body)
+  app.post('/jobs', async (request, reply) => {
+    const fields = immediateFields.parse(request.body)
     const site = await collection<any>(db, 'sites').findOne({ _id: fields.website_id })
     if (!site) throw notFound()
     if (fields.customer_id && fields.customer_id !== site.customer_id) throw new ApiError(409, 'website_customer_mismatch', 'Website không thuộc khách hàng đã chọn.')
@@ -138,6 +253,35 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       instructions: fields.instructions,
       keyAI: fields.keyAI,
       use_research: fields.use_research,
+      exclude_content_ids: fields.exclude_content_ids,
+    }, 'preview', undefined)
+    return reply.code(202).send(result)
+  })
+
+  app.post('/schedules', async (request, reply) => {
+    const fields = scheduleFields.extend({ exclude_content_ids: excludedContentIdsSchema.optional() }).parse(request.body)
+    const site = await collection<any>(db, 'sites').findOne({ _id: fields.website_id })
+    if (!site) throw notFound()
+    if (fields.customer_id && fields.customer_id !== site.customer_id) throw new ApiError(409, 'website_customer_mismatch', 'Website không thuộc khách hàng đã chọn.')
+    const clientId = typeof request.headers['idempotency-key'] === 'string' && request.headers['idempotency-key'].trim()
+      ? request.headers['idempotency-key'].trim()
+      : randomUUID()
+    const result = await createJob(db, config, {
+      id: site._id,
+      customer_id: site.customer_id,
+      token_hash: site.token_hash ?? null,
+      webhook_url: site.webhook_url ?? null,
+      webhook_secret: site.webhook_secret ?? null,
+    } satisfies Site, clientId, {
+      model: fields.model,
+      keyword: fields.keyword,
+      tone: fields.tone,
+      style: fields.style,
+      length: fields.length,
+      instructions: fields.instructions,
+      keyAI: fields.keyAI,
+      use_research: fields.use_research,
+      exclude_content_ids: fields.exclude_content_ids,
     }, 'scheduled', fields.scheduled_at)
     return reply.code(202).send(result)
   })
@@ -174,140 +318,278 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       instructions: instructions || undefined,
       keyAI: additions.keyAI,
       use_research: article.use_research ?? true,
+      exclude_content_ids: additions.exclude_content_ids ?? article.exclude_content_ids ?? [],
     }, 'rewrite', undefined, sourceId, retryFailed ? id : undefined)
     return reply.code(202).send(result)
   })
   app.get('/dashboard/runtime', async (request, reply) => {
+    const runtime = await getRuntimeConfig()
     const filters = keys.parse(request.query)
     const now = new Date()
-    const rows = await collection<any>(db, 'jobs').find({
-      status: { $in: ['scheduled', 'queued', 'writing'] },
-      ...(filters.customer_id ? { customer_id: filters.customer_id } : {}),
-      ...(filters.website_id ? { site_id: filters.website_id } : {}),
-    }, { projection: {
+    const time = now.getTime()
+    const jobProjection = {
       _id: 1, customer_id: 1, site_id: 1, mode: 1, status: 1, writing_stage: 1, keyword: 1,
       provider: 1, model: 1, tone: 1, style: 1, length: 1, use_research: 1, key_mode: 1,
-      created_at: 1, scheduled_at: 1, started_at: 1, completed_at: 1,
+      created_at: 1, updated_at: 1, scheduled_at: 1, available_at: 1, started_at: 1, completed_at: 1,
       source_article_id: 1, retry_of_job_id: 1, client_request_id: 1,
-      error_code: 1, error_message: 1, lease_token: 1, lease_expires_at: 1,
-    } }).toArray()
-    const timeOf = (value: unknown) => value instanceof Date && Number.isFinite(value.getTime()) ? value.getTime() : 0
-    const leaseActive = (row: any) => row.status === 'writing' && typeof row.lease_token === 'string' && row.lease_token.trim().length > 0 && timeOf(row.lease_expires_at) > now.getTime()
-    const queued = (row: any) => row.status === 'queued' || (row.status === 'scheduled' && timeOf(row.scheduled_at) <= now.getTime())
+      error_code: 1, lease_token: 1, lease_expires_at: 1,
+    } as const
+    const [rows, deliveryRows, unpriced, heartbeats] = await Promise.all([
+      collection<any>(db, 'jobs').find({ status: { $in: ['scheduled', 'queued', 'writing', 'failed'] }, ...scopedJobs(filters) }, { projection: jobProjection }).toArray(),
+      collection<any>(db, 'webhook_deliveries').find({
+        status: { $in: ['pending', 'sending', 'failed'] },
+        ...(filters.website_id ? { site_id: filters.website_id } : {}),
+      }, { projection: {
+        _id: 1, job_id: 1, site_id: 1, status: 1, event: 1, attempt_count: 1, http_status: 1,
+        next_attempt_at: 1, created_at: 1, updated_at: 1, lease_token: 1, lease_expires_at: 1,
+      } }).toArray(),
+      collection<any>(db, 'ai_attempts').find(pendingCostFilter(), { projection: { job_id: 1 } }).toArray(),
+      // Worker capacity is deployment-wide; customer/website filters apply only to work counts.
+      collection<any>(db, 'worker_heartbeats').find({ expires_at: { $gt: now } }, {
+        projection: { role: 1, heartbeat_at: 1, concurrency: 1, active_tasks: 1, accepting_work: 1 },
+      }).toArray(),
+    ])
+    const jobMap = new Map(rows.map(row => [row._id, row]))
+    const relatedIds = [...new Set([...deliveryRows, ...unpriced].map(row => row.job_id))].filter(id => typeof id === 'string' && !jobMap.has(id))
+    if (relatedIds.length) {
+      const related = await collection<any>(db, 'jobs').find({ _id: { $in: relatedIds }, ...scopedJobs(filters) }, { projection: jobProjection }).toArray()
+      for (const row of related) jobMap.set(row._id, row)
+    }
+    const leaseActive = (row: any) => row.status === 'writing' && hasRuntimeLease(row, time)
+    const queued = (row: any) => writingQueue(row, time)
     const writing = rows.filter(row => row.status === 'writing')
     const activeThreads = writing.filter(leaseActive).length
-    const running = [...writing].sort((a, b) => timeOf(b.started_at) - timeOf(a.started_at) || timeOf(b.created_at) - timeOf(a.created_at) || String(a._id).localeCompare(String(b._id))).slice(0, 20)
-    const [customers, sites] = running.length ? await Promise.all([
-      collection<any>(db, 'customers').find({ _id: { $in: [...new Set(running.map(row => row.customer_id))] } }, { projection: { _id: 1, name: 1 } }).toArray(),
-      collection<any>(db, 'sites').find({ _id: { $in: [...new Set(running.map(row => row.site_id))] } }, { projection: { _id: 1, name: 1 } }).toArray(),
+    const running = [...writing].sort((a, b) => (runtimeTime(b.started_at) ?? 0) - (runtimeTime(a.started_at) ?? 0) || (runtimeTime(b.created_at) ?? 0) - (runtimeTime(a.created_at) ?? 0) || String(a._id).localeCompare(String(b._id))).slice(0, 20)
+    const failures = rows.filter(row => row.status === 'failed').sort((a, b) => (runtimeTime(issueTime(b)) ?? 0) - (runtimeTime(issueTime(a)) ?? 0) || String(a._id).localeCompare(String(b._id)))
+    const deliveries = deliveryRows.filter(row => jobMap.has(row.job_id))
+    const sending = deliveries.filter(row => row.status === 'sending')
+    const activeDeliveries = sending.filter(row => hasRuntimeLease(row, time)).length
+    const deliveryFailures = deliveries.filter(row => row.status === 'failed').sort((a, b) => (runtimeTime(b.updated_at) ?? 0) - (runtimeTime(a.updated_at) ?? 0) || String(a._id).localeCompare(String(b._id)))
+    const visibleJobs = [...running, ...failures.slice(0, 10), ...deliveryFailures.slice(0, 10).map(row => jobMap.get(row.job_id)!)]
+    const [customers, sites] = visibleJobs.length ? await Promise.all([
+      collection<any>(db, 'customers').find({ _id: { $in: [...new Set(visibleJobs.map(row => row.customer_id))] } }, { projection: { _id: 1, name: 1 } }).toArray(),
+      collection<any>(db, 'sites').find({ _id: { $in: [...new Set(visibleJobs.map(row => row.site_id))] } }, { projection: { _id: 1, name: 1 } }).toArray(),
     ]) : [[], []]
     const customerMap = new Map(customers.map(row => [row._id, row]))
     const siteMap = new Map(sites.map(row => [row._id, row]))
+    const labelConnection = await connectionLabels(db, rows)
+    const withNames = (row: any) => labelConnection({ ...row, customer: customerMap.get(row.customer_id), site: siteMap.get(row.site_id) })
+    const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+    const workerSummary = (role: string) => {
+      const live = heartbeats.filter(row => row.role === role && runtimeTime(row.heartbeat_at) !== null)
+      const accepting = live.filter(row => row.accepting_work !== false)
+      const latest = live.reduce<number | null>((last, row) => Math.max(last ?? 0, runtimeTime(row.heartbeat_at)!), null)
+      return {
+        processes: live.length, accepting_processes: accepting.length,
+        concurrency: accepting.reduce((sum, row) => sum + count(row.concurrency), 0),
+        active_tasks: live.reduce((sum, row) => sum + count(row.active_tasks), 0),
+        last_heartbeat_at: latest === null ? null : new Date(latest).toISOString(),
+      }
+    }
     reply.header('Cache-Control', 'no-store')
     return {
       observed_at: now.toISOString(),
       summary: {
         writing: writing.length,
         queued: rows.filter(queued).length,
-        scheduled: rows.filter(row => row.status === 'scheduled' && !queued(row)).length,
+        scheduled: rows.filter(row => row.status === 'scheduled' && (runtimeTime(row.scheduled_at) ?? -Infinity) > time).length,
         active_threads: activeThreads,
         stale_writing: writing.length - activeThreads,
+        overdue_schedules: rows.filter(row => overdueSchedule(row, time)).length,
+        oldest_wait_seconds: oldestWait(rows.filter(queued), row => row.status === 'scheduled' ? runtimeTime(row.scheduled_at) : runtimeTime(row.available_at) ?? runtimeTime(row.created_at), time),
       },
-      capacity: { writer_per_process: config.workerConcurrency, webhook_per_process: config.webhookConcurrency },
-      providers: providers.map(provider => {
+      capacity: { writer_per_process: runtime.workerConcurrency, webhook_per_process: runtime.webhookConcurrency },
+      workers: { writer: workerSummary('writer'), webhook: workerSummary('webhook') },
+      deliveries: {
+        pending: deliveries.filter(row => row.status === 'pending').length,
+        sending: sending.length, failed: deliveryFailures.length, active_threads: activeDeliveries,
+        stale_sending: sending.length - activeDeliveries,
+        oldest_wait_seconds: oldestWait(deliveries.filter(row => deliveryQueue(row, time)), row => runtimeTime(row.next_attempt_at), time),
+      },
+      attention: {
+        write_errors: failures.length, delivery_errors: deliveryFailures.length,
+        stale_writing: writing.length - activeThreads, stale_sending: sending.length - activeDeliveries,
+        unpriced_attempts: unpriced.filter(attempt => jobMap.get(attempt.job_id)?.key_mode === 'service').length,
+      },
+      providers: [...new Set<string>([...providers, ...rows.map(row => row.provider)])].map(provider => {
         const providerRows = rows.filter(row => row.provider === provider)
-        return { provider, writing: providerRows.filter(row => row.status === 'writing').length, queued: providerRows.filter(queued).length, active_threads: providerRows.filter(leaseActive).length }
+        const label = labelConnection({ provider }).provider_display_name
+        return { provider, ...(label ? { display_name: label } : {}), writing: providerRows.filter(row => row.status === 'writing').length, queued: providerRows.filter(queued).length, active_threads: providerRows.filter(leaseActive).length }
       }),
       running: running.map(row => ({
-        ...reportJob({ ...row, customer: customerMap.get(row.customer_id), site: siteMap.get(row.site_id) }),
+        ...runtimeJob(withNames(row)),
         lease_active: leaseActive(row),
-        elapsed_seconds: row.started_at ? Math.max(0, Math.floor((now.getTime() - timeOf(row.started_at)) / 1000)) : 0,
+        elapsed_seconds: runtimeTime(row.started_at) === null ? 0 : Math.max(0, Math.floor((time - runtimeTime(row.started_at)!) / 1000)),
       })),
+      write_failures: failures.slice(0, 10).map(row => runtimeJob(withNames(row))),
+      delivery_failures: deliveryFailures.slice(0, 10).map(row => {
+        const job = jobMap.get(row.job_id)!
+        const status = Number.isInteger(row.http_status) && row.http_status >= 100 && row.http_status <= 599 ? row.http_status : null
+        return {
+          id: row._id, job_id: row.job_id, website_id: row.site_id,
+          website_name: siteMap.get(row.site_id)?.name ?? '', customer_name: customerMap.get(job.customer_id)?.name ?? '',
+          keyword: job.keyword, status: row.status, event_type: row.event,
+          attempts: count(row.attempt_count), attempt_count: count(row.attempt_count), last_http_status: status,
+          last_error: row.event === 'article.ready' && status !== null && status >= 200 && status < 300
+            ? 'Laravel chưa trả xác nhận hợp lệ với success: true và id_post.'
+            : status === null ? 'Không thể giao bài đến website. Mở chi tiết để kiểm tra.' : `Website nhận bài phản hồi HTTP ${status}.`,
+          next_attempt_at: row.next_attempt_at, delivered_at: null, created_at: row.created_at, history: [],
+        }
+      }),
     }
   })
   app.get('/dashboard', async request => {
-    const filters = keys.extend({ from: periodSchema.optional(), to: periodSchema.optional() }).parse(request.query)
-    const scopedRows = (await joinedJobs(db)).filter(row => (!filters.customer_id || row.customer_id === filters.customer_id) && (!filters.website_id || row.site_id === filters.website_id))
-    const rows = scopedRows.filter(row => inRange(row.completed_at ?? row.created_at, filters.from, filters.to))
-    const jobIds = rows.map(row => row._id)
-    const [deliveries, attempts] = await Promise.all([
-      collection<any>(db, 'webhook_deliveries').find({ job_id: { $in: jobIds } }).toArray(),
-      collection<any>(db, 'ai_attempts').find({ job_id: { $in: scopedRows.map(row => row._id) } }).toArray(),
+    const costVnd = convertVnd((await getRuntimeConfig()).usdToVnd)
+    const filters = reportFilters.parse(request.query)
+    const { start, end } = reportPeriod(filters.from, filters.to)
+    const from = new Date(start)
+    const to = new Date(end)
+    const period = { $gte: from, $lt: to }
+    const scope = scopedJobs(filters)
+    const [rows, sites, customers, deliveries, attempts] = await Promise.all([
+      collection<any>(db, 'jobs').find(scope, { projection: {
+        _id: 1, customer_id: 1, site_id: 1, mode: 1, status: 1, writing_stage: 1, keyword: 1,
+        provider: 1, model: 1, tone: 1, style: 1, length: 1, use_research: 1, key_mode: 1, created_at: 1,
+        scheduled_at: 1, started_at: 1, completed_at: 1, updated_at: 1, source_article_id: 1,
+        retry_of_job_id: 1, client_request_id: 1, error_code: 1, error_message: 1,
+      } }).toArray(),
+      collection<any>(db, 'sites').find({
+        ...(scope.customer_id ? { customer_id: scope.customer_id } : {}),
+        ...(scope.site_id ? { _id: scope.site_id } : {}),
+      }, { projection: { _id: 1, name: 1, customer_id: 1 } }).toArray(),
+      collection<any>(db, 'customers').find(scope.customer_id ? { _id: scope.customer_id } : {},
+        { projection: { _id: 1, name: 1 } }).toArray(),
+      collection<any>(db, 'webhook_deliveries').find({
+        ...(scope.site_id ? { site_id: scope.site_id } : {}), event: 'article.ready', $or: [
+        { status: 'delivered', delivered_at: period }, { status: 'failed', updated_at: period },
+      ] }, { projection: { job_id: 1, status: 1, delivered_at: 1 } }).toArray(),
+      collection<any>(db, 'ai_attempts').find({ requested_at: period },
+        { projection: { job_id: 1, requested_at: 1, cost_usd: 1, cost_source: 1 } }).toArray(),
     ])
-    const from = dateStart(filters.from ?? new Date(Date.now() + 7 * 60 * 60 * 1000 - 13 * 86_400_000).toISOString().slice(0, 10))!
-    const to = dateEnd(filters.to) ?? new Date()
-    // Usage belongs to the day the AI request began, even when the job finishes later.
-    const costs = costSummary(scopedRows, attempts, from, to)
-    const series: any[] = []
-    for (let cursor = new Date(from); cursor < to; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
-      const next = new Date(cursor.getTime() + 86_400_000)
-      const day = new Date(cursor.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
-      const dayJobs = rows.filter(row => row.completed_at && row.completed_at >= cursor && row.completed_at < next)
-      const dayDeliveries = deliveries.filter(delivery => delivery.delivered_at && delivery.delivered_at >= cursor && delivery.delivered_at < next)
-      const point = costs.daily.get(day)
-      series.push({
-        date: day,
-        articles: dayJobs.length,
-        delivered: dayDeliveries.length,
-        service_cost_usd: costValue(point?.service ?? new Decimal(0)),
-        customer_cost_usd: costValue(point?.customer ?? new Decimal(0)),
-        service_cost_vnd: costVnd(point?.service ?? new Decimal(0)),
-        customer_cost_vnd: costVnd(point?.customer ?? new Decimal(0)),
-        unpriced_attempts: point?.unpriced ?? 0,
-      })
+    const jobs = new Map(rows.map(row => [row._id, row]))
+    const siteMap = new Map(sites.map(site => [site._id, site]))
+    const customerMap = new Map(customers.map(customer => [customer._id, customer]))
+    const reportRow = (row: any) => reportJob({ ...row, customer: customerMap.get(row.customer_id), site: siteMap.get(row.site_id) })
+    const zero = new ReportDecimal(0)
+    type Point = { date: string, articles: number, delivered: number, service: Decimal, unpriced_attempts: number }
+    const days = new Map<string, Point>()
+    for (let day = start; day < end; day += DAY) {
+      const date = localDay(day)
+      days.set(date, { date, articles: 0, delivered: 0, service: zero, unpriced_attempts: 0 })
     }
-    const ready = rows.filter(row => row.status === 'ready')
+    const pointAt = (time: Date) => days.get(localDay(time.getTime()))
+    for (const row of rows) {
+      if (row.status !== 'ready' || !row.completed_at) continue
+      const point = pointAt(row.completed_at)
+      if (point) point.articles += 1
+    }
+    let deliveryErrors = 0
+    for (const delivery of deliveries) {
+      if (!jobs.has(delivery.job_id)) continue
+      if (delivery.status === 'failed') deliveryErrors += 1
+      else {
+        const point = pointAt(delivery.delivered_at)
+        if (point) point.delivered += 1
+      }
+    }
+    for (const attempt of attempts) {
+      const mode = jobs.get(attempt.job_id)?.key_mode
+      if (mode !== 'service') continue
+      const point = pointAt(attempt.requested_at)
+      if (!point) continue
+      if (attempt.cost_usd != null && attempt.cost_usd !== '') point.service = point.service.plus(attempt.cost_usd)
+      if (mode === 'service' && (attempt.cost_usd == null || attempt.cost_usd === '') && (attempt.cost_source === 'pending' || attempt.cost_source === undefined)) point.unpriced_attempts += 1
+    }
+    let articles = 0
+    let delivered = 0
+    let unpriced = 0
+    let serviceCost = zero
+    const series = Array.from(days.values(), ({ date, articles: written, delivered: sent, service, unpriced_attempts }) => {
+      articles += written
+      delivered += sent
+      unpriced += unpriced_attempts
+      serviceCost = serviceCost.plus(service)
+      return { date, articles: written, delivered: sent, service_cost_usd: costValue(service), customer_cost_usd: costValue(zero), service_cost_vnd: costVnd(service), customer_cost_vnd: costVnd(zero), unpriced_attempts }
+    })
+    const failures = rows.filter(row => row.status === 'failed' && inRange(issueTime(row), from, to))
+      .sort((a, b) => (b.updated_at ?? issueTime(b)).getTime() - (a.updated_at ?? issueTime(a)).getTime() || b._id.localeCompare(a._id))
+    const upcoming = rows.filter(row => row.status === 'scheduled' && row.scheduled_at)
+      .sort((a, b) => a.scheduled_at - b.scheduled_at || a._id.localeCompare(b._id))
+    const selectedOwners = new Set(sites.map(site => site.customer_id))
     return {
       metrics: {
-        customers: new Set(rows.map(row => row.customer_id)).size,
-        websites: new Set(rows.map(row => row.site_id)).size,
-        articles: ready.length,
-        delivered: deliveries.filter(delivery => delivery.status === 'delivered').length,
+        customers: scope.site_id ? customers.filter(customer => selectedOwners.has(customer._id)).length : customers.length,
+        websites: sites.length, articles, delivered,
         pending: rows.filter(row => ['scheduled', 'queued', 'writing'].includes(row.status)).length,
-        write_errors: rows.filter(row => row.status === 'failed').length,
-        delivery_errors: deliveries.filter(delivery => delivery.status === 'failed').length,
-        service_cost_usd: costValue(costs.totals.service),
-        customer_cost_usd: costValue(costs.totals.customer),
-        service_cost_vnd: costVnd(costs.totals.service),
-        customer_cost_vnd: costVnd(costs.totals.customer),
-        total_cost_vnd: costVnd(costs.totals.service.plus(costs.totals.customer)),
-        unpriced_attempts: costs.totals.unpriced,
+        write_errors: failures.length, delivery_errors: deliveryErrors,
+        service_cost_usd: costValue(serviceCost), customer_cost_usd: costValue(zero),
+        service_cost_vnd: costVnd(serviceCost), customer_cost_vnd: costVnd(zero),
+        total_cost_vnd: costVnd(serviceCost), unpriced_attempts: unpriced,
       },
-      series,
-      upcoming: rows.filter(row => row.status === 'scheduled').sort((a, b) => a.scheduled_at - b.scheduled_at).slice(0, 10).map(reportJob),
-      failures: rows.filter(row => row.status === 'failed').sort((a, b) => b.created_at - a.created_at).slice(0, 10).map(reportJob),
+      series, upcoming: upcoming.slice(0, 10).map(reportRow), failures: failures.slice(0, 10).map(reportRow),
     }
   })
+
   app.get('/jobs', async request => {
+    const costVnd = convertVnd((await getRuntimeConfig()).usdToVnd)
     const filters = jobsSchema.parse(request.query)
-    const [cursorAt, cursorId] = readCursor(filters.cursor)
-    const source = filters.source === 'schedule' ? 'scheduled' : filters.source === 'widget' ? 'preview' : filters.source
-    let rows = (await joinedJobs(db)).filter(row =>
-      (!filters.customer_id || row.customer_id === filters.customer_id) &&
-      (!filters.website_id || row.site_id === filters.website_id) &&
-      (filters.date_basis === 'cost' || inRange(row.created_at, filters.from, filters.to)) &&
-      (!filters.status || row.status === (filters.status === 'completed' ? 'ready' : filters.status)) &&
-      (!source || source === row.mode) &&
-      (!filters.provider || row.provider === filters.provider) && (!filters.key_mode || row.key_mode === filters.key_mode) &&
-      (!filters.q || `${row.keyword} ${row._id}`.toLowerCase().includes(filters.q.toLowerCase())))
-    rows.sort((a, b) => b.created_at - a.created_at || b._id.localeCompare(a._id))
-    rows = rows.filter(row => !cursorAt || row.created_at.toISOString() < cursorAt || (row.created_at.toISOString() === cursorAt && row._id < cursorId!))
-    let attempts: any[] | undefined
-    if (filters.date_basis === 'cost') {
-      attempts = (await collection<any>(db, 'ai_attempts').find({ job_id: { $in: rows.map(row => row._id) } }).toArray())
-        .filter(attempt => inRange(attempt.requested_at, filters.from, filters.to))
-      const costJobs = new Set(attempts.map(attempt => attempt.job_id))
-      rows = rows.filter(row => costJobs.has(row._id))
+    reportFilters.parse(filters)
+    const from = filters.from ? dateStart(filters.from) : undefined
+    const to = filters.to ? dateEnd(filters.to) : undefined
+    const status = filters.status === 'completed' ? 'ready' : filters.status
+    const source = filters.source === 'widget' ? 'preview' : filters.source === 'immediate' ? 'preview' : filters.source === 'schedule' ? 'scheduled' : filters.source
+    const search = filters.q?.toLowerCase()
+    const byCost = filters.date_basis === 'cost'
+    const now = Date.now()
+    const jobDate = (row: any) => {
+      if (status === 'ready') return row.completed_at
+      if (status === 'failed') return issueTime(row)
+      if (status === 'scheduled') return row.scheduled_at
+      return row.created_at
     }
-    const mapped: any[] = rows.slice(0, filters.limit + 1).map(row => ({ ...reportJob(row), cursor_at: row.created_at.toISOString(), cursor_id: row._id }))
-    attempts ??= await collection<any>(db, 'ai_attempts').find({ job_id: { $in: mapped.map(row => row.id) } }).toArray()
-    for (const row of mapped) {
-      const priced = attempts.filter(attempt => attempt.job_id === row.id && attempt.cost_usd != null && attempt.cost_usd !== '')
-      const cost = priced.length ? priced.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new Decimal(0)) : null
-      row.cost_usd = cost == null ? null : costValue(cost)
-      row.cost_vnd = costVnd(cost)
+    let rows = (await joinedJobs(db, filters)).filter(row =>
+      (byCost || inRange(jobDate(row), from, to)) && (!status || row.status === status)
+      && (!source || row.mode === source) && (!filters.provider || row.provider === filters.provider)
+      && (!filters.key_mode || row.key_mode === filters.key_mode)
+      && (!byCost || row.key_mode === 'service')
+      && (!filters.issue || filters.issue === 'unpriced'
+        || (filters.issue === 'queue' && writingQueue(row, now))
+        || (filters.issue === 'overdue' && overdueSchedule(row, now))
+        || (filters.issue === 'future' && row.status === 'scheduled' && (runtimeTime(row.scheduled_at) ?? -Infinity) > now)
+        || (filters.issue === 'stale' && row.status === 'writing' && !hasRuntimeLease(row, now)))
+      && (!search || `${row.keyword} ${row._id} ${row.client_request_id ?? ''}`.toLowerCase().includes(search)),
+    )
+    if (filters.issue === 'unpriced') {
+      const ids = rows.filter(row => row.key_mode === 'service').map(row => row._id)
+      const attempts = ids.length ? await collection<any>(db, 'ai_attempts').find({
+        ...pendingCostFilter(), job_id: { $in: ids },
+        ...(byCost && (from || to) ? { requested_at: { ...(from ? { $gte: from } : {}), ...(to ? { $lt: to } : {}) } } : {}),
+      }, { projection: { job_id: 1 } }).toArray() : []
+      const pendingIds = new Set(attempts.map(attempt => attempt.job_id))
+      rows = rows.filter(row => pendingIds.has(row._id))
     }
-    return pageOf(mapped, filters.limit)
+    const attemptsByJob = new Map<string, Decimal | null>()
+    function recordCost(attempt: any) {
+      const cost = attemptsByJob.get(attempt.job_id) ?? null
+      attemptsByJob.set(attempt.job_id, attempt.cost_usd == null || attempt.cost_usd === '' ? cost : (cost ?? new ReportDecimal(0)).plus(attempt.cost_usd))
+    }
+    if (byCost && rows.length) {
+      const matchingIds = new Set(rows.map(row => row._id))
+      const attempts = await collection<any>(db, 'ai_attempts').find({
+        ...((from || to) ? { requested_at: { ...(from ? { $gte: from } : {}), ...(to ? { $lt: to } : {}) } } : {}),
+      }, { projection: { job_id: 1, cost_usd: 1 } }).toArray()
+      for (const attempt of attempts) if (matchingIds.has(attempt.job_id)) recordCost(attempt)
+      rows = rows.filter(row => attemptsByJob.has(row._id))
+    }
+    const page = sortedPage(rows, filters.cursor, filters.limit)
+    const serviceIds = page.filter(row => row.key_mode === 'service').map(row => row._id)
+    if (!byCost && serviceIds.length) {
+      const attempts = await collection<any>(db, 'ai_attempts').find({ job_id: { $in: serviceIds } },
+        { projection: { job_id: 1, cost_usd: 1 } }).toArray()
+      for (const attempt of attempts) recordCost(attempt)
+    }
+    const labelConnection = await connectionLabels(db, page)
+    return pageOf(page.map(row => ({ ...reportJob(labelConnection(row)), ...cursorFields(row), cost_usd: attemptsByJob.get(row._id)?.toFixed(12) ?? null, cost_vnd: costVnd(attemptsByJob.get(row._id)) })), filters.limit)
   })
   app.delete('/jobs/:id', async (request, reply) => {
     const { id } = idParams.parse(request.params)
@@ -335,6 +617,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
     return reply.code(204).send()
   })
   app.get('/jobs/:id', async (request, reply) => {
+    const costVnd = convertVnd((await getRuntimeConfig()).usdToVnd)
     const { id } = idParams.parse(request.params)
     const row = await collection<any>(db, 'jobs').findOne({ _id: id })
     if (!row) throw notFound()
@@ -344,12 +627,14 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       collection<any>(db, 'ai_attempts').find({ job_id: id }).sort({ requested_at: 1 }).toArray(),
       collection<any>(db, 'webhook_deliveries').find({ job_id: id }).sort({ created_at: 1 }).toArray(),
     ])
+    const labelConnection = await connectionLabels(db, [row, ...attempts])
     const ready = row.status === 'ready'
-    const pricedAttempts = attempts.filter(attempt => attempt.cost_usd != null && attempt.cost_usd !== '')
-    const cost = pricedAttempts.length ? pricedAttempts.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new Decimal(0)) : null
+    const trackCost = row.key_mode === 'service'
+    const pricedAttempts = trackCost ? attempts.filter(attempt => attempt.cost_usd != null && attempt.cost_usd !== '') : []
+    const cost = pricedAttempts.length ? pricedAttempts.reduce((sum, attempt) => sum.plus(String(attempt.cost_usd)), new ReportDecimal(0)) : null
     reply.header('Cache-Control', 'no-store')
     return {
-      ...reportJob({ ...row, customer, site }),
+      ...reportJob(labelConnection({ ...row, customer, site })),
       cost_usd: cost == null ? null : costValue(cost),
       cost_vnd: costVnd(cost),
       rewrite_key_mode: customer?.key_mode ?? row.key_mode,
@@ -357,12 +642,15 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       result: ready && Array.isArray(row.result) ? row.result.map(normalizeArticleFields) : ready ? row.result : null,
       seo_report: ready ? row.seo_report ?? null : null,
       seo_repair_status: ready ? row.seo_repair_status ?? null : null,
+      internal_link_report: ready ? row.internal_link_report ?? null : null,
       instructions: row.instructions,
       attempts: attempts.map(attempt => ({
-        id: attempt._id, provider: attempt.provider, model: attempt.model, stage: attempt.stage ?? null,
+        id: attempt._id, provider: attempt.provider, model: attempt.model,
+        ...(labelConnection(attempt).upstream_model ? { upstream_model: labelConnection(attempt).upstream_model } : {}),
+        stage: attempt.stage ?? null,
         status: attempt.status, started_at: attempt.requested_at, called_at: attempt.requested_at,
-        pricing_id: attempt.pricing_id, pricing_snapshot: attempt.pricing_snapshot, provider_response_id: attempt.provider_response_id,
-        usage: attempt.usage, finished_at: attempt.finished_at, cost_usd: attempt.cost_usd, cost_vnd: costVnd(attempt.cost_usd), cost_source: attempt.cost_source,
+        pricing_id: trackCost ? attempt.pricing_id : null, pricing_snapshot: trackCost ? attempt.pricing_snapshot : null, provider_response_id: attempt.provider_response_id,
+        usage: attempt.usage, finished_at: attempt.finished_at, cost_usd: trackCost ? attempt.cost_usd : null, cost_vnd: trackCost ? costVnd(attempt.cost_usd) : null, cost_source: trackCost ? attempt.cost_source : null,
         error_code: attempt.error_code, error_message: attempt.error,
       })),
       deliveries: await Promise.all(deliveries.map(delivery => deliveryView(db, delivery))),
@@ -370,23 +658,96 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
   })
   app.get('/deliveries', async request => {
     const filters = deliveriesSchema.parse(request.query)
-    const [cursorAt, cursorId] = readCursor(filters.cursor)
-    const rows = await joinedJobs(db)
-    const deliveries = await collection<any>(db, 'webhook_deliveries').find({}).sort({ created_at: -1, _id: -1 }).toArray()
-    const mapped = deliveries.filter(delivery => {
-      const job = rows.find(row => row._id === delivery.job_id)
-      const createdAt = delivery.created_at.toISOString()
-      return job && (!filters.customer_id || job.customer_id === filters.customer_id) &&
-        (!filters.website_id || job.site_id === filters.website_id) && inRange(delivery.created_at, filters.from, filters.to) &&
-        (!filters.status || delivery.status === filters.status) && (!filters.event || delivery.event === filters.event) &&
-        (!cursorAt || createdAt < cursorAt || (createdAt === cursorAt && delivery._id < cursorId!))
-    }).slice(0, filters.limit + 1)
-    const result = await Promise.all(mapped.map(delivery => deliveryView(db, delivery)))
-    return pageOf(result.map(row => ({ ...row, cursor_at: new Date(row.created_at).toISOString(), cursor_id: row.id })), filters.limit)
+    reportFilters.parse(filters)
+    const from = filters.from ? dateStart(filters.from) : undefined
+    const to = filters.to ? dateEnd(filters.to) : undefined
+    const search = filters.q?.toLowerCase()
+    const now = Date.now()
+    const [rows, deliveries] = await Promise.all([
+      joinedJobs(db, filters),
+      collection<any>(db, 'webhook_deliveries').find({
+        ...(filters.website_id ? { site_id: filters.website_id } : {}),
+        ...(filters.status ? { status: filters.status } : {}), ...(filters.event ? { event: filters.event } : {}),
+      }).toArray(),
+    ])
+    const jobs = new Map(rows.map(row => [row._id, row]))
+    const matched = deliveries.filter(delivery => {
+      const job = jobs.get(delivery.job_id)
+      const time = filters.status === 'delivered' ? delivery.delivered_at : filters.status === 'failed' ? delivery.updated_at : delivery.created_at
+      return job && inRange(time, from, to)
+        && (!filters.issue || (filters.issue === 'queue' && deliveryQueue(delivery, now))
+          || (filters.issue === 'stale' && delivery.status === 'sending' && !hasRuntimeLease(delivery, now)))
+        && (!search || `${delivery.job_id} ${delivery._id} ${job.site?.name ?? ''} ${job.keyword}`.toLowerCase().includes(search))
+    })
+    const page = sortedPage(matched, filters.cursor, filters.limit)
+    const data = await Promise.all(page.map(async delivery => ({ ...await deliveryView(db, delivery), ...cursorFields(delivery) })))
+    return pageOf(data, filters.limit)
   })
   app.get('/deliveries/:id', async request => { const { id } = idParams.parse(request.params); const delivery = await collection<any>(db, 'webhook_deliveries').findOne({ _id: id }); if (!delivery) throw notFound(); return deliveryView(db, delivery) })
-  app.post('/deliveries/:id/retry', async request => { const { id } = idParams.parse(request.params); const result = await collection(db, 'webhook_deliveries').updateOne({ _id: id, status: 'failed' }, { $set: { status: 'pending', attempt_count: 0, next_attempt_at: new Date(), error: null, updated_at: new Date() } }); if (!result.matchedCount) { const current = await collection(db, 'webhook_deliveries').findOne({ _id: id }); if (!current) throw notFound(); throw new ApiError(409, 'delivery_not_failed', 'Chỉ có thể gửi lại webhook đã lỗi.') } return { id, status: 'pending' } })
+  app.post('/deliveries/:id/retry', async request => {
+    const { id } = idParams.parse(request.params)
+    const jobId = await transaction(db, async source => {
+      const session = sessionOf(source)
+      const deliveries = collection(source, 'webhook_deliveries')
+      const delivery = await deliveries.findOne({ _id: id }, { session })
+      if (!delivery) throw notFound()
+      if (!['failed', 'delivered'].includes(delivery.status)) throw new ApiError(409, 'delivery_not_retryable', 'Chỉ có thể gửi lại lần giao đã hoàn tất hoặc bị lỗi. Hãy chờ lần giao đang xử lý kết thúc.')
+      // Parent deletion and retention take the same website lock. Recheck the
+      // article while holding it so a resent event cannot lose its payload.
+      const site = await collection(source, 'sites').updateOne({ _id: delivery.site_id }, { $inc: { relation_version: 1 } }, { session })
+      if (!site.matchedCount || !await collection(source, 'jobs').findOne({ _id: delivery.job_id, site_id: delivery.site_id }, { session, projection: { _id: 1 } })) throw notFound()
+      const time = new Date()
+      const result = await deliveries.updateOne({ _id: id, status: delivery.status }, { $set: {
+        status: 'pending', attempt_count: 0, next_attempt_at: time, error: null,
+        http_status: null, delivered_at: null, id_post: null, acknowledged_at: null,
+        lease_token: null, lease_expires_at: null, updated_at: time,
+      } }, { session })
+      if (!result.matchedCount) throw new ApiError(409, 'delivery_changed', 'Trạng thái giao bài đã thay đổi. Hãy tải lại rồi thử lại.')
+      return delivery.job_id
+    })
+    jobEvents.publish({ type: 'job.updated', job_id: jobId })
+    return { id, status: 'pending' }
+  })
+  app.delete('/deliveries/:id', async (request, reply) => {
+    const { id } = idParams.parse(request.params)
+    const jobId = await transaction(db, async source => {
+      const session = sessionOf(source)
+      const deliveries = collection(source, 'webhook_deliveries')
+      const delivery = await deliveries.findOne({ _id: id }, { session })
+      if (!delivery) throw notFound()
+      if (!['pending', 'delivered', 'failed'].includes(delivery.status)) throw new ApiError(409, 'delivery_in_progress', 'Không thể xóa lần giao đang được gửi. Hãy chờ tiến trình kết thúc rồi thử lại.')
+      // A missing historical parent does not prevent removing an orphaned
+      // delivery, but an existing website serializes with parent deletion.
+      await collection(source, 'sites').updateOne({ _id: delivery.site_id }, { $inc: { relation_version: 1 } }, { session })
+      const filter = { _id: id, status: delivery.status }
+      const locked = await deliveries.updateOne(filter, { $inc: { action_version: 1 } }, { session })
+      if (!locked.matchedCount) throw new ApiError(409, 'delivery_changed', 'Trạng thái giao bài đã thay đổi. Hãy tải lại rồi thử lại.')
+      await collection(source, 'webhook_attempts').deleteMany({ delivery_id: id }, { session })
+      const removed = await deliveries.deleteOne(filter, { session })
+      if (!removed.deletedCount) throw new ApiError(409, 'delivery_changed', 'Trạng thái giao bài đã thay đổi. Hãy tải lại rồi thử lại.')
+      return delivery.job_id
+    })
+    jobEvents.publish({ type: 'job.updated', job_id: jobId })
+    return reply.code(204).send()
+  })
 }
 
-async function deliveryView(db: Database, delivery: any) { const job = await collection<any>(db, 'jobs').findOne({ _id: delivery.job_id }); const site = await collection<any>(db, 'sites').findOne({ _id: delivery.site_id }); const customer = job ? await collection<any>(db, 'customers').findOne({ _id: job.customer_id }) : null; const attempts = await collection<any>(db, 'webhook_attempts').find({ delivery_id: delivery._id }).sort({ attempted_at: 1 }).toArray(); return { id: delivery._id, job_id: delivery.job_id, website_id: delivery.site_id, website_name: site?.name ?? '', customer_name: customer?.name ?? '', keyword: job?.keyword, status: delivery.status, event_type: delivery.event, attempts: attempts.length, attempt_count: delivery.attempt_count, last_http_status: delivery.http_status ?? null, last_error: delivery.error ?? null, next_attempt_at: delivery.next_attempt_at, delivered_at: delivery.delivered_at ?? null, created_at: delivery.created_at, history: attempts.map(attempt => ({ id: attempt._id, attempted_at: attempt.attempted_at, started_at: attempt.attempted_at, finished_at: attempt.finished_at, http_status: attempt.http_status, error: attempt.error })) } }
+async function deliveryView(db: Database, delivery: any) {
+  const job = await collection<any>(db, 'jobs').findOne({ _id: delivery.job_id })
+  const site = await collection<any>(db, 'sites').findOne({ _id: delivery.site_id })
+  const customer = job ? await collection<any>(db, 'customers').findOne({ _id: job.customer_id }) : null
+  const attempts = await collection<any>(db, 'webhook_attempts').find({ delivery_id: delivery._id }).sort({ attempted_at: 1 }).toArray()
+  return {
+    id: delivery._id, job_id: delivery.job_id, website_id: delivery.site_id,
+    website_name: site?.name ?? '', customer_name: customer?.name ?? '', keyword: job?.keyword,
+    status: delivery.status, event_type: delivery.event, attempts: attempts.length, attempt_count: delivery.attempt_count,
+    last_http_status: delivery.http_status ?? null, last_error: delivery.error ?? null,
+    id_post: delivery.id_post ?? null, acknowledged_at: delivery.acknowledged_at ?? null,
+    next_attempt_at: delivery.next_attempt_at, delivered_at: delivery.delivered_at ?? null, created_at: delivery.created_at,
+    history: attempts.map(attempt => ({
+      id: attempt._id, attempted_at: attempt.attempted_at, started_at: attempt.attempted_at, finished_at: attempt.finished_at,
+      http_status: attempt.http_status, error: attempt.error, id_post: attempt.id_post ?? null, acknowledged_at: attempt.acknowledged_at ?? null,
+    })),
+  }
+}
 // @ts-nocheck

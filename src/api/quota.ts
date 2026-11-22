@@ -30,10 +30,10 @@ const addDays = (date: string, days: number) => {
   value.setUTCDate(value.getUTCDate() + days)
   return value
 }
-const addMonth = (date: string) => {
-  const value = new Date(`${date}-01T00:00:00+07:00`)
+const addMonth = (month: string) => {
+  const value = new Date(`${month}-01T00:00:00Z`)
   value.setUTCMonth(value.getUTCMonth() + 1)
-  return value
+  return new Date(`${value.toISOString().slice(0, 10)}T00:00:00+07:00`)
 }
 
 export function assertPackage(pkg: Package, when: Date, model: string, length: number) {

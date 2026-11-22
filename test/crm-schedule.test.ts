@@ -6,7 +6,7 @@ import { chromium, type Browser } from 'playwright';
 const origin = 'http://localhost:3223';
 const instructions = 'Thêm ví dụ thực tế và CSS inline cho bảng.';
 
-async function mockSchedule(browser: Browser, bundle: string) {
+async function mockSchedule(browser: Browser, bundle: string, immediate = false) {
   const page = await browser.newPage({ viewport: { width: 390, height: 1000 }, timezoneId: 'Asia/Ho_Chi_Minh' });
   page.setDefaultTimeout(10000);
   const posts: { method: string; body: unknown; csrf: string | undefined }[] = [];
@@ -23,22 +23,22 @@ async function mockSchedule(browser: Browser, bundle: string) {
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/crm-test.js"></script></body></html>' });
     if (url.pathname === '/crm-test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
-    if (url.pathname === '/api/crm/jobs') return route.fulfill({ json: { data: [], next_cursor: null } });
+    if (url.pathname === '/api/crm/jobs' && request.method() === 'GET') return route.fulfill({ json: { data: [], next_cursor: null } });
     if (url.pathname === '/api/crm/jobs/events') return route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' });
     if (url.pathname === '/api/crm/customers') return route.fulfill({ json: { data: [{ id: 'customer-test', name: 'Khách kiểm thử' }] } });
     if (url.pathname === '/api/crm/websites') return route.fulfill({ json: { data: [{ id: 'website-test', name: 'Website kiểm thử' }] } });
     if (url.pathname === '/api/crm/providers') return route.fulfill({ json: { data: [{ provider: 'openai-compatible', display_name: 'OpenAI Compatible', enabled: true, models: [{ model: 'model-test', display_name: 'Model kiểm thử', enabled: true }] }] } });
-    if (url.pathname === '/api/crm/schedules' && request.method() === 'POST') {
+    if (url.pathname === (immediate ? '/api/crm/jobs' : '/api/crm/schedules') && request.method() === 'POST') {
       posts.push({ method: request.method(), body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
-      return route.fulfill({ status: 202, json: { job_id: 'scheduled-test', status: 'scheduled' } });
+      return route.fulfill({ status: 202, json: { job_id: immediate ? 'instant-test' : 'scheduled-test', status: immediate ? 'queued' : 'scheduled' } });
     }
     unexpected.push(`${request.method()} ${url.pathname}`);
     return route.abort();
   });
   await page.goto(origin);
-  await page.getByRole('button', { name: /Lên lịch viết/ }).click();
+  await page.getByRole('button', { name: immediate ? 'Viết bài ngay' : /Lên lịch viết/ }).click();
   const modal = page.locator('.ant-modal');
-  await modal.getByText('Lên lịch viết bài', { exact: true }).waitFor();
+  await modal.locator('.ant-modal-title').getByText(immediate ? 'Viết bài ngay' : 'Lên lịch viết bài', { exact: true }).waitFor();
   async function select(label: string, option: string) {
     await modal.getByLabel(label, { exact: true }).click();
     await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option-content').getByText(option, { exact: true }).click();
@@ -49,7 +49,7 @@ async function mockSchedule(browser: Browser, bundle: string) {
   await modal.getByLabel('Từ khóa', { exact: true }).fill('dịch vụ thiết kế website');
   await select('Giọng văn', 'Chuyên nghiệp');
   await select('Phong cách', 'SEO');
-  await modal.getByLabel('Thời gian viết (giờ Việt Nam)', { exact: true }).fill('2030-01-01T12:00:00');
+  if (!immediate) await modal.getByLabel('Thời gian viết (giờ Việt Nam)', { exact: true }).fill('2030-01-01T12:00:00');
   await modal.getByLabel('Hướng dẫn thêm', { exact: true }).fill(instructions);
   return { page, modal, posts, unexpected, pageErrors };
 }
@@ -110,6 +110,21 @@ test('CRM schedule accepts numeric word lengths and rejects invalid lengths', as
         await response;
         assert.equal(posts.length, 1, 'a corrected length can be scheduled');
         assert.equal((posts[0].body as { length: unknown }).length, 1500);
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+    await t.test('instant writing submits immediately without a schedule time', async () => {
+      const { page, modal, posts, unexpected, pageErrors } = await mockSchedule(browser, outputFiles[0].text, true);
+      try {
+        await modal.getByLabel('Độ dài (600–2500 từ)', { exact: true }).fill('1500');
+        const response = page.waitForResponse(response => response.url() === `${origin}/api/crm/jobs` && response.request().method() === 'POST');
+        await modal.getByRole('button', { name: 'Viết bài ngay', exact: true }).click();
+        await response;
+        assert.deepEqual(posts, [{
+          method: 'POST', csrf: 'fixture-csrf',
+          body: { customer_id: 'customer-test', website_id: 'website-test', model: 'model-test', keyword: 'dịch vụ thiết kế website', length: 1500, tone: 'Chuyên nghiệp', style: 'SEO', instructions, use_research: true },
+        }]);
         assert.deepEqual(unexpected, []);
         assert.deepEqual(pageErrors, []);
       } finally { await page.close(); }

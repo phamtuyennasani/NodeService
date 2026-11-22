@@ -6,10 +6,11 @@ import { CursorPagination, datetime, EmptyState, go, PageHeading, Panel, Resourc
 import type { Collection, Website } from './types';
 import './records.css';
 
-type WebsiteDraft = Pick<Website, 'name' | 'customer_id' | 'domain' | 'webhook_url'>;
+type WebsiteDraft = Pick<Website, 'name' | 'customer_id' | 'domain' | 'webhook_url' | 'content_catalog_url'>;
 type Secret = { title: string; value: string };
+type CatalogCheck = { status: 'synced' | 'cached' | 'not_configured' | 'busy'; count: number; synced_at: string | null };
 
-const widgetSnippet = () => `<div id="ai-tools"></div>
+const widgetSnippet = (keyMode: 'own' | 'service' = 'service') => `<div id="ai-tools"></div>
 <script src="${window.location.origin}/widget/v1/ai-writer.js"></script>
 <script>
   const config = {
@@ -17,6 +18,7 @@ const widgetSnippet = () => `<div id="ai-tools"></div>
     form: '#article-form',
     endpoint: '/admin/ai/previews',
     modelsEndpoint: '/admin/ai/models',
+    keyMode: '${keyMode}',
     fields: {
       Title: '[name="title"]',
       Content: '[name="body"]',
@@ -39,6 +41,7 @@ export function Websites({ query }: { query: URLSearchParams }) {
   const [editing, setEditing] = useState<Website | 'new' | null>(null);
   const [secret, setSecret] = useState<Secret | null>(null);
   const [saving, setSaving] = useState(false);
+  const [checkingCatalogId, setCheckingCatalogId] = useState<string | null>(null);
   const [form] = Form.useForm<WebsiteDraft>();
   const { message, modal } = App.useApp();
   const formCustomer = Form.useWatch('customer_id', form);
@@ -64,6 +67,7 @@ export function Websites({ query }: { query: URLSearchParams }) {
         name: values.name.trim(),
         domain: values.domain.trim(),
         webhook_url: values.webhook_url?.trim(),
+        content_catalog_url: values.content_catalog_url?.trim() || null,
       });
       if (customerId && customerId !== values.customer_id) setCustomerId(values.customer_id);
       sites.reload();
@@ -84,6 +88,23 @@ export function Websites({ query }: { query: URLSearchParams }) {
       message.success('Đã sao chép.');
     } catch {
       message.error('Không thể sao chép tự động. Hãy chọn và sao chép văn bản.');
+    }
+  }
+
+  async function checkCatalog(site: Website) {
+    if (!site.content_catalog_url || checkingCatalogId) return;
+    setCheckingCatalogId(site.id);
+    try {
+      const result = await mutate<CatalogCheck>(`/websites/${site.id}/content-catalog/check`, 'POST');
+      if (result.status === 'busy') message.info('CRM đang kiểm tra danh mục của website. Hãy thử lại sau.');
+      else if (result.status === 'not_configured') message.info('Hãy lưu URL danh mục liên kết trước khi kiểm tra.');
+      else message.success(`Đã đọc danh mục: ${result.count} trang có thể liên kết.`);
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      sites.reload();
+      details.reload();
+      setCheckingCatalogId(null);
     }
   }
 
@@ -165,11 +186,19 @@ export function Websites({ query }: { query: URLSearchParams }) {
             { key: 'customer', label: 'Khách hàng', children: selected.customer_name },
             { key: 'domain', label: 'Tên miền', children: selected.domain },
             { key: 'url', label: 'Webhook Laravel', children: selected.webhook_url || 'Chưa cấu hình' },
+            { key: 'catalog', label: 'URL danh mục liên kết', children: <span style={{ overflowWrap: 'anywhere' }}>{selected.content_catalog_url || 'Chưa cấu hình'}</span> },
+            ...(selected.content_catalog_url ? [
+              { key: 'catalog-checked', label: 'Kiểm tra danh mục gần nhất', children: datetime(selected.content_catalog_checked_at) },
+              { key: 'catalog-synced', label: 'Đồng bộ thành công gần nhất', children: datetime(selected.content_catalog_synced_at) },
+              { key: 'catalog-count', label: 'Trang trong danh mục', children: selected.content_catalog_count ?? 0 },
+            ] : []),
             { key: 'token', label: 'Token', children: selected.token_hint || 'Chưa cấp' },
             { key: 'seen', label: 'API dùng gần nhất', children: datetime(selected.last_seen_at) },
             { key: 'articles', label: 'Bài đã viết', children: selected.article_count },
           ]} />
+          {selected.content_catalog_error && <Alert type="warning" showIcon title="Chưa đọc được danh mục liên kết" description={selected.content_catalog_error} />}
           <div className="drawer-actions"><Space wrap>
+            <Button disabled={!selected.content_catalog_url || Boolean(checkingCatalogId && checkingCatalogId !== selected.id)} loading={checkingCatalogId === selected.id} onClick={() => void checkCatalog(selected)}>Kiểm tra danh mục</Button>
             <Button icon={<KeyOutlined />} onClick={() => manageSecret(selected, 'token')}>{selected.token_hint ? 'Đổi token' : 'Cấp token'}</Button>
             {selected.token_hint && <Button danger onClick={() => manageSecret(selected, 'revoke')}>Thu hồi token</Button>}
             <Button onClick={() => manageSecret(selected, 'webhook')}>Cấp khóa webhook</Button>
@@ -179,13 +208,13 @@ export function Websites({ query }: { query: URLSearchParams }) {
         { key: 'widget', label: 'Widget JavaScript', children: <>
           <p>Đặt đoạn nhúng cạnh form biên tập và thay selector theo các trường của website. Laravel nhận yêu cầu qua <code>POST /admin/ai/previews</code> và trả kết quả qua <code>GET /admin/ai/previews/&#123;job_id&#125;</code>.</p>
           <p>Thêm <code>GET /admin/ai/models</code> trên Laravel cho người có quyền biên tập. Route này dùng token website ở backend để gọi <code>GET /v1/models</code> và trả nguyên danh sách cho widget.</p>
-          <pre className="code-block">{widgetSnippet()}</pre>
-          <Button icon={<CopyOutlined />} onClick={() => void copy(widgetSnippet())}>Sao chép đoạn nhúng</Button>
+          <pre className="code-block">{widgetSnippet(selected.key_mode ?? 'service')}</pre>
+          <Button icon={<CopyOutlined />} onClick={() => void copy(widgetSnippet(selected.key_mode ?? 'service'))}>Sao chép đoạn nhúng</Button>
         </> },
       ]} />}
     </Drawer>
     <Modal title={editing === 'new' ? 'Thêm website' : 'Chỉnh sửa website'} open={Boolean(editing)} onCancel={() => setEditing(null)}
-      onOk={() => form.submit()} okText="Lưu website" confirmLoading={saving} forceRender>
+      onOk={() => form.submit()} okText="Lưu website" confirmLoading={saving} zIndex={1100} forceRender>
       <Form form={form} layout="vertical" onFinish={save}>
         <Form.Item name="customer_id" label="Khách hàng" rules={[{ required: true, message: 'Chọn khách hàng.' }]}>
           <Select showSearch={formCustomers.searchConfig} loading={formCustomers.loading} disabled={editing !== 'new'} options={formCustomers.options} />
@@ -193,6 +222,10 @@ export function Websites({ query }: { query: URLSearchParams }) {
         <Form.Item name="name" label="Tên hiển thị" rules={[{ required: true, whitespace: true, message: 'Nhập tên website.' }]}><Input /></Form.Item>
         <Form.Item name="domain" label="Tên miền" rules={[{ required: true, whitespace: true, message: 'Nhập tên miền website.' }]}><Input placeholder="example.vn" /></Form.Item>
         <Form.Item name="webhook_url" label="URL webhook nhận bài" rules={[{ required: true, whitespace: true, message: 'Nhập URL webhook.' }, { pattern: /^https?:\/\//i, message: 'Nhập URL hợp lệ.' }]}><Input placeholder="https://example.vn/api/webhooks/ai-articles" /></Form.Item>
+        <Form.Item name="content_catalog_url" label="URL danh mục liên kết" extra="URL HTTPS cùng tên miền website, trả JSON {items: [{id, url, title, summary, categories?}]}. CRM đọc danh mục này để chọn liên kết khi viết bài. Để trống nếu chưa sử dụng."
+          rules={[{ type: 'url', transform: (value: string | null | undefined) => value?.trim() || undefined, message: 'Nhập URL HTTPS hợp lệ.' }, { pattern: /^https:\/\//i, transform: (value: string | null | undefined) => value?.trim() || undefined, message: 'Nhập URL HTTPS hợp lệ.' }]}>
+          <Input placeholder="https://example.vn/api/ai/content-catalog" maxLength={2048} />
+        </Form.Item>
       </Form>
     </Modal>
     <Modal title={secret?.title} open={Boolean(secret)} onCancel={() => setSecret(null)} footer={<Button type="primary" onClick={() => setSecret(null)}>Đóng</Button>}>

@@ -11,12 +11,14 @@ export interface Session {
 
 export interface CatalogModel {
   model: string;
+  upstream_model?: string;
   display_name: string;
   enabled: boolean;
 }
 
 export interface CatalogProvider {
   provider: string;
+  kind?: 'openai' | 'anthropic' | 'xai' | 'openai-compatible';
   display_name: string;
   service_key_configured: boolean;
   base_url?: string | null;
@@ -34,7 +36,7 @@ export interface Customer {
   key_mode: 'own' | 'service';
   daily_limit: number | null;
   monthly_limit: number | null;
-  allowed_models: string[] | null;
+  allowed_models: string[];
   max_length: number | null;
   active_from: string | null;
   active_until: string | null;
@@ -47,8 +49,14 @@ export interface Website {
   name: string;
   customer_id: string;
   customer_name: string;
+  key_mode?: 'own' | 'service';
   domain: string;
   webhook_url: string | null;
+  content_catalog_url?: string | null;
+  content_catalog_checked_at?: string | null;
+  content_catalog_synced_at?: string | null;
+  content_catalog_error?: string | null;
+  content_catalog_count?: number;
   token_hint: string | null;
   webhook_secret_configured?: boolean;
   last_seen_at: string | null;
@@ -89,6 +97,8 @@ export interface Job {
   can_rewrite?: boolean;
   keyword: string;
   model: string;
+  upstream_model?: string;
+  provider_display_name?: string;
   tone: string;
   style: string;
   length: number;
@@ -125,6 +135,7 @@ export interface Attempt {
   id: string;
   provider: string;
   model: string;
+  upstream_model?: string;
   status: string;
   stage?: 'outline' | 'draft' | 'seo_repair' | null;
   started_at: string;
@@ -152,8 +163,10 @@ export interface Delivery {
   attempt_count: number;
   last_http_status?: number | null;
   last_error?: string | null;
+  id_post?: string | number | null;
+  acknowledged_at?: string | null;
   attempts: number;
-  history?: { id: string; attempted_at?: string; started_at?: string; finished_at?: string; http_status?: number; error?: string }[];
+  history?: { id: string; attempted_at?: string; started_at?: string; finished_at?: string; http_status?: number | null; error?: string | null; id_post?: string | number | null; acknowledged_at?: string | null }[];
   next_attempt_at?: string | null;
   delivered_at?: string | null;
   created_at: string;
@@ -165,6 +178,13 @@ export type JobDetails = Job & {
   result?: Article[] | null;
   seo_report?: SeoReport | null;
   seo_repair_status?: SeoRepairStatus | null;
+  internal_link_report?: {
+    status: 'checked' | 'no_candidates' | 'unavailable';
+    candidates: number;
+    used: { url: string; anchor: string }[];
+    removed: number;
+    checked_at: string;
+  } | null;
   attempts?: Attempt[];
   deliveries?: Delivery[];
 };
@@ -177,6 +197,8 @@ export interface DashboardRuntime {
     scheduled: number;
     active_threads: number;
     stale_writing: number;
+    overdue_schedules?: number;
+    oldest_wait_seconds?: number | null;
   };
   capacity: {
     writer_per_process: number;
@@ -184,11 +206,25 @@ export interface DashboardRuntime {
   };
   providers: {
     provider: string;
+    display_name?: string;
     writing: number;
     queued: number;
     active_threads: number;
   }[];
   running: (Job & { lease_active: boolean; elapsed_seconds: number })[];
+  deliveries?: {
+    pending: number; sending: number; failed: number; active_threads: number;
+    stale_sending: number; oldest_wait_seconds: number | null;
+  };
+  attention?: {
+    write_errors: number; delivery_errors: number; stale_writing: number;
+    stale_sending: number; unpriced_attempts: number;
+  };
+  workers?: Record<'writer' | 'webhook', {
+    processes: number; accepting_processes?: number; concurrency: number; active_tasks: number; last_heartbeat_at: string | null;
+  }>;
+  write_failures?: Job[];
+  delivery_failures?: Delivery[];
 }
 
 export interface DashboardData {

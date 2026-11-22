@@ -5,11 +5,55 @@
   container-type: inline-size;
 }
 .dash-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.dash-heading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .dash-filters .ant-picker { width: 245px; }
 .dash-filters .ant-select { width: 205px; }
 .dash-filters .ant-select:last-child { width: 167px; }
 .dash-filters .ant-select-prefix { color: #677268; }
 .dash-filters .ant-select-placeholder { color: #4c574d; }
+.dash-period-summary { margin: -10px 0 18px; color: var(--muted); font-size: 11px; text-align: right; }
+.dash-period-caption { margin: 2px 0 10px; font-size: 11px; color: var(--muted); }
+.dash-attention { margin-bottom: var(--dash-gap); padding: 16px var(--dash-padding); border: 1px solid #dfceab; border-radius: var(--dash-radius); background: #fbf7ed; }
+.dash-attention > header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 12px; }
+.dash-attention h2 { display: flex; align-items: center; gap: 8px; margin: 0; color: #795b28; font-size: 16px; font-weight: 600; }
+.dash-attention > header > span { color: #756a54; font-size: 11px; }
+.dash-attention-items { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.dash-attention-items button { display: grid; align-content: start; gap: 5px; min-width: 0; border: 0; background: none; padding: 3px 16px; text-align: left; cursor: pointer; color: #684d25; }
+.dash-attention-items button:first-child { padding-left: 0; }
+.dash-attention-items button + button { border-left: 1px solid #e8ddc7; }
+.dash-attention-items button:disabled { color: #77786c; cursor: default; }
+.dash-attention-items button > span { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; font-weight: 600; }
+.dash-attention-items button > span .anticon { font-size: 10px; }
+.dash-attention-items button:disabled .anticon { visibility: hidden; }
+.dash-attention-items button strong { font-size: 27px; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dash-attention-items button small { color: #746d5f; font-size: 10px; line-height: 1.5; }
+.dash-attention-items button:not(:disabled):hover > span { text-decoration: underline; text-underline-offset: 3px; }
+.dash-recovery-link { margin-top: 12px; padding: 0; border: 0; background: none; color: #795b28; font-size: 11px; cursor: pointer; }
+.dash-delivery-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+.dash-delivery-stats .dash-runtime-stat { padding-block: 12px; gap: 6px; }
+.dash-delivery-stats .dash-runtime-stat > strong { font-size: 28px; }
+.dash-queue-age { display: flex; flex-wrap: wrap; gap: 8px 20px; padding-top: 10px; font-size: 11px; color: #785e30; }
+.dash-queue-age button { border: 0; padding: 0; background: none; color: inherit; font-size: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.dash-worker-health { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; margin-top: 12px; padding: 12px 0 0; border-top: 1px dashed var(--line); }
+.dash-worker-scope { grid-column: 1 / -1; font-size: 10px; color: var(--muted); }
+.dash-worker-health > div { display: grid; grid-template-columns: 6px auto 1fr; align-items: center; gap: 3px 7px; font-size: 11px; }
+.dash-worker-health i { width: 6px; height: 6px; border-radius: 50%; background: #5f835c; }
+.dash-worker-health b { font-weight: 600; }
+.dash-worker-health > div > span { color: #52624f; }
+.dash-worker-health small { grid-column: 2 / -1; color: var(--muted); font-size: 10px; }
+.dash-worker-health .dash-worker-offline i { background: #b48b4c; }
+.dash-worker-health .dash-worker-offline > span { color: #8b652c; }
+.dash-worker-health p { grid-column: 1 / -1; margin: 0; font-size: 10px; color: var(--muted); line-height: 1.5; }
+.dash-idle-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding-top: 12px; color: #5f7359; font-size: 11px; }
+.dash-idle-heading .ant-btn { font-size: 11px; }
+.dash-runtime-idle .dash-runtime-stat { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding-block: 12px; gap: 8px; }
+.dash-runtime-idle .dash-runtime-stat > strong { font-size: 24px; }
+.dash-runtime-idle .dash-runtime-stat > small { display: none; }
+.dash-cost-note { color: #c7d4c8; font-size: 10px; line-height: 1.6; margin: 11px 0 0; }
+.dash-runtime-lease-note { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 12px 0; }
+.dash-job-label .dash-failure-cause { color: #936331; font-size: 11px; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.dash-queues .ant-tabs-nav { margin-bottom: 4px; }
+.dash-queues .ant-tabs-tab { font-size: 12px; }
 
 .dash .dash-runtime { padding: var(--dash-padding); margin-bottom: var(--dash-gap); }
 .dash-runtime-header { margin-bottom: 17px; align-items: flex-start; }
@@ -170,6 +214,8 @@ button.dash-runtime-stat:hover strong { color: #3f694a; }
 .dash-job-label span { margin-top: 3px; color: var(--muted); font-size: 11px; }
 
 @container (max-width: 720px) {
+  .dash-worker-health { grid-template-columns: minmax(0, 1fr); }
+  .dash-cost-note { grid-column: 1 / -1; }
   .dash-runtime-context { align-items: flex-start; flex-direction: column; gap: 6px; }
   .dash-running-jobs button { grid-template-columns: 30px minmax(0, 1fr) auto; gap: 5px 10px; }
   .dash-running-icon { grid-row: 1 / 3; }
@@ -187,6 +233,15 @@ button.dash-runtime-stat:hover strong { color: #3f694a; }
   .dash-cost-sources { grid-row: 2 / 4; grid-column: 2; align-self: end; }
 }
 @container (max-width: 600px) {
+  .dash-runtime-idle .dash-runtime-stat { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .dash-attention-items { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 0; }
+  .dash-attention-items button { padding-inline: 12px; }
+  .dash-attention-items button:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .dash-attention-items button:nth-child(n+3) { padding-top: 10px; border-top: 1px solid #e8ddc7; }
+  .dash-period-summary { text-align: left; }
+  .dash-filters > .ant-btn { justify-self: start; grid-column: 1 / -1; }
+  .dash-worker-health > div { grid-template-columns: 6px auto; }
+  .dash-worker-health > div > span { grid-column: 2; }
   .dash-runtime-header { gap: 10px; }
   .dash-live { text-align: left; }
   .dash-runtime-stat { padding: 13px 12px 13px 0; gap: 7px; }

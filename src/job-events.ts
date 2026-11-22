@@ -65,8 +65,8 @@ const visibleFields = [
   'outline', 'seo_report', 'seo_repair_status', 'error_code', 'error_message',
 ]
 const attemptFields = ['status', 'usage', 'cost_usd', 'cost_source', 'provider_response_id', 'finished_at', 'error_code', 'error']
-const deliveryFields = ['status', 'attempt_count', 'http_status', 'error', 'next_attempt_at', 'delivered_at']
-const deliveryAttemptFields = ['finished_at', 'http_status', 'error']
+const deliveryFields = ['status', 'attempt_count', 'http_status', 'error', 'next_attempt_at', 'delivered_at', 'id_post', 'acknowledged_at']
+const deliveryAttemptFields = ['finished_at', 'http_status', 'error', 'id_post', 'acknowledged_at']
 const changedField = { $concatArrays: [
   { $map: { input: { $objectToArray: { $ifNull: ['$updateDescription.updatedFields', {}] } }, as: 'field', in: '$$field.k' } },
   { $ifNull: ['$updateDescription.removedFields', []] },

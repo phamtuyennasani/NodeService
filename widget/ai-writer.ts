@@ -13,14 +13,24 @@ const fields = ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'] a
 const toneOptions = ['Thân thiện', 'Chuyên nghiệp', 'Tư vấn', 'Thuyết phục', 'Trang trọng', 'Hài hước'];
 const styleOptions = ['Hướng dẫn', 'SEO', 'Chuyên gia', 'Kể chuyện', 'Danh sách', 'Tin tức'];
 type Field = typeof fields[number];
+type LegacyField = 'Desction' | 'Từ khóa';
+const legacyFields: Partial<Record<Field, LegacyField>> = { Description: 'Desction', Keywords: 'Từ khóa' };
 type Article = Record<Exclude<Field, 'Keywords'>, string> & { Keywords: string[] };
 type Target = string | { selector: string; setValue?: (element: Element, value: string) => void | Promise<void> };
+type KeyMode = 'own' | 'service';
 interface Config {
   mount: string;
   form: string;
   endpoint: string;
   modelsEndpoint?: string;
-  fields: Partial<Record<Field, Target>>;
+  keyMode?: KeyMode;
+  key_mode?: KeyMode;
+  authMode?: KeyMode;
+  provider?: string;
+  api_key?: string;
+  apiKey?: string;
+  model?: string;
+  fields: Partial<Record<Field | LegacyField, Target>>;
   models?: { value: string; label: string }[];
   defaults?: { model?: string; tone?: string; style?: string; length?: number; use_research?: boolean };
 }
@@ -38,17 +48,25 @@ function find(selector: string, root: ParentNode = document): Element {
   return matches[0];
 }
 
+function readField<T>(record: Partial<Record<Field | LegacyField, T>>, field: Field) {
+  const value = record[field];
+  const legacy = legacyFields[field];
+  return value === undefined && legacy ? record[legacy] : value;
+}
+
 function articleFrom(value: unknown): Article {
   if (!Array.isArray(value) || value.length !== 1 || !value[0] || typeof value[0] !== 'object') {
     throw new Error('Phản hồi phải chứa một bài viết.');
   }
-  const record = value[0] as Record<string, unknown>;
+  const source = value[0] as Record<string, unknown>;
+  const record: Record<string, unknown> = {};
   for (const field of fields) {
-    const entry = record[field];
+    const entry = readField(source, field);
     const valid = field === 'Keywords'
       ? Array.isArray(entry) && entry.length > 0 && entry.every(item => typeof item === 'string' && item.trim())
       : typeof entry === 'string' && entry.trim();
     if (!valid) throw new Error(`Kết quả thiếu trường ${field}.`);
+    record[field] = entry;
   }
   const article = record as Article;
   const content = articlePurifier.sanitize(article.Content, {
@@ -63,7 +81,7 @@ function prepareWrites(config: Config, article: Article) {
   const form = find(config.form);
   const seen = new Set<Element>();
   return fields.flatMap(field => {
-    const target = config.fields[field];
+    const target = readField(config.fields, field);
     if (!target) return [];
     const element = find(typeof target === 'string' ? target : target.selector, form);
     if (seen.has(element)) throw new Error(`Đích của trường ${field} bị trùng.`);
@@ -130,11 +148,28 @@ function sameOriginEndpoint(value: string) {
   return endpoint;
 }
 
+function configuredKeyMode(config: Config): KeyMode | undefined {
+  return config.keyMode ?? config.key_mode ?? config.authMode ?? (config.api_key || config.apiKey ? 'own' : undefined);
+}
+
+function ownCredentials(config: Config) {
+  if (configuredKeyMode(config) !== 'own') return undefined;
+  const provider = config.provider?.trim();
+  const apiKey = (config.api_key ?? config.apiKey)?.trim();
+  const model = config.model?.trim();
+  if (!provider || !apiKey || !model) {
+    throw new Error('Cấu hình key cá nhân cần provider, api_key và model.');
+  }
+  return { provider, api_key: apiKey, model };
+}
+
 function mount(config: Config) {
   const slot = find(config.mount);
   const endpoint = sameOriginEndpoint(config.endpoint);
   const modelsEndpoint = config.modelsEndpoint ? sameOriginEndpoint(config.modelsEndpoint) : undefined;
-  if (!fields.some(field => config.fields[field])) throw new Error('Cần cấu hình ít nhất một trường để điền.');
+  const keyMode = configuredKeyMode(config);
+  const personalCredentials = ownCredentials(config);
+  if (!fields.some(field => readField(config.fields, field))) throw new Error('Cần cấu hình ít nhất một trường để điền.');
   const host = document.createElement('span');
   slot.append(host);
   const root = host.attachShadow({ mode: 'open' });
@@ -184,7 +219,7 @@ function mount(config: Config) {
   const status = select<HTMLParagraphElement>('.status');
   const preview = select<HTMLElement>('.preview');
   let model = select<HTMLInputElement | HTMLSelectElement>('[name="model"]');
-  if (modelsEndpoint || config.models) {
+  if (keyMode !== 'own' && (modelsEndpoint || config.models)) {
     const options = document.createElement('select');
     options.name = 'model';
     options.required = true;
@@ -195,7 +230,11 @@ function mount(config: Config) {
     model.replaceWith(options);
     model = options;
   }
-  model.value = config.defaults?.model ?? model.value;
+  model.value = personalCredentials?.model ?? config.defaults?.model ?? model.value;
+  if (personalCredentials) {
+    if (model instanceof HTMLInputElement) model.readOnly = true;
+    else model.disabled = true;
+  }
   const tone = select<HTMLSelectElement>('[name="tone"]');
   const style = select<HTMLSelectElement>('[name="style"]');
   const useResearch = select<HTMLInputElement>('[name="use_research"]');
@@ -230,10 +269,12 @@ function mount(config: Config) {
     try {
       const response = await requestJson(url, loading.signal);
       if (!Array.isArray(response?.data)) throw new Error('invalid_models');
-      const options = response.data.map((row: { model?: unknown; display_name?: unknown } | null) => {
+      const options = response.data.map((row: { model?: unknown; display_name?: unknown; provider_display_name?: unknown } | null) => {
         if (typeof row?.model !== 'string' || !row.model.trim() ||
             typeof row.display_name !== 'string' || !row.display_name.trim()) throw new Error('invalid_model');
-        return new Option(row.display_name, row.model);
+        const label = typeof row.provider_display_name === 'string' && row.provider_display_name.trim()
+          ? `${row.display_name} · ${row.provider_display_name}` : row.display_name;
+        return new Option(label, row.model);
       });
       loading.signal.throwIfAborted();
       menu.replaceChildren(...options);
@@ -337,11 +378,23 @@ function mount(config: Config) {
     if (submit.disabled) return;
     const data = new FormData(form);
     const body = Object.fromEntries([...data].map(([name, value]) => [name, String(value).trim()]));
-    if (Object.values(body).some(value => !value)) {
+    const requestBody: Record<string, string | number> = {
+      ...body,
+      ...(personalCredentials ? personalCredentials : {}),
+      model: personalCredentials?.model ?? body.model,
+      length: Number(body.length),
+    };
+    if (Object.entries(requestBody).some(([name, value]) => name !== 'length' && !value)) {
       setStatus('Hãy nhập đủ thông tin bài viết.', true);
       return;
     }
-    void run(JSON.stringify({ ...body, length: Number(body.length), use_research: useResearch.checked }));
+    if (!personalCredentials) {
+      delete requestBody.provider;
+      delete requestBody.api_key;
+      delete requestBody.apiKey;
+      delete requestBody.keyAI;
+    }
+    void run(JSON.stringify({ ...requestBody, use_research: useResearch.checked }));
   };
   accept.onclick = async () => {
     if (!result || applying) return;

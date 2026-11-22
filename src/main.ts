@@ -1,8 +1,10 @@
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
-import { close, connect } from './db.js';
+import { assertTransactionSupport, close, connect } from './db.js';
 import { migrate } from './migrate.js';
 import { runWorkers } from './worker/index.js';
+import { runMaintenance } from './worker/maintenance.js';
+import { effectiveConfig } from './runtime-settings.js';
 
 const role = process.argv[2] || 'all';
 if (!['all', 'api', 'writer', 'webhook'].includes(role)) {
@@ -23,7 +25,11 @@ process.once('SIGINT', stop);
 process.once('SIGTERM', stop);
 
 try {
+  await assertTransactionSupport(db);
   await migrate(db);
+  // Validate persisted operational settings before starting any role.
+  await effectiveConfig(db, config);
+  components.push(runMaintenance(db, config, controller.signal));
   if (role === 'api' || role === 'all') {
     const app = await buildApp(db, config);
     closeApp = () => app.close();

@@ -4,7 +4,7 @@ Dịch vụ Node.js nhận yêu cầu viết ngay, lên lịch và viết lại 
 
 ## Chạy dịch vụ
 
-Cần Node.js 24 LTS và MongoDB Atlas hoặc MongoDB 7 trở lên được cấu hình replica set. Dịch vụ dùng transaction và change stream nên MongoDB standalone không được hỗ trợ.
+Cần Node.js 24 LTS và MongoDB Atlas hoặc MongoDB 7 trở lên chạy dưới dạng replica set hoặc sharded cluster. Dịch vụ dùng transaction và change stream nên MongoDB standalone không được hỗ trợ. Khi chạy cục bộ, có thể dùng replica set một nút.
 
 ```sh
 npm ci
@@ -12,7 +12,7 @@ cp .env.example .env
 openssl rand -base64 32
 ```
 
-Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ MongoDB vào `MONGODB_URI` và URL CRM vào `APP_ORIGIN`. Tài khoản MongoDB cần quyền tạo bảng trong cơ sở dữ liệu của ứng dụng. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho các gói dùng key dịch vụ. Provider **OpenAI Compatible** được cấu hình trong CRM bằng `Base URL` và API key, nên không ghi key vào `.env`.
+Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ MongoDB vào `MONGODB_URI` và URL CRM vào `APP_ORIGIN`. Với cấu hình mẫu cục bộ, khởi động MongoDB với `--replSet rs0`, chạy `rs.initiate()` trong `mongosh` một lần và đợi nút trở thành PRIMARY. Tài khoản MongoDB cần quyền tạo collection và quản lý chỉ mục trong cơ sở dữ liệu của ứng dụng. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Có thể đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho cấu hình cũ. Cách quản lý mới là mở **Nhà cung cấp AI** trong CRM, chọn **Cấu hình key** hoặc **Cấu hình kết nối**, rồi nhập key. NodeService mã hóa key bằng `ENCRYPTION_KEY` trước khi ghi vào MongoDB và chỉ hiển thị trạng thái đã cấu hình.
 
 ```sh
 npm run migrate
@@ -23,7 +23,9 @@ npm start
 
 Khi phát triển, dùng `npm run dev:watch` để theo dõi mã nguồn, tự chạy lại build và khởi động lại dịch vụ sau mỗi thay đổi.
 
-Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthropic, xAI hoặc **OpenAI Compatible** để thêm mã model, đặt tên hiển thị và bật các model muốn cung cấp. Với OpenAI Compatible, mở **Cấu hình kết nối**, nhập Base URL của API tương thích OpenAI, ví dụ `https://api.example.com/v1`, và API key. Ở bản cài mới, GPT-4.1 được bật sẵn. Sau đó cấu hình **Khách hàng**, **Website** và **Bảng giá model**. Trong hồ sơ website, dùng **Cấp token** và **Cấp khóa ký** để lấy hai giá trị cho Laravel. Thêm model vào danh sách cho phép khi cấu hình gói dịch vụ. [CRM tại localhost:3210](http://localhost:3210/)
+Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthropic, xAI hoặc **OpenAI Compatible** để thêm mã model, đặt tên hiển thị và bật các model muốn cung cấp. OpenAI, Anthropic và xAI dùng **Cấu hình key** để nhập API key. Với OpenAI Compatible, mở **Cấu hình kết nối**, nhập Base URL của API tương thích OpenAI và API key. Ở bản cài mới, GPT-4.1 được bật sẵn. Sau đó cấu hình **Khách hàng**, **Website** và **Bảng giá model**. Trong hồ sơ website, dùng **Cấp token** và **Cấp khóa ký** để lấy hai giá trị cho Laravel. Thêm model vào danh sách cho phép khi cấu hình gói dịch vụ. [CRM tại localhost:3210](http://localhost:3210/)
+
+Để dùng nhiều API tương thích OpenAI, mở tab dạng kết nối **OpenAI Compatible** trong **Nhà cung cấp AI**, rồi bấm **Thêm provider**. Các provider nằm trong danh sách bên trong tab này; chọn một provider để quản lý cấu hình và model của nó. Mỗi kết nối có tên, Base URL, API key mã hóa và danh sách model riêng; **Kiểm tra kết nối** và ping model dùng đúng kết nối đang chọn. Hai provider có thể dùng cùng mã model API: CRM lưu mã nội bộ riêng để cấp quyền khách hàng, lên lịch và tính giá chính xác, rồi gửi mã model API thực khi gọi upstream. Widget hiển thị thêm tên kết nối để phân biệt. Cấu hình OpenAI Compatible cũ được hiển thị là **Kết nối mặc định** nếu chưa đổi tên; các lịch/model đã có được giữ nguyên. Các giới hạn OpenAI Compatible trong **Cài đặt** áp dụng riêng cho từng kết nối, với cửa sổ đồng thời/phút độc lập.
 
 `npm start` chạy CRM, API, worker viết và worker giao bài trong cùng tiến trình. Khi triển khai thành các tiến trình độc lập, khởi chạy các lệnh sau và dùng chung `.env`. Chạy từ thư mục dự án để dịch vụ tìm được bản build và các migration.
 
@@ -33,21 +35,45 @@ npm start -- writer
 npm start -- webhook
 ```
 
-Khi vận hành qua HTTPS, đặt `NODE_ENV=production` và `APP_ORIGIN` bằng URL HTTPS thực tế của CRM. `GET /health` kiểm tra kết nối MongoDB. Dùng `WORKER_CONCURRENCY` và `WEBHOOK_CONCURRENCY` để điều chỉnh số tác vụ đồng thời mỗi tiến trình. Các biến `*_CONCURRENCY`, `*_REQUESTS_PER_MINUTE` và `*_TOKENS_PER_MINUTE` trong `.env.example` giới hạn lệnh gọi AI.
+Khi nâng cấp từ bản cũ, dừng các tiến trình NodeService bản cũ trước khi chạy `npm run migrate` và khởi động bản mới. Migration thay chỉ mục token website và xóa trường `keyAI` dạng rõ khỏi các job cũ, đồng thời giữ các khóa đã mã hóa.
+
+Khi vận hành qua HTTPS, đặt `NODE_ENV=production` và `APP_ORIGIN` bằng URL HTTPS thực tế của CRM. `GET /health` kiểm tra kết nối MongoDB. Mở **Hệ thống → Cài đặt** để điều chỉnh số luồng viết/giao, thời gian chờ, số lần thử, nghiên cứu và giới hạn theo nhà cung cấp mà không cần sửa code hoặc khởi động lại. Các giá trị `.env` như `WORKER_CONCURRENCY`, `WEBHOOK_CONCURRENCY` và các biến `*_CONCURRENCY`, `*_REQUESTS_PER_MINUTE`, `*_TOKENS_PER_MINUTE` là mặc định khi chưa lưu cấu hình CRM. Giới hạn nhà cung cấp được phối hợp qua MongoDB; số luồng viết/giao tính trên mỗi tiến trình đang chạy.
 
 Khi thử với Laravel trên máy cục bộ, đặt `ALLOW_LOCAL_WEBHOOKS=true` để gửi webhook đến địa chỉ nội bộ.
 
-Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu khi được bật, lập dàn ý, viết bản nháp và kiểm tra SEO. Trường `use_research` cho phép chọn có dùng dữ liệu tìm kiếm web làm tư liệu hay không. Mặc định là `true` để giữ nguyên hành vi hiện có; đặt `false` để bỏ qua lượt tìm kiếm cho yêu cầu đó. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Nếu bài có tiêu chí cần chỉnh, hệ thống thử chỉnh SEO tối đa một lần; chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
+Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu khi được bật, lập dàn ý, viết bản nháp và kiểm tra SEO. Trường `use_research` cho phép chọn có dùng dữ liệu tìm kiếm web làm tư liệu hay không. Mặc định là `true` để giữ nguyên hành vi hiện có; đặt `false` để bỏ qua lượt tìm kiếm cho yêu cầu đó. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Với cảnh báo cấu trúc/khả năng đọc có thể sửa, hệ thống thử chỉnh tối đa một lần; chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Các ngưỡng ký tự, số từ, vị trí và mật độ từ khóa là gợi ý nội bộ, không tự kích hoạt lượt AI để tăng điểm. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
 
-Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Overview** hiển thị job và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream. Mỗi chunk mới gia hạn timeout này. `AI_OUTLINE_TIMEOUT_MS` và `AI_SEO_REPAIR_TIMEOUT_MS` cho phép đặt riêng thời gian chờ khi không nhận chunk cho dàn ý và chỉnh SEO, mặc định theo `AI_TIMEOUT_MS`.
+### Nội dung tạo với hỗ trợ AI
 
-CRM nhận thay đổi job, chi phí AI và trạng thái giao webhook qua SSE từ MongoDB change stream, kể cả khi API và worker chạy ở các tiến trình riêng. Danh sách chỉ tải lại thông tin của job thay đổi; khi kết nối được khôi phục hoặc quay lại tab, CRM đối chiếu lại dữ liệu để bù các sự kiện bị lỡ. Trang không tự tải lại định kỳ.
+Chính sách viết áp dụng cho cả dàn ý, bài mới/viết lại và lượt chỉnh sửa: giải đáp nhu cầu người đọc, có giá trị bổ sung từ cách giải thích và dữ liệu có thật; không tạo biến thể hàng loạt chỉ để lấy thứ hạng, không bịa tác giả/chuyên môn/trải nghiệm hay xác nhận đã được kiểm duyệt. Tiêu đề và mô tả phải khớp nội dung, không giật tít hoặc thêm lời hứa thiếu căn cứ. Độ dài là mục tiêu theo chủ đề, không ép lặp từ hoặc thêm nội dung đệm cho đủ điểm. Nghiên cứu hiện tại là trích đoạn tìm kiếm, chưa phải toàn văn hay kiểm chứng độc lập; không đủ căn cứ thì bỏ khẳng định, không giả vờ đã xác minh hoặc gọi thông tin là mới nhất.
 
-CRM hiển thị chi phí AI trên dashboard, danh sách yêu cầu và từng lượt gọi bằng **Việt Nam đồng (₫)**. Cấu hình `USD_TO_VND` trong `.env` là số đồng cho 1 USD, mặc định `25000`; đây là tỷ giá do quản trị viên đặt, không tự cập nhật theo thị trường. Khởi động lại dịch vụ sau khi đổi tỷ giá. Dữ liệu đối soát vẫn lưu USD và được quy đổi khi đọc báo cáo, vì vậy tỷ giá mới cũng áp dụng cho chi phí lịch sử đang hiển thị. Các tổng được cộng trước khi làm tròn để hiển thị; chi phí dương dưới 1 đồng hiển thị `< 1 ₫`, còn chi phí chưa có giá giữ trạng thái chờ đối soát.
+Trước khi xuất bản, người biên tập phải kiểm tra toàn bộ bài, tiêu đề, mô tả, ngày áp dụng, thông tin tác giả và liên kết; bổ sung dữ liệu/trải nghiệm thực tế được phép sử dụng và rà soát bài trùng chủ đề. Các tư liệu hoặc ghi chú trong dàn ý không thay thế bước đối chiếu nguồn gốc. CRM không thực hiện kiểm chứng sự thật tự động, không chứng nhận tuân thủ Google và không bảo đảm thứ hạng. Nhãn **Đã viết/Đã giao** chỉ là trạng thái xử lý/giao webhook; Laravel nên lưu thành bản nháp để con người duyệt trước khi xuất bản. Điểm SEO vẫn giữ cấu trúc tương thích Laravel và chỉ là checklist nội bộ.
+
+Website nên cân nhắc giải thích cách dùng tự động hóa ở vị trí phù hợp với độc giả (ví dụ trang quy trình biên tập); chỉ nêu người duyệt, bằng cấp và việc đã kiểm chứng khi có thật. Hệ thống không tự chèn một tuyên bố đã được chuyên gia kiểm duyệt vào bài. Nếu dùng dữ liệu sản phẩm/hình ảnh AI trong Merchant Center hoặc thêm structured data/alt text ở Laravel, cần kiểm tra và thực hiện các yêu cầu riêng tương ứng; luồng bài viết này chưa triển khai các bước đó. Tham khảo [hướng dẫn dùng nội dung generative AI của Google](https://developers.google.com/search/docs/fundamentals/using-gen-ai-content).
+
+Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Overview** hiển thị job và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng cho key dịch vụ. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream. Mỗi chunk mới gia hạn timeout này. `AI_OUTLINE_TIMEOUT_MS` và `AI_SEO_REPAIR_TIMEOUT_MS` cho phép đặt riêng thời gian chờ khi không nhận chunk cho dàn ý và chỉnh SEO. Dàn ý mặc định theo `AI_TIMEOUT_MS`, còn chỉnh SEO mặc định 90 giây.
+
+CRM nhận thay đổi job, chi phí AI và trạng thái giao webhook qua SSE từ MongoDB change stream, kể cả khi API và worker chạy ở các tiến trình riêng. Danh sách chỉ tải lại thông tin của job thay đổi; khi kết nối được khôi phục hoặc quay lại tab, CRM đối chiếu lại dữ liệu để bù các sự kiện bị lỡ. Trang Tổng quan kiểm tra thêm hoạt động hiện tại mỗi 10 giây và báo cáo mỗi 60 giây khi tab hiển thị, để cập nhật heartbeat và bù gián đoạn sự kiện mà không tải lại cả trang.
+
+**Tổng quan** ưu tiên lỗi viết, lỗi giao bài và lease cần phục hồi. Các cảnh báo và hàng đợi theo khách hàng/website, độc lập khoảng ngày; chỉ số sản lượng và chi phí theo kỳ đã chọn. Worker gửi heartbeat vào `worker_heartbeats` mỗi 5 giây, hết hiệu lực sau 15 giây: số tiến trình và tổng luồng nhận việc là toàn hệ thống, tách khỏi cấu hình luồng mỗi tiến trình. Lượt kiểm tra / xử lý đang chạy bao gồm kiểm tra hàng đợi và phục hồi lease. Worker đang drain hoặc không đọc được cài đặt vẫn báo còn sống nhưng không cộng vào công suất nhận việc. Trạng thái kết nối trực tiếp dựa trên SSE; snapshot hoạt động quá 30 giây báo chưa cập nhật được. Bộ lọc Tổng quan được giữ trong URL để tải lại hoặc dùng Back/Forward.
+
+Nút **Xem dạng lịch** cạnh **Làm mới** mở lịch bài viết theo tháng, giữ bộ lọc khách hàng/website và bắt đầu ở tháng cuối của khoảng ngày báo cáo. Mỗi ngày có số bài **Lên lịch**, **Đã viết** và **Đã giao**; chọn ngày để xem đủ 24 giờ, chuyển ngày hoặc trở lại tháng. Số lên lịch tính theo giờ hẹn và bỏ yêu cầu đã hủy; số đã viết tính theo giờ hoàn tất thành công; số đã giao tính theo giờ giao thành công đầu tiên của mỗi bài trong ngày. Tất cả dùng giờ Việt Nam (UTC+7), bao gồm cả bài dùng key cá nhân vì đây là số liệu hoạt động, không phải chi phí. Lịch tự cập nhật khi nhận sự kiện bài viết, khi quay lại tab và theo chu kỳ báo cáo; có nút làm mới thủ công. Dữ liệu tổng hợp lấy từ `GET /api/crm/dashboard/calendar?month=YYYY-MM&date=YYYY-MM-DD` (`date` là tùy chọn để lấy số liệu giờ), không bị giới hạn bởi phân trang danh sách.
+
+CRM chỉ ghi nhận chi phí AI cho các bài dùng **key dịch vụ theo hạn mức được cấp**, hiển thị bằng **Việt Nam đồng (₫)** trên dashboard, danh sách yêu cầu và từng lượt gọi. **Key cá nhân không theo dõi chi phí**, kể cả dữ liệu chi phí key cá nhân còn lưu từ trước cũng không được cộng vào báo cáo. Đặt số VND cho 1 USD tại **Cài đặt → Vận hành**; `USD_TO_VND` trong `.env` (mặc định `25000`) chỉ là giá trị khởi tạo. Đây là tỷ giá do quản trị viên đặt, không tự cập nhật theo thị trường. Chi phí dịch vụ vẫn lưu USD và được quy đổi khi đọc báo cáo, vì vậy tỷ giá mới cũng áp dụng cho chi phí lịch sử đang hiển thị. Các tổng được cộng trước khi làm tròn để hiển thị; chi phí dương dưới 1 đồng hiển thị `< 1 ₫`, còn chi phí chưa xác định hiển thị `Chưa có dữ liệu chi phí`. CRM không yêu cầu thao tác đối soát.
+
+### Cài đặt vận hành và lưu trữ
+
+Cấu hình CRM được lưu trong collection `runtime_settings`, dùng chung cho các máy kết nối cùng database, kiểm tra lại tối đa mỗi 5 giây. Lưu cấu hình có kiểm tra phiên bản để tránh hai quản trị viên ghi đè thay đổi của nhau. Tác vụ đang chạy giữ cấu hình lúc nhận việc; giảm số luồng không hủy tác vụ đó. Số lần thử gồm lần đầu tiên và được xét khi kết thúc lần chạy hoặc phục hồi lease; một lần thử đã chờ trong hàng đợi vẫn có thể được xử lý sau khi giảm giới hạn. Nút **Điền mặc định** chỉ điền biểu mẫu từ cấu hình khởi động của máy API hiện tại, cần bấm **Lưu cài đặt** để áp dụng.
+
+**Lưu trữ dữ liệu** mặc định tắt tự xóa (`0` ngày). Có thể đặt riêng thời gian lưu yêu cầu viết và lịch sử giao bài. Dọn dẹp chỉ chọn yêu cầu hoàn thành/thất bại/đã hủy, bỏ qua lượt giao đang chờ/đang gửi và bài nguồn còn được yêu cầu viết lại đang chờ/đang viết sử dụng. Xóa yêu cầu sẽ xóa nội dung bài, lịch sử AI, lượt giao và chi phí liên quan, ảnh hưởng báo cáo lịch sử; hạn mức đã tiêu thụ vẫn giữ nguyên. Chỉ xóa lịch sử giao không xóa bài viết. Bật hoặc rút ngắn thời gian lưu cần xác nhận trong giao diện.
+
+Các tiến trình `api`, `writer`, `webhook` đều có thể dọn dẹp với lịch và lease phối hợp qua MongoDB. Đợt đầu chờ hết chu kỳ sau khi lưu; mỗi đợt xử lý tối đa 50 yêu cầu và 100 lượt giao độc lập để tránh giao dịch quá lớn. Backlog lớn cần nhiều chu kỳ. Kết nối database, `ENCRYPTION_KEY`, tên miền/cổng, cấu hình bảo mật và khóa bí mật vẫn ở biến môi trường; API key nhà cung cấp được quản lý tại **Nhà cung cấp AI**. Không đổi `ENCRYPTION_KEY` khi thay các cài đặt vận hành.
 
 Xóa bài đã hoàn tất không hoàn lại lượt viết đã dùng trong kỳ. Xóa yêu cầu còn chờ sẽ giải phóng lượt giữ tương ứng.
 
 ## API dành cho Laravel
+
+Danh mục URL để tự chèn liên kết nội bộ: xem [hướng dẫn cấu hình danh mục Laravel](docs/laravel-internal-links.md). Trong cấu hình website, nhập URL HTTPS công khai trả JSON toàn bộ danh mục với `id`, `url`, `title`, `summary` và `categories` tùy chọn; lưu rồi chọn **Kiểm tra danh mục**. CRM chủ động lấy trước khi viết, dùng bộ nhớ đệm năm phút và chọn ứng viên trong lượt AI hiện có; giữ nguyên định dạng bài/webhook. Laravel chỉ xuất trang đã xuất bản với URL canonical thực. API đẩy `POST /v1/site-content` cũ vẫn dùng khi chưa cấu hình URL danh mục.
 
 Laravel gửi header `Authorization: Bearer <site_token>` và `Accept: application/json`. Khi tạo một yêu cầu, sinh một mã duy nhất, lưu cùng yêu cầu và gửi mã đó qua `Idempotency-Key`. Dùng lại mã khi thử gửi cùng yêu cầu sau lỗi mạng.
 
@@ -61,7 +87,7 @@ Laravel gửi header `Authorization: Bearer <site_token>` và `Accept: applicati
 | Danh sách lịch | `GET /v1/schedules` | Lọc bằng `from`, `to`, `status`, `limit` và `cursor`. Mặc định lấy lịch đang chờ. |
 | Sửa hoặc dời lịch | `PATCH /v1/schedules/{job_id}` | Gửi các trường cần đổi và header `If-Match: "<version>"`. HTTP 412 yêu cầu tải lại phiên bản mới. |
 | Hủy lịch | `DELETE /v1/schedules/{job_id}` | HTTP 204 xác nhận hủy hoặc đã hủy từ trước. |
-| Viết lại | `POST /v1/articles/{article_id}/rewrites` | Mã yêu cầu mới, có thể gửi `instructions`, kèm `keyAI` nếu dùng key riêng. |
+| Viết lại | `POST /v1/articles/{article_id}/rewrites` | Mã yêu cầu mới, có thể gửi `instructions`. Kế thừa model của bài gốc; key cá nhân dùng `provider` và `api_key` trong request. |
 | Lấy model khả dụng | `GET /v1/models` | Trả `{ "data": [{ "provider": "openai", "model": "gpt-4.1", "display_name": "GPT-4.1" }] }`. Với key riêng, website thấy các model đang bật của nhà cung cấp đang bật. Với key dịch vụ, danh sách còn lọc theo gói khách và key dịch vụ đã cấu hình. |
 | Xem hạn mức | `GET /v1/usage` | Trả gói, số lượt dùng, lượt giữ và còn lại theo kỳ. Có thể chọn `date=YYYY-MM-DD`. |
 
@@ -85,7 +111,9 @@ Mẫu dữ liệu tạo lịch cho khách dùng gói dịch vụ
 
 `use_research` là tùy chọn boolean trong payload tạo yêu cầu và dời lịch. Khi tạo mới, bỏ qua trường này sẽ dùng `true`. Khi sửa hoặc dời lịch, bỏ qua trường này sẽ giữ lựa chọn hiện tại. Yêu cầu viết lại kế thừa lựa chọn của bài nguồn.
 
-Với key riêng, Laravel thêm `keyAI` lấy từ cài đặt đã mã hóa của đúng nhà cung cấp. Các model bắt đầu bằng `claude-` và `grok-` đi qua Anthropic và xAI. Đặt đơn giá theo **VND trên một triệu token** và chọn mốc hiệu lực trong CRM. Dịch vụ giữ đơn giá VND đã nhập và dùng `USD_TO_VND` tại thời điểm lưu để quy đổi sang USD phục vụ tính chi phí. Giá đồng bộ từ nhà cung cấp được quy đổi theo tỷ giá đang cấu hình. Khi xAI trả chi phí theo request, dịch vụ ghi nhận chi phí đó. Kiểm tra các dòng chờ đối soát nếu thiếu usage hoặc biểu giá.
+Với key riêng, Laravel gửi `provider`, `api_key` và `model` khi tạo yêu cầu. Trường `keyAI` cũ vẫn được hỗ trợ. CRM không lưu key riêng trong hồ sơ khách hàng hoặc nhà cung cấp và không tính chi phí cho các lượt gọi này. Để worker chạy bất đồng bộ và theo lịch, phiên bản hiện tại vẫn lưu key đã mã hóa trong trường `jobs.encrypted_key` cho đến khi job kết thúc hoặc bị hủy; đây chưa phải cơ chế không lưu key ở database hoàn toàn.
+
+Với key dịch vụ, đặt đơn giá theo **VND trên một triệu token** và chọn mốc hiệu lực trong CRM. Dịch vụ giữ đơn giá VND đã nhập và dùng tỷ giá trong **Cài đặt** tại thời điểm lưu để quy đổi sang USD phục vụ tính chi phí; các phiên bản giá cũ giữ nguyên tỷ giá đã ghi. Giá đồng bộ từ nhà cung cấp được quy đổi theo tỷ giá đang cấu hình. Khi xAI trả chi phí theo request, dịch vụ ghi nhận chi phí đó. Nếu thiếu usage hoặc biểu giá, chi phí chưa xác định và không được coi là miễn phí; hệ thống không tạo cảnh báo hoặc quy trình đối soát.
 
 ```json
 [
@@ -120,7 +148,19 @@ abort_unless(hash_equals($expected, (string) $request->header('X-Signature')), 4
 $body = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
 ```
 
-Với `article.ready`, body là mảng bài viết. Dùng `X-Client-Request-Id` để tìm yêu cầu Laravel đã ghi khi lên lịch. Trong một giao dịch, khóa bản ghi yêu cầu, kiểm tra `X-Job-Id`, lưu bản nháp và mã bài. Nếu yêu cầu đã có mã bài, xác nhận ngay để webhook trùng giữ nguyên nội dung biên tập viên. Với `article.failed`, body chứa `{ "error": { "code": "...", "message": "..." } }`. Lưu trạng thái lỗi trên lịch. Chỉ trả HTTP 2xx sau khi thay đổi đã được lưu.
+Với `article.ready`, body là mảng bài viết. Dùng `X-Client-Request-Id` để tìm yêu cầu Laravel đã ghi khi lên lịch. Trong một giao dịch, khóa bản ghi yêu cầu, kiểm tra `X-Job-Id`, lưu bản nháp và mã bài. Sau khi giao dịch lưu thành công, trả HTTP 2xx với JSON:
+
+```json
+{"success": true, "id_post": 123}
+```
+
+`success` phải đúng boolean `true`. `id_post` là số nguyên dương an toàn trong JavaScript, hoặc chuỗi ID không rỗng tối đa 160 ký tự không có ký tự điều khiển. Với ID số lớn, trả chuỗi để không mất độ chính xác. CRM ghi lại `id_post` và thời điểm xác nhận trong lần giao và lịch sử từng lần thử; giao diện **Giao bài** hiển thị các thông tin này. HTTP 2xx đơn thuần, HTML, JSON sai, `success:false` hoặc thiếu ID đều chưa được coi là giao thành công. CRM chỉ đọc phản hồi tối đa 64 KiB trong thời hạn webhook; không lưu toàn bộ body phản hồi.
+
+Nếu Laravel chưa xác nhận hợp lệ hoặc lỗi kết nối/HTTP, CRM gửi lại tối đa **3 lần sau lần đầu** (tổng cộng 4 lần). Khoảng chờ cố định mặc định **5 phút**, chỉnh tại **Cài đặt → Khoảng chờ gửi lại (phút)** từ 1 đến 1.440 phút; giá trị mặc định môi trường là `WEBHOOK_RETRY_MINUTES=5`. Thay đổi áp dụng khi worker xử lý lần tiếp theo, không dời lại thời điểm các lượt đã được lên lịch. Sau lần thứ tư vẫn không có xác nhận, trạng thái giao là lỗi và có thể gửi lại thủ công. Lỗi cấu hình URL/địa chỉ mạng không được phép hoặc khóa ký không hợp lệ cần sửa cấu hình trước, không tự gửi lặp. Bài đã viết và chi phí AI không bị thay đổi bởi việc thử giao lại.
+
+Webhook có thể được gửi lại nếu Laravel đã lưu nhưng CRM không nhận được phản hồi hoặc tiến trình bị ngắt. Giữ `X-Event-Id`/`X-Job-Id` làm khóa chống tạo trùng: nếu đã lưu bài cho sự kiện/yêu cầu đó, trả lại **cùng** `id_post` với `success:true`, giữ nội dung biên tập viên. Chỉ trả xác nhận sau khi lưu thành công; không tạo bài mới mỗi lần retry.
+
+Với `article.failed`, body chứa `{ "error": { "code": "...", "message": "..." } }`. Lưu trạng thái lỗi trên lịch và trả HTTP 2xx sau khi đã lưu; sự kiện này không yêu cầu `id_post`. Cài đặt **Số lần báo lỗi tối đa** chỉ áp dụng sự kiện `article.failed`.
 
 ## Gắn widget vào trang biên tập
 
@@ -149,11 +189,25 @@ Chèn HTML sau các trường của form. Thay tên miền, selector và model c
 </script>
 ```
 
+Widget nhận chế độ key của khách hàng qua `keyMode`. Với khách hàng dùng key cá nhân, Laravel có thể tạo cấu hình riêng cho từng website bằng `keyMode: 'own'`, `provider`, `api_key` và `model`. Widget chỉ gửi ba giá trị này tới route CRM khi tạo yêu cầu và không gửi chúng ở chế độ `service`.
+
+```js
+AIWriter.mount({
+  ...config,
+  keyMode: 'own',
+  provider: 'openai',
+  api_key: personalApiKey,
+  model: 'gpt-4.1-mini'
+});
+```
+
+Ở chế độ `service`, giữ `modelsEndpoint` để widget tải danh sách model CRM đã cấp cho khách hàng. Không đưa key cá nhân vào đoạn mã nhúng được CRM sinh tự động.
+
 Với trình soạn thảo có API riêng, cấu hình mục `Content` dưới dạng `{ selector: '[name="body"]', setValue: (element, value) => editor.setData(value) }`. Nút **Chấp nhận** điền dữ liệu vào form. Biên tập viên bấm nút lưu hiện có để ghi bài vào Laravel.
 
 Cài các route sau trên cùng origin với form Laravel và kiểm tra quyền biên tập ở mỗi route.
 
-- `GET /admin/ai/models` dùng site token ở backend Laravel để gọi `GET /v1/models`. Chuyển nguyên phản hồi JSON cho widget. Widget tải danh sách mỗi khi mở form viết mới. Cấu hình cũ dùng mảng `models` vẫn được hỗ trợ.
+- `GET /admin/ai/models` dùng site token ở backend Laravel để gọi `GET /v1/models`. Chuyển nguyên phản hồi JSON cho widget. Widget tải danh sách mỗi khi mở form viết mới. Cấu hình cũ dùng mảng `models` vẫn được hỗ trợ. Với khách hàng dùng key cá nhân, Laravel có thể truyền `keyMode: "own"`, `provider`, `api_key` và `model` vào cấu hình widget. Key chỉ được lưu mã hóa trong job đang chờ xử lý như mô tả ở phần API, không ghi vào hồ sơ cấu hình CRM.
 
 - `POST /admin/ai/previews` nhận dữ liệu viết, cùng header `Idempotency-Key` và CSRF. Backend gắn mã yêu cầu với người dùng, thêm `mode: "preview"`, gắn key riêng khi cần, rồi dùng site token gọi Node.js. Lưu quyền tra cứu `job_id` theo người dùng và trả lại JSON có `job_id` và `status`.
 - `GET /admin/ai/previews/{job_id}` kiểm tra người dùng có quyền tra cứu công việc, rồi chuyển tiếp trạng thái. Khi `status` là `ready`, gọi endpoint `/result` và đính mảng đó vào thuộc tính `result` của JSON trả cho widget. Với job lỗi, chuyển tiếp trường `error_message`.

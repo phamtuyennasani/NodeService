@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { build } from 'esbuild';
 import { chromium, type Browser } from 'playwright';
@@ -32,7 +33,7 @@ function failedJob(): JobDetails {
   };
 }
 
-async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' | 'service' = 'service', options: { outline?: 'timeout' | 'missing'; query?: string } = {}) {
+async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' | 'service' = 'service', options: { outline?: 'timeout' | 'missing'; query?: string; issueRows?: string[]; serverSelected?: boolean; historicalReady?: boolean } = {}) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
   await page.addInitScript({ content: `
@@ -55,6 +56,11 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
       sections: [{ heading: 'Xác định nhu cầu', purpose: 'Chọn chức năng phục vụ khách hàng', estimatedWords: 400, subheadings: ['Chức năng cần thiết'], evidence: [{ sourceIndex: 1, fact: 'Ưu tiên nhu cầu đã xác minh.' }] }],
     },
     result: [{ Title: 'Bài viết hoàn tất', Content: '<p>Nội dung đã viết.</p>', Slug: 'bai-viet-hoan-tat', Desc: 'Tóm tắt', Description: 'Mô tả SEO', Keywords: ['bài đã hoàn tất'] }],
+    internal_link_report: {
+      status: 'checked', candidates: 2,
+      used: [{ url: 'https://example.vn/huong-dan-chon-website', anchor: 'hướng dẫn chọn website phù hợp' }],
+      removed: 1, checked_at: '2026-11-23T03:00:00Z',
+    },
   };
   completed.seo_report = evaluateSeo(completed.result![0], { keyword: completed.keyword });
   completed.seo_repair_status = 'kept_draft';
@@ -65,11 +71,16 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
     ...failed, id: rewrittenId, job_id: rewrittenId, mode: 'rewrite', status: 'queued', can_rewrite: false,
     retry_of_job_id: failedId, error_code: null, error_message: null, completed_at: null,
   };
+  if (options.historicalReady) {
+    completed.created_at = '2026-10-01T03:00:00Z';
+    completed.completed_at = '2026-11-21T03:00:00Z';
+  }
   const details = new Map([failed, active, completed, rewritten].map(job => [job.id, job]));
   const posts: { method: string; body: unknown; csrf: string | undefined }[] = [];
   const unexpected: string[] = [];
   const pageErrors: string[] = [];
   const detailReads: string[] = [];
+  const listRequests: URL[] = [];
   let listReads = 0;
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.route('**/*', async route => {
@@ -84,8 +95,14 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
     if (url.pathname === '/api/crm/jobs') {
       listReads++;
+      listRequests.push(url);
       const status = url.searchParams.get('status');
       let data = [...details.values()].filter(job => (job.id !== rewrittenId || posts.length) && (!status || job.status === status || (status === 'ready' && job.status === 'completed')));
+      if (url.searchParams.has('issue') && options.issueRows) data = data.filter(job => options.issueRows!.includes(job.id));
+      if (url.searchParams.has('issue') && options.serverSelected) data = data.map(job => {
+        const { attempts, key_mode, ...selected } = job;
+        return selected as JobDetails;
+      });
       if (url.searchParams.get('date_basis') === 'cost') data = data.map(job => { const { attempts, ...row } = job; return row as JobDetails; });
       return route.fulfill({ json: { data, next_cursor: null } });
     }
@@ -102,9 +119,9 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
   });
   await page.goto(`${origin}/${options.query ? `?${options.query}` : ''}`);
   const row = (keyword: string) => page.getByRole('row').filter({ has: page.getByRole('button', { name: new RegExp(keyword) }) });
-  await row(failed.keyword).waitFor();
+  await row(options.historicalReady ? completed.keyword : options.issueRows?.[0] === activeId ? active.keyword : failed.keyword).waitFor();
   return {
-    page, row, posts, unexpected, pageErrors, details, detailReads, listReads: () => listReads,
+    page, row, posts, unexpected, pageErrors, details, detailReads, listRequests, listReads: () => listReads,
     emitJobEvent: (type: string, data: Record<string, unknown> = {}) => page.evaluate(({ type: eventType, data: eventData }) => {
       const source = (window as typeof window & { __crmEventSources: EventTarget[] }).__crmEventSources[0];
       source.dispatchEvent(new MessageEvent(eventType, { data: JSON.stringify(eventData) }));
@@ -131,6 +148,81 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
   });
   const browser = await chromium.launch();
   try {
+    await t.test('writing detail displays the recorded Laravel post ID for its delivery', async () => {
+      const { page, row, details, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        const job = details.get(completedId)!;
+        details.set(completedId, { ...job, deliveries: [{
+          id: 'acknowledged-delivery', job_id: completedId, website_name: job.website_name,
+          status: 'delivered', event_type: 'article.ready', attempt_count: 2, attempts: 2,
+          id_post: 'post:98765', acknowledged_at: '2026-11-22T00:05:00Z', created_at: job.created_at,
+        }] });
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        await drawer.getByRole('tab', { name: 'Giao bài (1)', exact: true }).click();
+        await drawer.getByRole('columnheader', { name: 'ID bài', exact: true }).waitFor();
+        await drawer.getByRole('cell', { name: 'post:98765', exact: true }).waitFor();
+        assert.deepEqual(unexpected, []); assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+    await t.test('overview issue filters trust server-selected rows, reconcile live events, and can be cleared', async () => {
+      const { page, row, details, listRequests, detailReads, emitJobEvent, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text, 'service', {
+        query: 'issue=stale&status=writing&customer_id=customer-test&website_id=website-test&key_mode=service',
+        issueRows: [activeId], serverSelected: true,
+      });
+      try {
+        await page.getByText('Đang lọc: Yêu cầu viết chờ phục hồi', { exact: true }).waitFor();
+        assert.equal(listRequests[0].searchParams.get('issue'), 'stale');
+        assert.equal(listRequests[0].searchParams.get('customer_id'), 'customer-test');
+        assert.equal(listRequests[0].searchParams.get('website_id'), 'website-test');
+        assert.equal(listRequests[0].searchParams.get('key_mode'), 'service');
+        await row('bài đang viết').waitFor();
+        assert.equal(await row('dịch vụ thiết kế website').count(), 0);
+
+        details.set(rewrittenId, { ...details.get(activeId)!, id: rewrittenId, job_id: rewrittenId, keyword: 'yêu cầu live không thuộc lỗi này' });
+        const reconciled = page.waitForResponse(response => new URL(response.url()).pathname === '/api/crm/jobs');
+        await emitJobEvent('job.created', { job_id: rewrittenId });
+        await reconciled;
+        await page.waitForFunction(() => document.querySelector('.ant-spin-spinning') === null);
+        assert.deepEqual(detailReads, [rewrittenId]);
+        assert.equal(listRequests.length, 2, 'issue membership must be re-evaluated by the server after a live update');
+        assert.equal(listRequests[1].searchParams.get('issue'), 'stale');
+        assert.equal(await row('yêu cầu live không thuộc lỗi này').count(), 0, 'a live job matching ordinary fields must not enter a server-selected issue list');
+        await row('bài đang viết').waitFor();
+
+        const cleared = page.waitForResponse(response => new URL(response.url()).pathname === '/api/crm/jobs' && !new URL(response.url()).searchParams.has('issue'));
+        await page.getByRole('button', { name: 'Bỏ lọc này', exact: true }).click();
+        await cleared;
+        await page.getByText('Đang lọc: Yêu cầu viết chờ phục hồi', { exact: true }).waitFor({ state: 'hidden' });
+        assert.equal(listRequests.at(-1)?.searchParams.has('issue'), false);
+        assert.equal(listRequests.at(-1)?.searchParams.get('status'), 'writing');
+        assert.equal(listRequests.at(-1)?.searchParams.get('customer_id'), 'customer-test');
+        assert.equal(listRequests.at(-1)?.searchParams.get('website_id'), 'website-test');
+        assert.equal(listRequests.at(-1)?.searchParams.get('key_mode'), 'service');
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('historical ready rows and live updates use completion date instead of creation date', async () => {
+      const { page, row, details, listRequests, emitJobEvent, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text, 'service', {
+        query: 'status=ready&from=2026-11-21&to=2026-11-21', historicalReady: true,
+      });
+      try {
+        await row('bài đã hoàn tất').waitFor();
+        assert.equal(listRequests[0].searchParams.get('status'), 'ready');
+        assert.equal(listRequests[0].searchParams.get('from'), '2026-11-21');
+        details.set(completedId, { ...details.get(completedId)!, keyword: 'hoàn tất trong kỳ dù tạo từ tháng trước', updated_at: '2026-11-22T03:00:00Z' });
+        await emitJobEvent('job.updated', { job_id: completedId });
+        await row('hoàn tất trong kỳ dù tạo từ tháng trước').waitFor();
+        details.set(completedId, { ...details.get(completedId)!, completed_at: '2026-11-22T03:00:00Z', updated_at: '2026-11-22T04:00:00Z' });
+        await emitJobEvent('job.updated', { job_id: completedId });
+        await row('hoàn tất trong kỳ dù tạo từ tháng trước').waitFor({ state: 'hidden' });
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
     await t.test('live job updates refresh only their own authoritative row and recover missed events', async () => {
       const fixture = await mockCrm(browser, outputFiles[0].text);
       const { page, row, details, detailReads, emitJobEvent, unexpected, pageErrors } = fixture;
@@ -217,8 +309,45 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
         await drawer.getByText(/308\s₫/, { exact: true }).waitFor();
         await drawer.getByText('< 1 ₫', { exact: true }).waitFor();
         await drawer.getByText(/^0\s₫$/, { exact: true }).waitFor();
-        await drawer.getByText('Chờ đối soát', { exact: true }).waitFor();
+        await drawer.getByText('Chưa có dữ liệu chi phí', { exact: true }).waitFor();
+        assert.doesNotMatch(await drawer.innerText(), /đối soát/i);
         assert.doesNotMatch(await drawer.innerText(), /USD|US\$/);
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('own-key jobs show no cost accounting even when older data contains prices', async () => {
+      const { page, row, details, emitJobEvent, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        details.set(completedId, { ...details.get(completedId)!, key_mode: 'own', rewrite_key_mode: 'service', cost_usd: '9', cost_vnd: '225000', attempts: [
+          { id: 'legacy-own', provider: 'openai', model: 'Key cá nhân', status: 'succeeded', started_at: '2026-11-20T03:00:00Z',
+            cost_usd: '9', cost_vnd: '225000', cost_source: 'estimated', pricing_id: 'legacy-price',
+            pricing_snapshot: { total: 7 }, usage: { input: 100, output: 200 }, provider_response_id: 'response-own' },
+        ] });
+        await emitJobEvent('job.updated', { job_id: completedId });
+        await row('bài đã hoàn tất').getByText('—', { exact: true }).first().waitFor();
+        assert.doesNotMatch(await row('bài đã hoàn tất').innerText(), /225\.000/);
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        await drawer.getByRole('tab', { name: 'Lần gọi AI (1)', exact: true }).click();
+        await drawer.getByText('Không theo dõi chi phí', { exact: true }).waitFor();
+        assert.doesNotMatch(await drawer.innerText(), /đối soát|225\.000|Nguồn chi phí|Phiên bản giá|Usage và đơn giá/i);
+        await drawer.getByText('Usage đã ghi', { exact: true }).click();
+        assert.match(await drawer.locator('.attempt-details pre').innerText(), /"input": 100/);
+        assert.doesNotMatch(await drawer.locator('.attempt-details pre').innerText(), /pricing|total/);
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('legacy missing-cost links describe data without a reconciliation workflow', async () => {
+      const { page, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text, 'service', {
+        query: 'issue=unpriced', issueRows: [activeId],
+      });
+      try {
+        await page.getByText('Đang lọc: Lần gọi AI dịch vụ chưa có dữ liệu chi phí', { exact: true }).waitFor();
+        assert.doesNotMatch(await page.locator('body').innerText(), /đối soát/i);
         assert.deepEqual(unexpected, []);
         assert.deepEqual(pageErrors, []);
       } finally { await page.close(); }
@@ -299,9 +428,22 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
       try {
         await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
         const drawer = page.locator('.ant-drawer');
+        await drawer.getByRole('tab', { name: 'Bài viết', exact: true }).click();
+        await drawer.getByText('Kiểm tra trước khi xuất bản', { exact: true }).waitFor();
+        await drawer.getByText(/Trạng thái đã viết hoặc đã giao chưa xác nhận nội dung đã được con người kiểm duyệt/).waitFor();
+        if (process.env.CRM_EDITORIAL_SCREENSHOT) {
+          await page.addStyleTag({ content: (await readFile('web/src/styles.css', 'utf8')).replace(/^@import[^;]+;\s*/m, '') });
+          await page.addStyleTag({ content: await readFile('web/src/records.css', 'utf8') });
+          await page.screenshot({ path: process.env.CRM_EDITORIAL_SCREENSHOT, fullPage: true });
+          await page.setViewportSize({ width: 375, height: 900 });
+          assert.equal(await drawer.locator('.editorial-review-notice').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          if (process.env.CRM_EDITORIAL_MOBILE_SCREENSHOT) await drawer.locator('.editorial-review-notice').screenshot({ path: process.env.CRM_EDITORIAL_MOBILE_SCREENSHOT });
+          await page.setViewportSize({ width: 1440, height: 1000 });
+        }
         await drawer.getByRole('tab', { name: 'Kiểm tra SEO', exact: true }).click();
         await drawer.getByText('Bài viết được chấp nhận và còn gợi ý SEO', { exact: true }).waitFor();
         await drawer.getByText('Lượt chỉnh sửa SEO chưa tạo được bản tốt hơn. Bản nháp đã lưu được giữ lại để bạn chỉnh sửa.', { exact: true }).waitFor();
+        await drawer.getByText(/không xác nhận bài đã đáp ứng chính sách Google hoặc được kiểm chứng sự thật/).waitFor();
         assert.equal(await drawer.locator('.seo-findings [data-state="excluded"]').count(), 3);
         assert.ok(await drawer.locator('.seo-findings [data-state="warning"]').count() > 0);
         assert.equal(await drawer.locator('.ant-alert-error').count(), 0);
@@ -325,6 +467,56 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
           await outline.getByText(text, { exact: true }).waitFor();
         }
         await outline.getByRole('heading', { name: 'Xác định nhu cầu' }).waitFor();
+        await drawer.getByRole('tab', { name: 'Bài viết', exact: true }).click();
+        await drawer.getByRole('heading', { name: 'Bài viết hoàn tất' }).waitFor();
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('internal link tab shows catalog diagnostics and makes verification limits clear', async () => {
+      const { page, row, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        assert.deepEqual((await drawer.getByRole('tab').allTextContents()).slice(0, 3), ['Yêu cầu', 'Dàn ý', 'Bài viết']);
+        await drawer.getByRole('tab', { name: 'Liên kết nội bộ', exact: true }).click();
+        const report = drawer.getByRole('region', { name: 'Liên kết nội bộ', exact: true });
+        await report.getByText('Đã kiểm tra theo danh mục website', { exact: true }).waitFor();
+        await report.getByText(/Danh mục do Laravel cung cấp/).waitFor();
+        await report.getByText(/không tải trang đích để xác nhận nội dung hoặc trạng thái HTTP/).waitFor();
+        await report.getByText(/Không ép chèn đủ số liên kết; các liên kết có sẵn trong bài nguồn được giữ riêng/).waitFor();
+        const valueFor = async (label: string) => report.locator('.ant-descriptions-row').filter({ has: page.getByText(label, { exact: true }) }).locator('.ant-descriptions-item-content').innerText();
+        assert.equal(await valueFor('Ứng viên đã chọn'), '2');
+        assert.equal(await valueFor('Liên kết từ danh mục'), '1');
+        assert.equal(await valueFor('Thẻ liên kết bị loại'), '1');
+        assert.match(await valueFor('Kiểm tra lúc'), /23\/11\/26/);
+        await report.getByRole('cell', { name: 'hướng dẫn chọn website phù hợp', exact: true }).waitFor();
+        const target = report.getByRole('link', { name: 'https://example.vn/huong-dan-chon-website', exact: true });
+        assert.equal(await target.getAttribute('href'), 'https://example.vn/huong-dan-chon-website');
+        assert.equal(await target.getAttribute('target'), '_blank');
+        assert.equal(await target.getAttribute('rel'), 'noopener noreferrer');
+        if (process.env.CRM_INTERNAL_LINK_SCREENSHOT) {
+          await page.addStyleTag({ content: (await readFile('web/src/styles.css', 'utf8')).replace(/^@import[^;]+;\s*/m, '') });
+          await page.addStyleTag({ content: await readFile('web/src/records.css', 'utf8') });
+          await page.screenshot({ path: process.env.CRM_INTERNAL_LINK_SCREENSHOT, fullPage: true });
+        }
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('internal link tab explains an older job without a report', async () => {
+      const { page, row, details, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        const legacy = { ...details.get(completedId)! };
+        delete legacy.internal_link_report;
+        details.set(completedId, legacy);
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        await drawer.getByRole('tab', { name: 'Liên kết nội bộ', exact: true }).click();
+        await drawer.getByText('Bài này chưa có báo cáo liên kết nội bộ', { exact: true }).waitFor();
+        assert.equal(await drawer.getByRole('region', { name: 'Liên kết nội bộ', exact: true }).count(), 0);
         await drawer.getByRole('tab', { name: 'Bài viết', exact: true }).click();
         await drawer.getByRole('heading', { name: 'Bài viết hoàn tất' }).waitFor();
         assert.deepEqual(unexpected, []);
