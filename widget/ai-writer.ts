@@ -84,6 +84,22 @@ function articleFrom(value: unknown): Article {
   return { ...article, Content: content };
 }
 
+function articlePreviewHtml(content: string) {
+  const preview = document.createElement('template');
+  preview.innerHTML = content;
+  // rem still resolves against the customer page's html element across Shadow DOM.
+  // Normalize preview dimensions to our 16px base without changing saved/applied HTML.
+  for (const element of preview.content.querySelectorAll<HTMLElement>('[style]')) {
+    for (const property of Array.from(element.style)) {
+      if (property === 'font-family') continue;
+      const value = element.style.getPropertyValue(property);
+      const isolated = value.replace(/(\d+(?:\.\d+)?|\.\d+)rem\b/gi, (_match, amount: string) => `${Number((Number(amount) * 16).toFixed(4))}px`);
+      if (isolated !== value) element.style.setProperty(property, isolated, element.style.getPropertyPriority(property));
+    }
+  }
+  return preview.innerHTML;
+}
+
 function prepareWrites(config: Config, article: Article, focusKeyword: string) {
   const form = find(config.form);
   const seen = new Set<Element>();
@@ -185,6 +201,7 @@ function mount(config: Config) {
   root.append(css);
   const ui = document.createElement('template');
   ui.innerHTML = `
+    <div class="ai-writer-root" lang="vi" dir="ltr">
     <button type="button" class="primary launch">Viết bài AI</button>
     <dialog aria-labelledby="ai-title" aria-describedby="ai-subtitle">
       <header class="modal-header">
@@ -233,7 +250,8 @@ function mount(config: Config) {
         <footer><button type="button" class="secondary discard">Đóng</button>
           <button type="button" class="primary accept">Chấp nhận</button></footer>
       </section>
-    </dialog>`;
+    </dialog>
+    </div>`;
   root.append(ui.content);
   const select = <T extends Element>(selector: string) => root.querySelector<T>(selector)!;
   const dialog = select<HTMLDialogElement>('dialog');
@@ -409,7 +427,7 @@ function mount(config: Config) {
       detail.textContent = value;
       metadata.append(term, detail);
     }
-    select('.body').innerHTML = article.Content;
+    select('.body').innerHTML = articlePreviewHtml(article.Content);
     showSeoReport(job);
     form.hidden = true;
     preview.hidden = false;

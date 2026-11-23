@@ -187,6 +187,8 @@ Thêm giới hạn tần suất theo người dùng/website phù hợp với ứ
 
 Gắn widget theo [mẫu trong README](../README.md#gắn-widget-vào-trang-biên-tập), gồm meta `csrf-token`, `endpoint: '/admin/ai/previews'` và `modelsEndpoint: '/admin/ai/models'`. Các endpoint phải cùng origin với trang biên tập để dùng session/CSRF. Script có thể được phục vụ từ CRM nhưng trình duyệt không gọi API CRM bằng site token.
 
+Giao diện widget nằm trong Shadow DOM và có lớp reset riêng cho font, căn chữ, hướng viết, màu giao diện và biến CSS. Cỡ chữ của modal không phụ thuộc `font-size` trên `html` của website; quy tắc toàn cục như `button`, `input`, `dialog` hay `.primary`, kể cả `!important`, không ghi đè các phần tử bên trong. Bản xem trước quy đổi đơn vị `rem` trong CSS bài viết theo mốc 16px; HTML gốc đã lọc vẫn được giữ khi chấp nhận điền vào form. Không chèn stylesheet hay sửa `html`/`body` của trang khách hàng. Đây là cô lập CSS, không ngăn JavaScript trên trang chủ động truy cập widget hoặc việc website ẩn vùng gắn widget.
+
 Chuyển nguyên danh sách model CRM trả về. Giá trị chọn là mã `model` nội bộ, kể cả mã của kết nối OpenAI Compatible riêng; tên hiển thị/provider chỉ là nhãn. Không lấy danh sách model toàn cục hoặc thay mã bằng tên hiển thị/mã upstream, vì khách hàng chỉ được dùng model được cấp và đã cấu hình.
 
 Widget có ô **Hướng dẫn thêm** như CRM, tối đa 4.000 ký tự sau khi bỏ khoảng trắng đầu/cuối. Đặt `defaults.instructions` nếu website có hướng dẫn mặc định; người biên tập có thể sửa trước khi gửi. Ví dụ: `defaults: { length: 1500, instructions: 'Phân tích chi phí và thêm bảng so sánh trước phần câu hỏi thường gặp.' }`. Giá trị không trống được chuyển tiếp nguyên nội dung qua `instructions` của CRM; ô để trống không gửi trường này.
