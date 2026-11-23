@@ -45,7 +45,7 @@ function memoryDatabase(tables: Tables): Database {
   } } } as unknown as Database
 }
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, fetcher?: typeof fetch) {
   const encryptionKey = Buffer.alloc(32, 7)
   const tables: Tables = {
     ai_providers: [
@@ -59,7 +59,7 @@ async function fixture(t: test.TestContext) {
   const config = { encryptionKey, serviceKeys: { openai: 'native-fixture-key' } } as Config
   const app = Fastify()
   installErrorHandler(app)
-  registerProviders(app, memoryDatabase(tables), config)
+  registerProviders(app, memoryDatabase(tables), config, fetcher)
   await app.ready()
   t.after(() => app.close())
   const create = async (name: string, base_url = 'https://8.8.8.8/' + name + '/v1', api_key = name + '-fixture-key') => {
@@ -141,16 +141,15 @@ test('the same upstream model belongs to two connections without sharing interna
 })
 
 test('connection checks and model pings use only the selected provider key, base URL and upstream model', async t => {
-  const f = await fixture(t)
+  const calls: { url: string, key: string | null, body?: Row }[] = []
+  const f = await fixture(t, async (url, init) => {
+    calls.push({ url: String(url), key: new Headers(init?.headers).get('authorization'), ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) })
+    return new Response('{}', { status: 200 })
+  })
   const first = await f.create('First')
   const second = await f.create('Second', 'https://1.1.1.1/second/v1/', 'second-fixture-key')
   const a = await f.model(first.provider)
   const b = await f.model(second.provider)
-  const calls: { url: string, key: string | null, body?: Row }[] = []
-  t.mock.method(globalThis, 'fetch', async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push({ url: String(url), key: new Headers(init?.headers).get('authorization'), ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) })
-    return new Response('{}', { status: 200 })
-  })
   for (const item of [first, second]) assert.equal((await f.app.inject({ method: 'POST', url: '/providers/' + item.provider + '/check' })).statusCode, 200)
   for (const [provider, model] of [[first.provider, a.model], [second.provider, b.model], ['openai-compatible', 'legacy-model']]) {
     assert.equal((await f.app.inject({ method: 'POST', url: '/providers/' + provider + '/models/' + model + '/ping' })).statusCode, 200)
@@ -175,7 +174,7 @@ test('editing one provider preserves its key unless replaced and keeps assigned-
   const model = await f.model(first.provider)
   const saved = f.tables.ai_providers.find(row => row._id === first.provider)!
   const encrypted = saved.encrypted_api_key
-  const patch = await f.app.inject({ method: 'PATCH', url: '/providers/' + first.provider, payload: { display_name: 'Renamed', base_url: 'https://8.8.8.8/new/v1' } })
+  const patch = await f.app.inject({ method: 'PATCH', url: '/providers/' + first.provider, payload: { display_name: 'Renamed', base_url: first.base_url, enabled: true } })
   assert.equal(patch.statusCode, 200)
   assert.equal(patch.json<Row>().kind, 'openai-compatible')
   assert.equal(saved.encrypted_api_key, encrypted)
@@ -191,11 +190,54 @@ test('editing one provider preserves its key unless replaced and keeps assigned-
   assert.equal((await f.app.inject({ method: 'PATCH', url: '/providers/' + second.provider, payload: { enabled: false } })).statusCode, 200)
 })
 
-test('provider errors do not expose upstream payloads or encrypted credentials', async t => {
+test('provider endpoint changes require an explicit key and never forward the retained credential to a new destination', async t => {
+  // Memory-only database and fake fetcher: no requests reach either host.
+  const originalKey = 'original-host-fixture-key'
+  const replacementKey = 'replacement-host-fixture-key'
+  const calls: { url: string, originalKey: boolean, replacementKey: boolean }[] = []
+  const f = await fixture(t, async (url, init) => {
+    const authorization = new Headers(init?.headers).get('authorization')
+    calls.push({ url: String(url), originalKey: authorization === `Bearer ${originalKey}`, replacementKey: authorization === `Bearer ${replacementKey}` })
+    return new Response('{}', { status: 200 })
+  })
+  const provider = await f.create('Host change', 'https://8.8.8.8/original/v1', originalKey)
+  const saved = f.tables.ai_providers.find(row => row._id === provider.provider)!
+  const before = structuredClone(saved)
+  for (const base_url of ['https://1.1.1.1/changed/v1', 'https://8.8.8.8/changed/v1']) {
+    const rejected = await f.app.inject({ method: 'PATCH', url: '/providers/' + provider.provider, payload: { base_url, display_name: 'Rejected rename', enabled: false } })
+    assert.equal(rejected.statusCode, 400)
+    assert.equal(rejected.json<Row>().error.code, 'provider_key_required')
+    assert.deepEqual(saved, before)
+  }
+  assert.equal(calls.length, 0)
+  assert.equal((await f.app.inject({ method: 'POST', url: '/providers/' + provider.provider + '/check' })).statusCode, 200)
+  assert.deepEqual(calls, [{ url: 'https://8.8.8.8/original/v1/models', originalKey: true, replacementKey: false }])
+
+  const patch = await f.app.inject({ method: 'PATCH', url: '/providers/' + provider.provider, payload: { base_url: 'https://1.1.1.1/changed/v1', api_key: replacementKey } })
+  assert.equal(patch.statusCode, 200)
+  assert.ok(saved.encrypted_api_key !== before.encrypted_api_key)
+  assert.ok(!patch.body.includes(replacementKey))
+  assert.equal((await f.app.inject({ method: 'POST', url: '/providers/' + provider.provider + '/check' })).statusCode, 200)
+  assert.deepEqual(calls[1], { url: 'https://1.1.1.1/changed/v1/models', originalKey: false, replacementKey: true })
+})
+
+test('equivalent normalized provider URLs preserve the existing endpoint and encrypted key', async t => {
   const f = await fixture(t)
+  const provider = await f.create('Normalized', 'https://provider.example.com/original/v1')
+  const saved = f.tables.ai_providers.find(row => row._id === provider.provider)!
+  const before = structuredClone(saved)
+  for (const base_url of ['https://provider.example.com/original/v1/', 'https://PROVIDER.example.com:443/original/./v1///']) {
+    const response = await f.app.inject({ method: 'PATCH', url: '/providers/' + provider.provider, payload: { base_url } })
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(saved, before)
+    assert.equal(response.json<Row>().base_url, before.base_url)
+  }
+})
+
+test('provider errors do not expose upstream payloads or encrypted credentials', async t => {
+  const f = await fixture(t, async () => new Response('upstream-private-fixture-body', { status: 401 }))
   const provider = await f.create('Fixture')
   const model = await f.model(provider.provider)
-  t.mock.method(globalThis, 'fetch', async () => new Response('upstream-private-fixture-body', { status: 401 }))
   for (const suffix of ['/check', '/models/' + model.model + '/ping']) {
     const response = await f.app.inject({ method: 'POST', url: '/providers/' + provider.provider + suffix })
     assert.equal(response.statusCode, 422)

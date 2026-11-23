@@ -44,6 +44,7 @@ async function mockDeliveries(browser: Browser, bundle: string, width = 1440, op
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/crm-test.js"></script></body></html>' });
     if (url.pathname === '/crm-test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
+    if (url.pathname === '/api/crm/session/bootstrap') return route.fulfill({ json: { browser_binding: 'b'.repeat(43), server_time: Date.now() } });
     if (url.pathname === '/api/crm/deliveries' && request.method() === 'GET') {
       listReads++;
       listRequests.push(url);
@@ -95,7 +96,8 @@ test('CRM delivery actions support retry and safe removal from list and detail',
       contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
         import {App, ConfigProvider} from 'antd'; import {Deliveries} from './web/src/Jobs';
         import {setCsrfToken} from './web/src/api'; setCsrfToken('delivery-csrf');
-        createRoot(document.getElementById('root')!).render(<ConfigProvider theme={{token:{motion:false}}}><App><Deliveries query={new URLSearchParams(window.location.search)} /></App></ConfigProvider>);`,
+        import {prepareBrowserLogin} from './web/src/browser-proof';
+        prepareBrowserLogin().then(() => createRoot(document.getElementById('root')!).render(<ConfigProvider theme={{token:{motion:false}}}><App><Deliveries query={new URLSearchParams(window.location.search)} /></App></ConfigProvider>));`,
       resolveDir: process.cwd(), loader: 'tsx',
     },
     bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty' },

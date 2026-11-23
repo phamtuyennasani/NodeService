@@ -49,6 +49,10 @@ function database(tables: Tables, failReservation: boolean): Database {
           check(options)
           return structuredClone(rows().find(row => matches(row, filter)) ?? null)
         },
+        async countDocuments(filter: Row, options?: Row) {
+          check(options)
+          return rows().filter(row => matches(row, filter)).slice(0, options?.limit).length
+        },
         find(filter: Row, options?: Row) {
           check(options)
           return { async toArray() { return structuredClone(rows().filter(row => matches(row, filter))) } }

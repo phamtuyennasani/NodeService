@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
+import { browserBodyHash, getBrowserSessionGeneration, prepareBrowserLogin, setBrowserSession, signBrowserChallengeRequest, signBrowserRequest } from './browser-proof';
 
 let csrfToken = '';
+let loginChallenge: { id: string; clockOffset: number } | undefined;
+
+export function cancelLoginChallenge() {
+  loginChallenge = undefined;
+}
 
 export function setCsrfToken(token: string) {
   csrfToken = token;
@@ -12,19 +18,131 @@ export class ApiError extends Error {
   }
 }
 
-export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+function assertSessionGeneration(generation: number) {
+  if (generation !== getBrowserSessionGeneration()) {
+    throw new ApiError(409, 'browser_session_changed', 'Phiên đăng nhập đã thay đổi. Hãy thử lại.');
+  }
+}
+
+type ReauthenticationHandler = (action: { method: string; target: string }) => Promise<string | null>;
+let reauthenticate: ReauthenticationHandler | undefined;
+let actionQueue = Promise.resolve();
+let sessionChangeQueue = Promise.resolve();
+
+export function setReauthenticationHandler(handler?: ReauthenticationHandler) {
+  reauthenticate = handler;
+}
+
+/** Also used by SSE so every reconnect carries a fresh proof in a header. */
+export async function signedFetch(path: string, options: RequestInit = {}, generation = getBrowserSessionGeneration()): Promise<Response> {
+  assertSessionGeneration(generation);
+  if (!path.startsWith('/') || path.startsWith('//')) throw new Error('Địa chỉ CRM không hợp lệ.');
+  const target = `/api/crm${path}`;
+  const method = (options.method ?? 'GET').toUpperCase();
+  if (options.body !== undefined && options.body !== null && typeof options.body !== 'string') throw new Error('CRM chỉ hỗ trợ nội dung JSON.');
   const headers = new Headers(options.headers);
   if (options.body) headers.set('Content-Type', 'application/json');
-  if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
-  const response = await fetch(`/api/crm${path}`, { ...options, headers, credentials: 'same-origin' });
-  if (response.status === 204) return undefined as T;
-  const content = await response.json().catch(() => null);
+  const preSession = method === 'POST' && ['/login', '/login/verify', '/login/resend'].includes(path);
+  if (csrfToken && !preSession) headers.set('X-CSRF-Token', csrfToken);
+  if (preSession && path !== '/login') {
+    const challengeId = JSON.parse(String(options.body ?? '{}')).challenge_id;
+    if (!loginChallenge || challengeId !== loginChallenge.id) throw new ApiError(400, 'login_challenge_required', 'Hãy đăng nhập lại để nhận mã xác minh mới.');
+    headers.set('X-CRM-Proof', await signBrowserChallengeRequest(target, method, String(options.body ?? ''), headers, challengeId, loginChallenge.clockOffset));
+  } else if (path === '/login' && method === 'POST') {
+    const publicKey = JSON.parse(String(options.body)).browser_public_key;
+    const thumbprint = await browserBodyHash(JSON.stringify({ kty: publicKey.kty, crv: publicKey.crv, x: publicKey.x, y: publicKey.y }));
+    headers.set('X-CRM-Proof', await signBrowserChallengeRequest(target, method, String(options.body ?? ''), headers, thumbprint));
+  } else {
+    headers.set('X-CRM-Proof', await signBrowserRequest(target, method, String(options.body ?? ''), headers, options.signal ?? undefined));
+  }
+  // Key lookup/bootstrap/signing may yield while another request rotates the session.
+  assertSessionGeneration(generation);
+  const response = await fetch(target, { ...options, method, headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error' });
+  if (generation !== getBrowserSessionGeneration()) {
+    // A stale SSE response may otherwise leave its network stream running.
+    void response.body?.cancel().catch(() => {});
+  }
+  assertSessionGeneration(generation);
   if (!response.ok) {
-    if (response.status === 401 && path !== '/login' && path !== '/session') {
+    const content = await response.json().catch(() => null);
+    assertSessionGeneration(generation);
+    if (response.status === 401 && !preSession && path !== '/session') {
       window.dispatchEvent(new Event('crm-session-expired'));
     }
     throw new ApiError(response.status, content?.error?.code ?? '', content?.error?.message ?? 'Không thể kết nối với CRM.');
   }
+  return response;
+}
+
+export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const generation = getBrowserSessionGeneration();
+  const changesSession = ['/login', '/login/verify', '/password', '/logout'].includes(path) && (options.method ?? 'GET').toUpperCase() === 'POST';
+  if (!changesSession) return requestInSession(path, options, generation);
+  // Do not send competing same-tab Set-Cookie responses. A queued operation
+  // belongs to its original session and must be retried explicitly after rotation.
+  const previous = sessionChangeQueue;
+  let release!: () => void;
+  sessionChangeQueue = new Promise(resolve => { release = resolve; });
+  try {
+    await previous;
+    assertSessionGeneration(generation);
+    return await requestInSession(path, options, generation);
+  } finally { release(); }
+}
+
+async function requestInSession<T>(path: string, options: RequestInit, generation: number): Promise<T> {
+  let effective = options;
+  if (path === '/login' && (options.method ?? 'GET').toUpperCase() === 'POST') {
+    loginChallenge = undefined;
+    effective = { ...options, body: JSON.stringify({ ...JSON.parse(String(options.body)), browser_public_key: await prepareBrowserLogin() }) };
+  }
+  let response: Response;
+  try { response = await signedFetch(path, effective, generation); }
+  catch (error) {
+    if (!(error instanceof ApiError) || error.code !== 'reauthentication_required' || !reauthenticate) throw error;
+    const handler = reauthenticate;
+    const method = (effective.method ?? 'GET').toUpperCase();
+    const targetUrl = new URL(`/api/crm${path}`, window.location.origin);
+    const target = targetUrl.pathname + targetUrl.search;
+    // Request-specific, one-use authorization: never cache a password or unlock the whole session.
+    let release!: () => void;
+    const previous = actionQueue;
+    actionQueue = new Promise(resolve => { release = resolve; });
+    let actionToken: string;
+    try {
+      await previous;
+      assertSessionGeneration(generation);
+      effective.signal?.throwIfAborted();
+      const password = await handler({ method, target });
+      assertSessionGeneration(generation);
+      if (!password) throw new ApiError(403, 'reauthentication_canceled', 'Đã hủy thao tác.');
+      effective.signal?.throwIfAborted();
+      const authorization = await signedFetch('/session/authorize', {
+        method: 'POST', signal: effective.signal,
+        body: JSON.stringify({ current_password: password, method, target, body_hash: await browserBodyHash(String(effective.body ?? '')) }),
+      }, generation);
+      const value = await authorization.json();
+      assertSessionGeneration(generation);
+      actionToken = value.action_token;
+      if (typeof actionToken !== 'string') throw new Error('Không nhận được xác nhận bảo mật.');
+    } finally { release(); }
+    const headers = new Headers(effective.headers);
+    headers.set('X-CRM-Action-Token', actionToken);
+    response = await signedFetch(path, { ...effective, headers }, generation);
+  }
+  const content = response.status === 204 ? undefined : await response.json();
+  assertSessionGeneration(generation);
+  if (path === '/login' && content?.otp_required === true) {
+    if (typeof content.challenge_id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(content.challenge_id)) throw new Error('Không nhận được yêu cầu xác minh hợp lệ.');
+    loginChallenge = { id: content.challenge_id, clockOffset: typeof content.server_time === 'number' ? content.server_time - Date.now() : 0 };
+    setBrowserSession(null);
+    csrfToken = '';
+  } else if (['/login', '/login/verify', '/password'].includes(path)) {
+    loginChallenge = undefined;
+    setBrowserSession(content);
+  }
+  if (path === '/login/resend' && loginChallenge && typeof content?.server_time === 'number') loginChallenge.clockOffset = content.server_time - Date.now();
+  if (path === '/logout') { loginChallenge = undefined; setBrowserSession(null); }
   return content as T;
 }
 

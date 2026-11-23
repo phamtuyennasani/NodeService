@@ -39,6 +39,7 @@ async function fixture(browser: Browser, bundle: string, options: { failList?: b
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/test.js"></script></body></html>' });
     if (url.pathname === '/test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
+    if (url.pathname === '/api/crm/session/bootstrap') return route.fulfill({ json: { browser_binding: 'b'.repeat(43), server_time: Date.now() } });
     const path = url.pathname.replace('/api/crm', '');
     if (path === '/providers' && request.method() === 'GET') {
       if (failList) { failList = false; return route.fulfill({ status: 503, json: { error: { message: 'Chưa tải được danh mục.' } } }); }
@@ -121,7 +122,8 @@ test('CRM providers manages independent OpenAI Compatible connections', async t 
     stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
       import {App,ConfigProvider} from 'antd'; import {Providers} from './web/src/Providers';
       import {setCsrfToken} from './web/src/api'; setCsrfToken('providers-csrf');
-      createRoot(document.getElementById('root')!).render(<ConfigProvider theme={{token:{motion:false,colorPrimary:'#315d49'}}}><App><Providers /></App></ConfigProvider>);`,
+      import {prepareBrowserLogin} from './web/src/browser-proof';
+      prepareBrowserLogin().then(() => createRoot(document.getElementById('root')!).render(<ConfigProvider theme={{token:{motion:false,colorPrimary:'#315d49'}}}><App><Providers /></App></ConfigProvider>));`,
       resolveDir: process.cwd(), loader: 'tsx' },
     bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty' },
     write: false, define: { 'process.env.NODE_ENV': '"test"' },

@@ -281,9 +281,9 @@ export function Providers() {
           ]}>
           <Input placeholder="https://api.example.com/v1" maxLength={500} autoComplete="url" />
         </Form.Item></>}
-        <Form.Item label="API key" name="api_key" extra={keyConfigured(providerEditor?.provider) ? 'Để trống để giữ API key hiện tại.' : 'API key dùng để gọi nhà cung cấp này.'}
+        <Form.Item label="API key" name="api_key" extra={keyConfigured(providerEditor?.provider) ? 'Để trống để giữ key khi Base URL không đổi. Khi đổi Base URL, cần nhập lại API key.' : 'API key dùng để gọi nhà cung cấp này.'}
           rules={keyConfigured(providerEditor?.provider) ? undefined : [{ required: true, whitespace: true, message: 'Nhập API key.' }]}>
-          <Input.Password placeholder={keyConfigured(providerEditor?.provider) ? 'Đã có key, không cần nhập lại' : 'Nhập API key'} maxLength={2048} autoComplete="new-password" />
+          <Input.Password placeholder={keyConfigured(providerEditor?.provider) ? 'Nhập lại key nếu đổi Base URL' : 'Nhập API key'} maxLength={2048} autoComplete="new-password" />
         </Form.Item>
       </Form>
     </Modal>

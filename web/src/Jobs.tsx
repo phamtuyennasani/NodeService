@@ -8,6 +8,7 @@ import { useLiveJobs } from './job-events';
 import { compactId, CursorPagination, datetime, EmptyState, go, jobId, JobStatus, PageHeading, Panel, ResourceError, Status, submitVietnamTime, vnd } from './shared';
 import type { Attempt, Collection, Delivery, Job, JobDetails } from './types';
 import { DateTimeField } from './DateTimeField';
+import { sanitizeArticleHtml } from './article-html';
 import './records.css';
 
 const jobStatuses = [['scheduled', 'Chờ đến lịch'], ['queued', 'Chờ viết'], ['writing', 'Đang viết'], ['ready', 'Đã viết'], ['failed', 'Lỗi viết'], ['canceled', 'Đã hủy']];
@@ -310,7 +311,7 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
           <article className="article-preview">
           <h2>{article.Title}</h2>
           <div className="article-summary">{article.Desc}</div>
-          <div dangerouslySetInnerHTML={{ __html: article.Content }} />
+          <div dangerouslySetInnerHTML={{ __html: sanitizeArticleHtml(article.Content) }} />
           <Descriptions className="profile-description" column={1} size="small" items={[
             { key: 'slug', label: 'Slug', children: article.Slug },
             { key: 'seo', label: 'Mô tả SEO', children: article.Description },

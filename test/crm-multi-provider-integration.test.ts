@@ -42,6 +42,10 @@ function memoryDatabase(tables: Tables, reads: Read[]): Database {
     }
     return {
       async findOne(filter: Row, options?: Options) { return structuredClone(rows(options).find(row => matches(row, filter)) ?? null) },
+      async countDocuments(filter: Row, options?: Options & { limit?: number }) {
+        assert.ok(options?.session?.working)
+        return rows(options).filter(row => matches(row, filter)).slice(0, options.limit).length
+      },
       find(filter: Row, options?: Options) {
         reads.push({ collection: name, filter: structuredClone(filter), projection: structuredClone(options?.projection) })
         let order: Record<string, number> | undefined

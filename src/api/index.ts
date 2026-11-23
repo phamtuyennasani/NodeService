@@ -9,7 +9,9 @@ import { registerPublic } from './public.js'
 
 export async function registerApi(app: FastifyInstance, db: Database, config: Config) {
   await app.register(cookie)
-  await app.register(rateLimit, { global: false })
+  // Root admission control in request-security shields all routes (including 404s).
+  // Keep this separate, bounded store for stricter endpoint-specific policies.
+  await app.register(rateLimit, { global: false, cache: 10_000, skipOnError: false })
   installErrorHandler(app)
   registerPublic(app, db, config)
   await app.register(async crm => registerCrm(crm, db, config), { prefix: '/api/crm' })

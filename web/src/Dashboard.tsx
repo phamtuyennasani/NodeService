@@ -11,6 +11,7 @@ import {
   Tooltip as ChartTooltip, XAxis, YAxis,
 } from 'recharts';
 import { useCatalog, useResource, withQuery } from './api';
+import { subscribeCrmEvents } from './sse';
 import { datetime, displayVietnamTime, EmptyState, go, jobId, number, PageHeading, Panel, ResourceError, Status, vnd, writingStageLabel } from './shared';
 import type { DashboardData, DashboardRuntime, Delivery, Job } from './types';
 import { OverviewCalendar } from './OverviewCalendar';
@@ -337,38 +338,26 @@ export function Dashboard({ query }: { query: URLSearchParams }) {
     if (window.location.hash !== hash) window.history.pushState(null, '', hash);
   }
   useEffect(() => {
-    const source = new EventSource('/api/crm/jobs/events');
     const scheduleRefresh = () => setRefreshRequest(previous => previous + 1);
-    const connected = () => { setConnection('live'); scheduleRefresh(); };
+    const connected = () => setConnection('live');
+    const ready = () => { connected(); scheduleRefresh(); };
     const disconnected = () => setConnection('reconnecting');
-    if (source.readyState === 1) setConnection('live');
-    const receive = (event: Event) => {
-      const data = (event as MessageEvent<string>).data;
+    const receive = (data: string) => {
       if (!data) return;
       try {
         const payload = JSON.parse(data) as { job_id?: string };
         if (typeof payload.job_id === 'string' && payload.job_id) scheduleRefresh();
       } catch {
-        // Ignore malformed event frames. EventSource will reconnect itself.
+        // Ignore malformed event frames; the event transport reconnects itself.
       }
     };
-    source.addEventListener('job.created', receive);
-    source.addEventListener('job.updated', receive);
-    source.addEventListener('job.deleted', receive);
-    source.addEventListener('message', receive);
-    source.addEventListener('open', connected);
-    source.addEventListener('ready', connected);
-    source.addEventListener('error', disconnected);
+    const unsubscribe = subscribeCrmEvents('/jobs/events', {
+      'job.created': receive, 'job.updated': receive, 'job.deleted': receive,
+      message: receive, open: connected, ready, error: disconnected,
+    });
     document.addEventListener('visibilitychange', scheduleRefresh);
     return () => {
-      source.removeEventListener('job.created', receive);
-      source.removeEventListener('job.updated', receive);
-      source.removeEventListener('job.deleted', receive);
-      source.removeEventListener('message', receive);
-      source.removeEventListener('open', connected);
-      source.removeEventListener('ready', connected);
-      source.removeEventListener('error', disconnected);
-      source.close();
+      unsubscribe();
       document.removeEventListener('visibilitychange', scheduleRefresh);
     };
   }, []);

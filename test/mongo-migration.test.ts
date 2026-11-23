@@ -130,3 +130,40 @@ test('CRM creates and revokes multiple website tokens without writing null token
     assert.equal(Object.hasOwn(site, 'token_prefix'), false)
   }
 })
+
+test('account security migration indexes temporary challenges and verified email without trusting legacy accounts', async () => {
+  const created = new Set<string>()
+  const indexes: { collection: string, key: object, options?: Record<string, unknown> }[] = []
+  let userWrites = 0
+  const db = {
+    client: { async connect() {} },
+    db: {
+      async createCollection(name: string) { created.add(name) },
+      collection(name: string) {
+        return {
+          async createIndex(key: object, options?: Record<string, unknown>) { indexes.push({ collection: name, key, options }) },
+          async indexes() { return [] },
+          async findOne() { return { _id: 'mongodb-remove-plaintext-job-keys' } },
+          async updateOne() { if (name === 'users') userWrites++ },
+          async updateMany() { if (name === 'users') userWrites++ },
+        }
+      },
+    },
+  } as unknown as Database
+
+  await migrate(db)
+  for (const name of ['crm_login_challenges', 'crm_email_challenges', 'crm_trusted_devices']) {
+    assert.ok(created.has(name), `${name} must exist before authentication can use it`)
+    assert.ok(indexes.some(index => index.collection === name && JSON.stringify(index.key) === '{"expires_at":1}' && index.options?.expireAfterSeconds === 0), `${name} must have TTL cleanup`)
+    assert.ok(indexes.some(index => index.collection === name && JSON.stringify(index.key) === '{"user_id":1}'), `${name} must support account-wide revocation`)
+  }
+  assert.ok(indexes.some(index => index.collection === 'crm_login_challenges' &&
+    JSON.stringify(index.key) === '{"user_id":1,"last_sent_at":-1}'), 'pending login cooldowns must use an account and timestamp index')
+  assert.deepEqual(indexes.find(index => index.collection === 'users' && index.options?.name === 'unique_verified_user_email'), {
+    collection: 'users', key: { email: 1 }, options: {
+      name: 'unique_verified_user_email', unique: true,
+      partialFilterExpression: { email: { $type: 'string' }, email_verified_at: { $type: 'date' } },
+    },
+  })
+  assert.equal(userWrites, 0, 'migration cannot verify, alter, or merge existing login identities')
+})

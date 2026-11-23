@@ -7,6 +7,47 @@ export type SeoRepairStatus = 'not_needed' | 'applied' | 'kept_draft' | 'skipped
 export interface Session {
   username: string;
   csrf_token: string;
+  browser_binding?: string;
+  server_time?: number;
+  display_name?: string;
+  email?: string | null;
+  email_verified?: boolean;
+  remember_me?: boolean;
+}
+
+export interface LoginChallenge {
+  otp_required: true;
+  challenge_id: string;
+  email_hint: string;
+  expires_in: number;
+  resend_after: number;
+  server_time?: number;
+}
+
+export interface AccountProfile {
+  username: string;
+  display_name: string;
+  email: string | null;
+  email_verified: boolean;
+  mail_configured: boolean;
+  remember_me: boolean;
+  devices: {
+    id: string;
+    label: string;
+    created_at: string;
+    last_used_at: string;
+    expires_at: string;
+    current: boolean;
+  }[];
+}
+
+export interface EmailChallenge {
+  challenge_id: string;
+  email_hint: string;
+  current_email_hint?: string;
+  requires_current_code: boolean;
+  expires_in: number;
+  resend_after: number;
 }
 
 export interface CatalogModel {

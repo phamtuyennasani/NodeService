@@ -4,19 +4,20 @@ import { z } from 'zod'
 import { isCompatibleProvider, type Config, type Provider } from '../config.js'
 import { collection, sessionOf, transaction, type Database, type TransactionContext, type MongoSource } from '../db.js'
 import { digest, seal } from '../security.js'
-import { listAvailableModels, modelIdSchema, providerIdSchema, requireAvailableModel } from './catalog.js'
+import { listModelsForCustomer, modelIdSchema, providerIdSchema, requireAvailableModel } from './catalog.js'
 import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { assertPackage, reserveQuota, usage, type Package } from './quota.js'
 import { normalizeArticleFields } from '../worker/provider.js'
 import { jobEvents } from '../job-events.js'
 import { registerSiteContent } from './site-content.js'
 import { excludedContentIdsSchema } from '../site-content.js'
+import type { SeoReport } from '../worker/seo.js'
 
 export interface Site { id: string; customer_id: string; token_hash: string | null; webhook_url: string | null; webhook_secret: string | null }
 interface CustomerDoc extends Package { _id: string; name: string; email: string | null; phone: string | null; notes: string | null; updated_at: Date; created_at: Date }
-interface JobDoc { _id: string; site_id: string; customer_id: string; client_request_id: string; request_hash: string; mode: 'scheduled' | 'preview' | 'rewrite'; source_article_id: string | null; retry_of_job_id: string | null; version: number; provider: Provider; model: string; keyword: string; tone: string; style: string; length: number; instructions: string | null; use_research?: boolean; exclude_content_ids?: string[]; key_mode: 'own' | 'service'; encrypted_key: string | null; status: string; scheduled_at: Date | null; available_at: Date; attempt_count: number; lease_token: string | null; lease_expires_at: Date | null; started_at: Date | null; completed_at: Date | null; result: unknown[] | null; error_code: string | null; error_message: string | null; created_at: Date; updated_at: Date }
+interface JobDoc { _id: string; site_id: string; customer_id: string; client_request_id: string; request_hash: string; mode: 'scheduled' | 'preview' | 'rewrite'; source_article_id: string | null; retry_of_job_id: string | null; version: number; provider: Provider; model: string; keyword: string; tone: string; style: string; length: number; instructions: string | null; use_research?: boolean; exclude_content_ids?: string[]; key_mode: 'own' | 'service'; encrypted_key: string | null; status: string; scheduled_at: Date | null; available_at: Date; attempt_count: number; lease_token: string | null; lease_expires_at: Date | null; started_at: Date | null; completed_at: Date | null; result: unknown[] | null; seo_report?: SeoReport | null; seo_repair_status?: 'not_needed' | 'applied' | 'kept_draft' | 'skipped' | null; error_code: string | null; error_message: string | null; created_at: Date; updated_at: Date }
 
-const writingFields = z.object({
+export const writingFields = z.object({
   model: modelIdSchema, keyword: z.string().trim().min(1).max(500), tone: z.string().trim().min(1).max(240), style: z.string().trim().min(1).max(500),
   length: articleLengthSchema, instructions: z.string().trim().max(4000).optional(),
   provider: providerIdSchema.optional(), api_key: z.string().trim().min(1).max(2048).optional(),
@@ -55,6 +56,16 @@ async function lockedCustomer(source: MongoSource, id: string) {
   const customer = await collection<CustomerDoc>(source, 'customers').findOne({ _id: id }, { session })
   if (!customer) throw notFound()
   return asPackage(customer)
+}
+
+async function lockedSite(source: TransactionContext, site: Site) {
+  const filter = { _id: site.id, customer_id: site.customer_id, token_hash: site.token_hash }
+  // Token rotation and ownership changes must conflict with in-flight writes.
+  const locked = await collection(source, 'sites').updateOne(filter, { $inc: { relation_version: 1 } }, { session: source.session })
+  if (!locked.matchedCount) throw new ApiError(401, 'invalid_site_token', 'Token hoặc chủ sở hữu website đã thay đổi. Vui lòng kết nối lại.')
+  const row = await collection(source, 'sites').findOne(filter, { session: source.session })
+  if (!row) throw new ApiError(401, 'invalid_site_token', 'Token hoặc chủ sở hữu website đã thay đổi. Vui lòng kết nối lại.')
+  return row
 }
 
 function requestId(request: FastifyRequest) { return z.string().min(1).max(160).regex(/^[\x21-\x7E]+$/).parse(request.headers['idempotency-key']) }
@@ -98,17 +109,21 @@ export async function createJob(db: Database, config: Config, site: Site, client
   const fingerprint = requestFingerprint({ writing, mode, scheduledAt, sourceId, retryOfJobId }, config)
   const created = await transaction(db, async client => {
     const session = sessionOf(client)
-    const siteFilter = { _id: site.id, customer_id: site.customer_id, token_hash: site.token_hash }
-    const lockedSite = await collection(client, 'sites').updateOne(siteFilter, { $inc: { relation_version: 1 } }, { session })
-    if (!lockedSite.matchedCount) throw new ApiError(401, 'invalid_site_token', 'Token hoặc chủ sở hữu website đã thay đổi. Vui lòng kết nối lại.')
-    const currentSite = await collection(client, 'sites').findOne(siteFilter, { session })
-    if (!currentSite) throw new ApiError(401, 'invalid_site_token', 'Token hoặc chủ sở hữu website đã thay đổi. Vui lòng kết nối lại.')
+    const currentSite = await lockedSite(client, site)
     const customer = await lockedCustomer(client, site.customer_id)
-    const existing = await collection<JobDoc>(client, 'jobs').findOne({ site_id: site.id, client_request_id: clientId }, { session })
+    const existing = await collection<JobDoc>(client, 'jobs').findOne({ site_id: site.id, customer_id: customer.id, client_request_id: clientId }, { session })
     if (existing) {
       if (existing.request_hash !== fingerprint) throw new ApiError(409, 'idempotency_conflict', 'Mã yêu cầu này đã được dùng với nội dung khác.')
       return { result: summary(existing), created: false }
     }
+    // A valid token must not be able to fill the writer queue indefinitely,
+    // including customers using their own AI key. The customer write above
+    // serializes this bounded check across all websites and API processes.
+    const pendingLimit = config.maxPendingJobsPerCustomer ?? 100
+    const pending = await collection(client, 'jobs').countDocuments({
+      customer_id: customer.id, status: { $in: ['scheduled', 'queued', 'writing'] },
+    }, { session, limit: pendingLimit, maxTimeMS: 5_000 })
+    if (pending >= pendingLimit) throw new ApiError(429, 'job_queue_full', 'Khách hàng có quá nhiều yêu cầu đang chờ. Hãy chờ các bài hiện tại hoàn tất.', { limit: pendingLimit, retry_after_seconds: 60 })
     // Recheck references after taking the site lock, which deletion also holds.
     if (sourceId && !await collection(client, 'jobs').findOne({ _id: sourceId, site_id: site.id, customer_id: customer.id, status: 'ready' }, { session })) throw notFound()
     if (retryOfJobId && !await collection(client, 'jobs').findOne({ _id: retryOfJobId, site_id: site.id, customer_id: customer.id }, { session })) throw notFound()
@@ -170,13 +185,7 @@ async function siteCatalog(db: Database, config: Config, request: FastifyRequest
   const customerDoc = await collection<CustomerDoc>(db, 'customers').findOne({ _id: site.customer_id })
   if (!customerDoc) throw notFound()
   const customer = asPackage(customerDoc)
-  const service = customer.key_mode === 'service'
-  const models = await listAvailableModels(db, service ? customer.allowed_models : undefined)
-  const configured = await collection<{ _id: Provider, base_url?: string | null, encrypted_api_key?: string | null }>(db, 'ai_providers').find({ enabled: true }).toArray()
-  const ready = new Set(configured.filter(row => isCompatibleProvider(row._id)
-    ? Boolean(row.base_url) && (!service || Boolean(row.encrypted_api_key))
-    : !service || Boolean(row.encrypted_api_key || config.serviceKeys[row._id as keyof typeof config.serviceKeys])).map(row => row._id))
-  return { site, customer, models: models.filter(model => ready.has(model.provider)) }
+  return { site, customer, models: await listModelsForCustomer(db, config, customer) }
 }
 
 export function registerPublic(app: FastifyInstance, db: Database, config: Config) {
@@ -199,14 +208,22 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
   app.get('/v1/article-jobs/:job_id', async request => {
     const site = await authenticateSite(db, request)
     const { job_id } = jobParams.parse(request.params)
-    const job = await collection<JobDoc>(db, 'jobs').findOne({ _id: job_id, site_id: site.id })
+    const job = await collection<JobDoc>(db, 'jobs').findOne({ _id: job_id, site_id: site.id, customer_id: site.customer_id })
     if (!job) throw notFound()
-    const delivery = await collection<{ status: string }>(db, 'webhook_deliveries').findOne({ job_id }, { sort: { created_at: -1 } })
-    return { job_id: job._id, status: job.status, mode: job.mode, source_article_id: job.source_article_id, use_research: job.use_research ?? true, scheduled_at: toIso(job.scheduled_at), version: job.version, started_at: toIso(job.started_at), completed_at: toIso(job.completed_at), error_code: job.error_code, error_message: job.error_message, created_at: job.created_at.toISOString(), delivery_status: delivery?.status ?? null }
+    const delivery = await collection<{ status: string }>(db, 'webhook_deliveries').findOne({ job_id, site_id: site.id }, { sort: { created_at: -1 } })
+    return {
+      job_id: job._id, status: job.status, mode: job.mode, source_article_id: job.source_article_id,
+      keyword: job.keyword, length: job.length, use_research: job.use_research ?? true, scheduled_at: toIso(job.scheduled_at),
+      version: job.version, started_at: toIso(job.started_at), completed_at: toIso(job.completed_at),
+      seo_report: job.status === 'ready' ? job.seo_report ?? null : null,
+      seo_repair_status: job.status === 'ready' ? job.seo_repair_status ?? null : null,
+      error_code: job.error_code, error_message: job.error_message,
+      created_at: job.created_at.toISOString(), delivery_status: delivery?.status ?? null,
+    }
   })
   app.get('/v1/article-jobs/:job_id/result', async (request, reply) => {
     const site = await authenticateSite(db, request); const { job_id } = jobParams.parse(request.params)
-    const job = await collection<JobDoc>(db, 'jobs').findOne({ _id: job_id, site_id: site.id }); if (!job) throw notFound()
+    const job = await collection<JobDoc>(db, 'jobs').findOne({ _id: job_id, site_id: site.id, customer_id: site.customer_id }); if (!job) throw notFound()
     if (job.status === 'ready') return Array.isArray(job.result) ? job.result.map(normalizeArticleFields) : job.result
     if (job.status === 'failed' || job.status === 'canceled') throw new ApiError(409, job.error_code ?? job.status, job.error_message ?? 'Yêu cầu đã dừng.')
     return reply.code(202).send({ status: job.status })
@@ -214,7 +231,7 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
 
   app.get('/v1/articles', async request => {
     const site = await authenticateSite(db, request); const { from, to, q, cursor, limit } = listFields.parse(request.query); const [cursorAt, cursorId] = readCursor(cursor)
-    const filter: Record<string, unknown> = { site_id: site.id, status: 'ready', completed_at: { $exists: true, $ne: null } }
+    const filter: Record<string, unknown> = { site_id: site.id, customer_id: site.customer_id, status: 'ready', completed_at: { $exists: true, $ne: null } }
     if (from || to) filter.completed_at = { $exists: true, $ne: null, ...(from ? { $gte: dayStart(from) } : {}), ...(to ? { $lt: new Date(dayEnd(to)) } : {}) }
     const conditions: Record<string, unknown>[] = []
     if (q) {
@@ -226,21 +243,21 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
       conditions.push({ $or: [{ completed_at: { $lt: cursorDate } }, { completed_at: cursorDate, _id: { $lt: cursorId! } }] })
     }
     if (conditions.length) filter.$and = conditions
-    const jobs = await collection<JobDoc>(db, 'jobs').find(filter).sort({ completed_at: -1, _id: -1 }).limit(limit + 1).toArray()
+    const jobs = await collection<JobDoc>(db, 'jobs').find(filter, { projection: { _id: 1, source_article_id: 1, 'result.Title': 1, keyword: 1, model: 1, mode: 1, completed_at: 1 }, maxTimeMS: 5_000 }).sort({ completed_at: -1, _id: -1 }).limit(limit + 1).toArray()
     const rows = jobs.map(job => ({ article_id: job._id, source_article_id: job.source_article_id, Title: (job.result?.[0] as Record<string, unknown> | undefined)?.Title, keyword: job.keyword, model: job.model, mode: job.mode, completed_at: toIso(job.completed_at), cursor_at: job.completed_at!.toISOString(), cursor_id: job._id }))
     return pageOf(rows, limit)
   })
 
   app.get('/v1/schedules', async request => {
     const site = await authenticateSite(db, request); const { from, to, cursor, limit, status = 'scheduled' } = listFields.parse(request.query); const [cursorAt, cursorId] = readCursor(cursor)
-    const filter: Record<string, unknown> = { site_id: site.id, mode: 'scheduled', scheduled_at: { $exists: true, $ne: null } }
+    const filter: Record<string, unknown> = { site_id: site.id, customer_id: site.customer_id, mode: 'scheduled', scheduled_at: { $exists: true, $ne: null } }
     if (from || to) filter.scheduled_at = { $exists: true, $ne: null, ...(from ? { $gte: dayStart(from) } : {}), ...(to ? { $lt: new Date(dayEnd(to)) } : {}) }
     if (status !== 'all') filter.status = status
     if (cursorAt) {
       const cursorDate = new Date(cursorAt)
       filter.$and = [{ $or: [{ scheduled_at: { $gt: cursorDate } }, { scheduled_at: cursorDate, _id: { $gt: cursorId! } }] }]
     }
-    const jobs = await collection<JobDoc>(db, 'jobs').find(filter).sort({ scheduled_at: 1, _id: 1 }).limit(limit + 1).toArray()
+    const jobs = await collection<JobDoc>(db, 'jobs').find(filter, { projection: { encrypted_key: 0, result: 0, request_hash: 0 }, maxTimeMS: 5_000 }).sort({ scheduled_at: 1, _id: 1 }).limit(limit + 1).toArray()
     const rows = jobs.map(job => ({ job_id: job._id, status: job.status, version: job.version, scheduled_at: job.scheduled_at, model: job.model, keyword: job.keyword, tone: job.tone, style: job.style, length: job.length, instructions: job.instructions, use_research: job.use_research ?? true, exclude_content_ids: job.exclude_content_ids ?? [], cursor_at: job.scheduled_at!.toISOString(), cursor_id: job._id }))
     return pageOf(rows, limit)
   })
@@ -249,10 +266,11 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
     const site = await authenticateSite(db, request); const { job_id } = jobParams.parse(request.params); const patch = patchFields.parse(request.body)
     const match = typeof request.headers['if-match'] === 'string' ? /^"?(\d+)"?$/.exec(request.headers['if-match'])?.[1] : undefined; if (!match) throw new ApiError(428, 'version_required', 'Gửi version hiện tại trong header If-Match.')
     const updated = await transaction(db, async client => {
+      await lockedSite(client, site)
       const customer = await lockedCustomer(client, site.customer_id)
       const session = sessionOf(client)
       const version = Number(match)
-      const job = await readSchedule(client, site.id, job_id)
+      const job = await readSchedule(client, site, job_id)
       if (job.status !== 'scheduled') throw scheduleConflict(job.status)
       if (job.version !== version) throw versionConflict(job.version)
 
@@ -278,11 +296,11 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
         version: job.version + 1, updated_at: new Date(),
       }
       const saved = await collection(client, 'jobs').updateOne(
-        { _id: job_id, site_id: site.id, mode: 'scheduled', status: 'scheduled', version },
+        { _id: job_id, site_id: site.id, customer_id: site.customer_id, mode: 'scheduled', status: 'scheduled', version },
         { $set: next, $unset: { keyAI: '', api_key: '' } }, { session },
       )
       if (!saved.matchedCount) {
-        const current = await readSchedule(client, site.id, job_id)
+        const current = await readSchedule(client, site, job_id)
         if (current.status !== 'scheduled') throw scheduleConflict(current.status)
         throw versionConflict(current.version)
       }
@@ -298,19 +316,20 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
   app.delete('/v1/schedules/:job_id', async (request, reply) => {
     const site = await authenticateSite(db, request); const { job_id } = jobParams.parse(request.params)
     await transaction(db, async client => {
+      await lockedSite(client, site)
       await lockedCustomer(client, site.customer_id)
       const session = sessionOf(client)
-      const job = await readSchedule(client, site.id, job_id)
+      const job = await readSchedule(client, site, job_id)
       if (job.status === 'canceled') return
       if (job.status !== 'scheduled') throw scheduleConflict(job.status)
 
       const saved = await collection(client, 'jobs').updateOne(
-        { _id: job_id, site_id: site.id, mode: 'scheduled', status: 'scheduled', version: job.version },
+        { _id: job_id, site_id: site.id, customer_id: site.customer_id, mode: 'scheduled', status: 'scheduled', version: job.version },
         { $set: { status: 'canceled', encrypted_key: null, updated_at: new Date() }, $unset: { keyAI: '', api_key: '' }, $inc: { version: 1 } },
         { session },
       )
       if (!saved.matchedCount) {
-        const current = await readSchedule(client, site.id, job_id)
+        const current = await readSchedule(client, site, job_id)
         if (current.status === 'canceled') return
         throw scheduleConflict(current.status)
       }
@@ -321,14 +340,14 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
   })
   app.post('/v1/articles/:article_id/rewrites', async (request, reply) => {
     const site = await authenticateSite(db, request); const { article_id } = z.object({ article_id: idSchema }).parse(request.params); const additions = rewriteFields.parse(request.body ?? {})
-    const article = await collection<JobDoc>(db, 'jobs').findOne({ _id: article_id, site_id: site.id, status: 'ready' }); if (!article) throw notFound()
+    const article = await collection<JobDoc>(db, 'jobs').findOne({ _id: article_id, site_id: site.id, customer_id: site.customer_id, status: 'ready' }); if (!article) throw notFound()
     const instructions = [article.instructions, additions.instructions].filter(Boolean).join('\n\n').slice(-8000)
     return reply.code(202).send(await createJob(db, config, site, requestId(request), { model: article.model, keyword: article.keyword, tone: article.tone, style: article.style, length: article.length, instructions: instructions || undefined, provider: additions.provider, api_key: additions.api_key, keyAI: additions.keyAI, use_research: article.use_research ?? true, exclude_content_ids: additions.exclude_content_ids ?? article.exclude_content_ids ?? [] }, 'rewrite', undefined, article_id))
   })
 }
 
-async function readSchedule(source: TransactionContext, siteId: string, jobId: string) {
-  const job = await collection<JobDoc>(source, 'jobs').findOne({ _id: jobId, site_id: siteId, mode: 'scheduled' }, { session: source.session })
+async function readSchedule(source: TransactionContext, site: Site, jobId: string) {
+  const job = await collection<JobDoc>(source, 'jobs').findOne({ _id: jobId, site_id: site.id, customer_id: site.customer_id, mode: 'scheduled' }, { session: source.session })
   if (!job) throw notFound()
   return job
 }

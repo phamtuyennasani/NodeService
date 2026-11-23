@@ -61,19 +61,28 @@ async function mockDashboard(browser: Browser, bundle: string, options: { empty?
   let heldRuntime: { entered: () => void; wait: Promise<void> } | undefined;
   let heldReport: { entered: () => void; wait: Promise<void> } | undefined;
   await page.addInitScript({ content: `
-    class TestEventSource extends EventTarget {
-      static instances = [];
-      constructor(url) {
-        super();
-        this.url = url;
-        this.withCredentials = false;
-        this.readyState = ${options.eventReadyState ?? 1};
-        TestEventSource.instances.push(this);
+    const originalFetch = window.fetch.bind(window);
+    let stream, resume;
+    const encoder = new TextEncoder();
+    window.__emitCrmEvent = (type, data = {}) => {
+      if (type === 'error') { window.__crmStreamReady = false; stream?.error(new TypeError('Fixture disconnect')); stream = undefined; return; }
+      if (type === 'open' && resume) { const open = resume; resume = undefined; open(); return; }
+      stream?.enqueue(encoder.encode('event: ' + type + '\\ndata: ' + JSON.stringify(data) + '\\n\\n'));
+    };
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+      if (url.pathname !== '/api/crm/jobs/events') return originalFetch(input, init);
+      const signal = init.signal;
+      const body = new ReadableStream({ start(controller) { stream = controller; }, cancel() { stream = undefined; } });
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      signal?.addEventListener('abort', () => { stream?.error(new DOMException('Aborted', 'AbortError')); stream = undefined; }, { once: true });
+      if (${options.eventReadyState === 0} && window.__crmHoldStream !== false) {
+        window.__crmHoldStream = false;
+        await new Promise((resolve, reject) => { resume = resolve; signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }); });
       }
-      close() { this.readyState = 2; }
-    }
-    Object.defineProperty(window, 'EventSource', { configurable: true, value: TestEventSource });
-    Object.defineProperty(window, '__crmEventSources', { configurable: true, value: TestEventSource.instances });
+      window.__crmStreamReady = true;
+      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+    };
   ` });
   if (options.empty) {
     runtime.summary = { writing: 0, queued: 0, scheduled: 0, active_threads: 0, stale_writing: 0, overdue_schedules: 0, oldest_wait_seconds: null };
@@ -93,6 +102,7 @@ async function mockDashboard(browser: Browser, bundle: string, options: { empty?
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/crm-test.js"></script></body></html>' });
     if (url.pathname === '/crm-test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
+    if (url.pathname === '/api/crm/session/bootstrap') return route.fulfill({ json: { browser_binding: 'b'.repeat(43), server_time: Date.now() } });
     if (url.pathname === '/api/crm/customers') return route.fulfill({ json: { data: [{ id: 'customer-test', name: 'Khách kiểm thử' }] } });
     if (url.pathname === '/api/crm/websites') {
       const data = options.websiteOnly && !url.searchParams.has('id') ? [] : [
@@ -132,10 +142,7 @@ async function mockDashboard(browser: Browser, bundle: string, options: { empty?
   return {
     page, panel, runtimeRequests, reportRequests, unexpected, pageErrors,
     emitJobEvent: async (type: string, data: { job_id?: string } = {}) => page.evaluate(({ type: eventType, data: eventData }) => {
-      const source = (window as typeof window & { __crmEventSources: (EventTarget & { readyState: number })[] }).__crmEventSources[0];
-      if (eventType === 'open' || eventType === 'ready') source.readyState = 1;
-      if (eventType === 'error') source.readyState = 0;
-      source.dispatchEvent(new MessageEvent(eventType, { data: JSON.stringify(eventData) }));
+      (window as any).__emitCrmEvent(eventType, eventData);
     }, { type, data }),
     recover: () => { failed = false; },
     failRuntime: () => { failed = true; },
@@ -166,9 +173,11 @@ test('CRM overview shows current jobs and processing slots independently from hi
         import {createRoot} from 'react-dom/client';
         import {App, ConfigProvider} from 'antd';
         import {Dashboard} from './web/src/Dashboard';
+        import {prepareBrowserLogin} from './web/src/browser-proof';
+        prepareBrowserLogin().then(() => {
         createRoot(document.getElementById('root')!).render(
           <ConfigProvider theme={{token:{motion:false}}}><App><Dashboard query={new URLSearchParams(window.location.hash.startsWith('#overview?') ? window.location.hash.split('?')[1] : window.location.search)} /></App></ConfigProvider>
-        );`,
+        ); });`,
       resolveDir: process.cwd(), loader: 'tsx',
     },
     bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty' },
@@ -401,7 +410,7 @@ test('CRM overview shows current jobs and processing slots independently from hi
       } finally { await page.close(); }
     });
 
-    await t.test('connection state follows EventSource and elapsed time ticks locally while heartbeat snapshots refresh', async () => {
+    await t.test('connection state follows the signed event stream and elapsed time ticks locally while heartbeat snapshots refresh', async () => {
       const { page, panel, runtimeRequests, reportRequests, emitJobEvent, holdNextRuntime, pageErrors } = await mockDashboard(browser, outputFiles[0].text, { eventReadyState: 0 });
       let release: (() => void) | undefined;
       try {
@@ -414,6 +423,7 @@ test('CRM overview shows current jobs and processing slots independently from hi
         assert.equal(runtimeRequests.length, 1, 'render elapsed seconds without a network request every second');
         const connected = page.waitForResponse(response => response.url().includes('/api/crm/dashboard/runtime'));
         await emitJobEvent('open');
+        await emitJobEvent('ready');
         await page.clock.fastForward(200);
         await connected;
         assert.match(await panel.locator('.dash-live').innerText(), /^Trực tiếp/);
@@ -421,6 +431,8 @@ test('CRM overview shows current jobs and processing slots independently from hi
         assert.match(await panel.locator('.dash-live').innerText(), /^Đang kết nối lại/);
         assert.equal(runtimeRequests.length, 2, 'an SSE error changes connection state without claiming new data');
         const reconnected = page.waitForResponse(response => response.url().includes('/api/crm/dashboard/runtime'));
+        await page.clock.fastForward(1000);
+        await page.waitForFunction(() => Boolean((window as any).__crmStreamReady));
         await emitJobEvent('ready');
         await page.clock.fastForward(200);
         await reconnected;

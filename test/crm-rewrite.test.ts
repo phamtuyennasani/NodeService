@@ -41,6 +41,10 @@ function memoryDatabase(tables: Tables, hooks: DatabaseHooks): Database {
       const rows = (options?: Options) => (options?.session?.working ?? tables)[name] ??= []
       return {
         async findOne(filter: Row, options?: Options) { return structuredClone(rows(options).find(row => matches(row, filter)) ?? null) },
+        async countDocuments(filter: Row, options?: Options & { limit?: number }) {
+          assert.ok(options?.session?.working)
+          return rows(options).filter(row => matches(row, filter)).slice(0, options.limit).length
+        },
         async findOneAndUpdate(filter: Row, update: Row, options: Options) {
           assert.ok(options.session?.working)
           assert.equal(name, 'customers')
@@ -673,6 +677,90 @@ test('CRM immediate writing queues a preview job without a schedule time', async
   assert.equal(repeated.json().job_id, body.job_id)
   assert.equal(tables.jobs.filter(row => row.mode === 'preview').length, 1)
   assert.equal(tables.quota_reservations.length, 1)
+})
+
+test('widget and CRM queue equivalent writer jobs and expose the complete persisted article', async t => {
+  for (const research of [undefined, false]) {
+    await t.test(research === undefined ? 'research enabled by default' : 'research explicitly disabled', async t => {
+      const { app, tables, siteId, customerId } = await scheduleFixture(t)
+      const headers = { authorization: 'Bearer fake-public-site-token' }
+      const writing = {
+        model: 'gpt-test', keyword: 'thiết kế website cho doanh nghiệp',
+        tone: 'Chuyên nghiệp', style: 'Hướng dẫn chuyên sâu', length: 2500,
+        instructions: 'Phân tích từng bước, có ví dụ, bảng so sánh và câu hỏi thường gặp.',
+        exclude_content_ids: ['current-article', 'service-page'],
+        ...(research === undefined ? {} : { use_research: research }),
+      }
+      const widgetRequest = () => app.inject({
+        method: 'POST', url: '/v1/article-jobs',
+        headers: { ...headers, 'idempotency-key': 'widget-full-writing' },
+        payload: { ...writing, mode: 'preview' },
+      })
+      const crmRequest = () => app.inject({
+        method: 'POST', url: '/jobs', headers: { 'idempotency-key': 'crm-full-writing' },
+        payload: { ...writing, website_id: siteId },
+      })
+      const widget = await widgetRequest()
+      const crm = await crmRequest()
+      assert.equal(widget.statusCode, 202, widget.body)
+      assert.equal(crm.statusCode, 202, crm.body)
+      const ids = [widget.json().job_id, crm.json().job_id]
+      assert.notEqual(ids[0], ids[1])
+      const expected = {
+        ...writing, use_research: research ?? true, site_id: siteId, customer_id: customerId,
+        provider: 'openai', mode: 'preview', status: 'queued', scheduled_at: null,
+        key_mode: 'service', encrypted_key: null, result: null,
+      }
+      for (const id of ids) {
+        const job = tables.jobs.find(row => row._id === id)!
+        assert.ok(job, 'Both entry points must persist a job for the shared writer')
+        for (const [field, value] of Object.entries(expected)) assert.deepEqual(job[field], value, field)
+        assert.ok(job.available_at instanceof Date)
+        const pending = await app.inject({ method: 'GET', url: `/v1/article-jobs/${id}/result`, headers })
+        assert.equal(pending.statusCode, 202, pending.body)
+        assert.deepEqual(pending.json(), { status: 'queued' })
+        const detail = await app.inject({ method: 'GET', url: `/jobs/${id}` })
+        assert.equal(detail.statusCode, 200, detail.body)
+        assert.equal(detail.json().result, null)
+      }
+      const repeatedWidget = await widgetRequest()
+      const repeatedCrm = await crmRequest()
+      assert.equal(repeatedWidget.statusCode, 202, repeatedWidget.body)
+      assert.equal(repeatedCrm.statusCode, 202, repeatedCrm.body)
+      assert.equal(repeatedWidget.json().job_id, ids[0])
+      assert.equal(repeatedCrm.json().job_id, ids[1])
+      assert.equal(tables.jobs.length, 3)
+      assert.equal(tables.quota_reservations.length, 2)
+      assert.equal(tables.webhook_deliveries?.length ?? 0, 0)
+
+      const content = Array.from({ length: 8 }, (_, index) =>
+        `<h2>Phần ${index + 1}: Kế hoạch triển khai website</h2>` +
+        Array.from({ length: 5 }, () => '<p>Doanh nghiệp cần xác định mục tiêu kinh doanh, nhóm khách hàng và tiêu chí đo lường trước khi lựa chọn giải pháp. Nhóm triển khai lập danh sách yêu cầu, phân công người phụ trách, thử nghiệm với người dùng thực tế và đánh giá kết quả sau mỗi giai đoạn.</p>').join('')
+      ).join('') + '<h2>Câu hỏi thường gặp</h2><p>Đây là phần cuối của bài viết đầy đủ.</p>' +
+        '<table><thead><tr><th>Giai đoạn</th><th>Kết quả</th></tr></thead><tbody><tr><td>Đánh giá</td><td>Báo cáo chi tiết</td></tr></tbody></table>' +
+        '<ul><li>Đo lường tỷ lệ chuyển đổi.</li><li>Cải tiến nội dung định kỳ.</li></ul>'
+      const result = [{
+        Title: 'Thiết kế website cho doanh nghiệp: hướng dẫn triển khai chi tiết', Content: content,
+        Slug: 'thiet-ke-website-cho-doanh-nghiep', Desc: 'Hướng dẫn triển khai website theo từng giai đoạn.',
+        Description: 'Phân tích mục tiêu, giải pháp, quy trình và tiêu chí đánh giá website doanh nghiệp.',
+        Keywords: ['thiết kế website', 'website doanh nghiệp'],
+      }]
+      // Simulate only worker completion: both APIs must read the durable result verbatim.
+      for (const id of ids) {
+        Object.assign(tables.jobs.find(row => row._id === id)!, {
+          status: 'ready', result: structuredClone(result), completed_at: new Date(),
+        })
+        const delivered = await app.inject({ method: 'GET', url: `/v1/article-jobs/${id}/result`, headers })
+        const detail = await app.inject({ method: 'GET', url: `/jobs/${id}` })
+        assert.equal(delivered.statusCode, 200, delivered.body)
+        assert.equal(detail.statusCode, 200, detail.body)
+        assert.deepEqual(delivered.json(), result)
+        assert.deepEqual(detail.json().result, delivered.json())
+        assert.ok(delivered.json()[0].Content.length > 10_000)
+        assert.ok(delivered.json()[0].Content.endsWith('<li>Cải tiến nội dung định kỳ.</li></ul>'))
+      }
+    })
+  }
 })
 
 test('public jobs serialize quota decisions and reuse a concurrent idempotency key', async t => {

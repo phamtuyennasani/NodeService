@@ -11,6 +11,8 @@ import { defaultSettings, effectiveConfig, invalidateSettings, readSettings } fr
 import { digest } from '../src/security.js'
 import { registerPrices } from '../src/api/crm-prices.js'
 import { maintenanceTick } from '../src/worker/maintenance.js'
+import { browserBodyHash } from '../src/crm-proof.js'
+import { browserProofFixture } from './crm-proof-fixture.js'
 
 type Row = Record<string, any>
 function config(): Config {
@@ -44,11 +46,19 @@ function memory() {
           rows(name).push(structuredClone(row))
           return { insertedId: row._id }
         },
+        async findOneAndDelete(filter: Row) {
+          const index = rows(name).findIndex(row => matches(row, filter))
+          if (index < 0) return null
+          return structuredClone(rows(name).splice(index, 1)[0])
+        },
         async updateOne(filter: Row, update: Row) {
           const row = rows(name).find(value => matches(value, filter))
           if (!row) return { matchedCount: 0 }
           Object.assign(row, structuredClone(update.$set ?? {}))
           for (const [key, value] of Object.entries(update.$inc ?? {})) row[key] = (row[key] ?? 0) + Number(value)
+          for (const [key, value] of Object.entries(update.$max ?? {})) {
+            if (row[key] === undefined || row[key] < (value as any)) row[key] = structuredClone(value)
+          }
           return { matchedCount: 1 }
         },
         find(filter: Row) {
@@ -213,12 +223,14 @@ test('expired runtime reads fail closed rather than returning stale settings or 
   await assert.rejects(effectiveConfig(store.db, base))
 })
 
-test('settings endpoints require a CRM session and CSRF for writes', async t => {
+test('settings endpoints require a bound CRM session, proof, CSRF and one-use action authorization for writes', async t => {
   const { db, rows } = memory()
   const base = config()
   const token = 'a'.repeat(43)
+  const browser = browserProofFixture(base.origin)
   rows('users').push({ _id: 'admin-id', username: 'test-admin' })
-  rows('sessions').push({ _id: digest(token), user_id: 'admin-id', csrf_token: 'csrf-test', expires_at: new Date(Date.now() + 60_000) })
+  rows('sessions').push({ _id: digest(token), user_id: 'admin-id', csrf_token: 'csrf-test',
+    expires_at: new Date(Date.now() + 60_000), ...browser.sessionFields() })
   const app = Fastify()
   t.after(() => app.close())
   installErrorHandler(app)
@@ -226,10 +238,28 @@ test('settings endpoints require a CRM session and CSRF for writes', async t => 
   await app.register(async crm => { registerSessions(crm, db, base); registerSettings(crm, db, base) }, { prefix: '/api/crm' })
   assert.equal((await app.inject('/api/crm/settings')).statusCode, 401)
   const headers = { cookie: 'crm_session=' + token }
-  assert.equal((await app.inject({ url: '/api/crm/settings', headers })).statusCode, 200)
-  const payload = { revision: 0, values: defaultSettings(base) }
-  assert.equal((await app.inject({ method: 'PUT', url: '/api/crm/settings', headers, payload })).statusCode, 403)
-  assert.equal((await app.inject({ method: 'PUT', url: '/api/crm/settings', headers: { ...headers, 'x-csrf-token': 'csrf-test' }, payload })).statusCode, 200)
+  const target = '/api/crm/settings'
+  const cookieOnly = await app.inject({ url: target, headers })
+  assert.equal(cookieOnly.statusCode, 401)
+  assert.equal(cookieOnly.json().error.code, 'browser_proof_required')
+  assert.equal((await app.inject({ url: target, headers: { ...headers, 'x-crm-proof': browser.proof('GET', target) } })).statusCode, 200)
+  const payload = JSON.stringify({ revision: 0, values: defaultSettings(base) })
+  const writeHeaders = () => ({ ...headers, 'content-type': 'application/json', 'x-crm-proof': browser.proof('PUT', target, payload) })
+  const noCsrf = await app.inject({ method: 'PUT', url: target, headers: writeHeaders(), payload })
+  assert.equal(noCsrf.statusCode, 403)
+  assert.equal(noCsrf.json().error.code, 'csrf_invalid')
+  const noAction = await app.inject({ method: 'PUT', url: target, headers: { ...writeHeaders(), 'x-csrf-token': 'csrf-test' }, payload })
+  assert.equal(noAction.statusCode, 403)
+  assert.equal(noAction.json().error.code, 'reauthentication_required')
+  const actionToken = 't'.repeat(43)
+  rows('crm_action_tokens').push({ _id: digest(actionToken), session_id: digest(token), method: 'PUT',
+    target, body_hash: browserBodyHash(payload), expires_at: new Date(Date.now() + 60_000) })
+  const saved = await app.inject({ method: 'PUT', url: target, headers: { ...writeHeaders(), 'x-csrf-token': 'csrf-test', 'x-crm-action-token': actionToken }, payload })
+  assert.equal(saved.statusCode, 200, saved.body)
+  assert.equal(rows('crm_action_tokens').length, 0)
+  const replayedAction = await app.inject({ method: 'PUT', url: target, headers: { ...writeHeaders(), 'x-csrf-token': 'csrf-test', 'x-crm-action-token': actionToken }, payload })
+  assert.equal(replayedAction.statusCode, 403)
+  assert.equal(replayedAction.json().error.code, 'reauthentication_required')
 })
 
 test('new CRM prices use the saved runtime exchange rate and preserve the original VND snapshot', async t => {

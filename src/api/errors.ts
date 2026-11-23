@@ -15,6 +15,7 @@ export class ApiError extends Error {
 export function installErrorHandler(app: FastifyInstance) {
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ApiError) {
+      if (error.status === 429 && !reply.hasHeader('Retry-After')) reply.header('Retry-After', '60')
       return reply.code(error.status).send({
         error: { code: error.code, message: error.message, details: error.details },
       })

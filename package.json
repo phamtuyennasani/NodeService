@@ -13,10 +13,12 @@
     "typecheck": "tsc --noEmit",
     "start": "node --env-file-if-exists=.env dist/server/main.js",
     "dev": "tsx --env-file-if-exists=.env src/main.ts",
+    "dev:widget": "tsx --env-file-if-exists=.env scripts/widget-preview.ts",
     "dev:watch": "nodemon --watch src --watch web --watch widget --watch migrations --watch vite.config.ts --watch tsconfig.json --watch tsconfig.server.json --ext ts,tsx,css,html,json --exec \"npm run build && npm start\"",
     "dev:web": "vite",
     "migrate": "tsx --env-file-if-exists=.env src/migrate.ts",
     "admin": "tsx --env-file-if-exists=.env scripts/create-admin.ts",
+    "admin:email": "tsx --env-file-if-exists=.env scripts/set-admin-email.ts",
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
@@ -34,6 +36,7 @@
     "htmlparser2": "^12.0.0",
     "ipaddr.js": "^2.5.0",
     "mongodb": "^7.9.0",
+    "nodemailer": "^10.6.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "recharts": "^3.11.0",
@@ -42,6 +45,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/sanitize-html": "^2.16.2",

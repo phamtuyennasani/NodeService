@@ -10,6 +10,12 @@
 .settings-page .ant-form-item-extra { padding-top: 5px; font-size: 12px; }
 .settings-page .ant-form-item { margin-bottom: 18px; }
 .settings-infrastructure { margin: 22px 0 0; max-width: 90ch; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.settings-navigation .ant-tabs-content-holder { display: none; }
+.settings-smtp-status { margin-bottom: -6px; }
+.settings-smtp-status .ant-tag { margin: 0; }
+.settings-smtp-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.settings-smtp-test-note { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.settings-smtp .settings-smtp-test-note + .ant-alert { margin-top: 16px; }
 @media (max-width: 900px) { .settings-grid-three { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 600px) {
   .settings-grid { grid-template-columns: minmax(0, 1fr); }

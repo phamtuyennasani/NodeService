@@ -6,7 +6,8 @@ import { collection, type Database } from '../db.js'
 import { seal, unseal } from '../security.js'
 import { modelIdSchema, providerIdSchema } from './catalog.js'
 import { ApiError, notFound } from './errors.js'
-import { assertPublicDestination, validateWebhookUrl } from '../worker/webhook.js'
+import { validateWebhookUrl } from '../worker/webhook.js'
+import { publicFetch } from '../public-fetch.js'
 
 const providerParams = z.object({ provider: providerIdSchema })
 const modelParams = providerParams.extend({ model: modelIdSchema })
@@ -62,17 +63,19 @@ function compatibleEndpoint(baseUrl: string, path: string): URL {
   return endpoint
 }
 
-async function publicEndpoint(baseUrl: string, path: string): Promise<URL> {
-  const endpoint = compatibleEndpoint(baseUrl, path)
+function normalizedBaseUrl(value: string | null | undefined): string | null {
+  if (!value) return null
   try {
-    await assertPublicDestination(endpoint)
+    const url = new URL(value)
+    // Endpoint construction strips trailing slashes before appending API paths.
+    url.pathname = url.pathname.replace(/\/+$/, '')
+    return url.href
   } catch {
-    throw new Error('Private provider destination')
+    return null
   }
-  return endpoint
 }
 
-export function registerProviders(app: FastifyInstance, db: Database, config: Config) {
+export function registerProviders(app: FastifyInstance, db: Database, config: Config, fetcher: typeof fetch = publicFetch) {
   app.get('/providers', async () => {
     const rows = await collection<ProviderRow>(db, 'ai_providers').find({}).toArray()
     const models = await collection<ModelRow>(db, 'ai_models').find({}).toArray()
@@ -97,8 +100,12 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
   })
   app.patch('/providers/:provider', async request => {
     const { provider } = providerParams.parse(request.params); const fields = patchFields.parse(request.body)
-    if (!await collection(db, 'ai_providers').findOne({ _id: provider })) throw notFound()
+    const current = await collection<ProviderRow>(db, 'ai_providers').findOne({ _id: provider })
+    if (!current) throw notFound()
     if (!isCompatibleProvider(provider) && fields.base_url !== undefined) throw new ApiError(400, 'provider_configuration_unsupported', 'Chỉ nhà cung cấp OpenAI Compatible cần Base URL.')
+    if (fields.base_url !== undefined && fields.api_key === undefined && normalizedBaseUrl(fields.base_url) !== normalizedBaseUrl(current.base_url)) {
+      throw new ApiError(400, 'provider_key_required', 'Khi đổi Base URL, cần nhập lại API key cho địa chỉ mới.')
+    }
     if (fields.enabled === false) {
       const configuredModels = await collection<{ _id: string }>(db, 'ai_models').find({ provider }).toArray()
       const modelIds = configuredModels.map(model => model._id)
@@ -109,8 +116,11 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
     const set: Record<string, unknown> = {}
     if (fields.enabled !== undefined) set.enabled = fields.enabled
     if (fields.display_name !== undefined) set.display_name = fields.display_name
-    if (fields.base_url !== undefined) set.base_url = fields.base_url
+    // Without a supplied key, an equivalent URL is a no-op. In particular, a
+    // concurrent edit must not write an old endpoint back beside another key.
+    if (fields.base_url !== undefined && fields.api_key !== undefined) set.base_url = fields.base_url
     if (fields.api_key !== undefined) set.encrypted_api_key = seal(fields.api_key, config.encryptionKey)
+    if (!Object.keys(set).length) return providerView(current, config)
     const result = await collection(db, 'ai_providers').findOneAndUpdate({ _id: provider }, { $set: set }, { returnDocument: 'after' })
     if (!result) throw notFound()
     return providerView(result, config)
@@ -133,13 +143,13 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
 
     let endpoint: URL
     try {
-      endpoint = await publicEndpoint(settings.base_url, '/models')
+      endpoint = compatibleEndpoint(settings.base_url, '/models')
     } catch {
       throw new ApiError(422, 'provider_connection_failed', 'Base URL OpenAI Compatible không hợp lệ.')
     }
     let response: Response
     try {
-      response = await fetch(endpoint, {
+      response = await fetcher(endpoint, {
         method: 'GET',
         headers: { accept: 'application/json', authorization: `Bearer ${key}` },
         signal: AbortSignal.timeout(10_000),
@@ -176,14 +186,14 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
 
     let endpoint: URL
     try {
-      endpoint = await publicEndpoint(settings.base_url, '/chat/completions')
+      endpoint = compatibleEndpoint(settings.base_url, '/chat/completions')
     } catch {
       throw new ApiError(422, 'provider_connection_failed', 'Base URL OpenAI Compatible không hợp lệ.')
     }
 
     let response: Response
     try {
-      response = await fetch(endpoint, {
+      response = await fetcher(endpoint, {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', authorization: `Bearer ${key}` },
         body: JSON.stringify({ model: upstreamModel, messages: [{ role: 'user', content: 'Ping' }], max_tokens: 1, stream: true }),

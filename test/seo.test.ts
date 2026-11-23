@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { evaluateSeoFields, seoPromptGuidance, type SeoCriterion, type SeoInput, type SeoReport } from '../src/worker/seo.js'
+import { evaluateSeoFields, seoPromptGuidance, seoWordRange, type SeoCriterion, type SeoInput, type SeoReport } from '../src/worker/seo.js'
 
 const article: SeoInput = {
   keyword: 'cà phê',
@@ -98,22 +98,27 @@ test('deferred images are excluded and missing site context cannot force an inte
   assert.equal(evaluateSeoFields({ ...article, keyword: '' }).score, 0)
 })
 
-test('SEO generation guidance prioritizes people and treats mechanical ranges as editorial hints', () => {
+test('SEO guidance aligns the CRM checklist with the requested budget without keyword stuffing', () => {
   const guidance = seoPromptGuidance(1_200).join('\n')
   assert.match(guidance, /nhu cầu và ý định tìm kiếm của người đọc/)
   assert.match(guidance, /chính xác, liên quan và có giá trị bổ sung/)
   assert.match(guidance, /1200 từ/)
-  assert.match(guidance, /Không thêm câu cho đủ số từ, không cắt phần cần thiết/)
-  assert.match(guidance, /không kéo dài hoặc cắt ý chỉ để đạt một số ký tự cố định/)
+  assert.match(guidance, /1020–1380 từ/)
+  assert.match(guidance, /Không thêm câu cho đủ số từ hoặc cắt mất ý chính/)
+  assert.match(guidance, /không cắt giữa câu hoặc thêm lời hứa thiếu căn cứ/)
   assert.match(guidance, /không giật tít/)
-  assert.match(guidance, /không bắt buộc lặp nguyên cụm từ khóa/iu)
+  assert.match(guidance, /Dùng nguyên cụm từ khóa chính một lần trong Title/)
+  assert.match(guidance, /trong đoạn mở thuộc 10% đầu Content/)
+  assert.match(guidance, /trong ít nhất một h2 hoặc h3/)
   assert.match(guidance, /không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
   assert.match(guidance, /không phải yêu cầu của Google/)
   assert.match(guidance, /người biên tập kiểm tra tính chính xác trước khi xuất bản/)
-  assert.doesNotMatch(guidance, /Title dài 41|Description dài 155|mật độ từ khóa chính khoảng 1%/)
+  assert.match(guidance, /Title dài 41–70/)
+  assert.match(guidance, /Description dài 155–160/)
+  assert.doesNotMatch(guidance, /mật độ từ khóa chính khoảng 1%/)
 })
 
-test('mechanical SEO warnings retain checklist metrics without triggering automatic repair', () => {
+test('failed CRM metadata and keyword placement checks trigger targeted repair', () => {
   const report = evaluateSeoFields({
     ...article,
     title: 'Hướng dẫn',
@@ -121,26 +126,27 @@ test('mechanical SEO warnings retain checklist metrics without triggering automa
     slug: 'huong-dan',
     contentHtml: '<h2>Chọn thức uống</h2><p>Chọn hương vị theo sở thích.</p><p>Ưu tiên nguyên liệu có thông tin rõ ràng.</p>',
   })
-  const advisoryKeys = [
+  const repairKeys = [
     'keywordInTitle', 'titleStartWithKeyword', 'lengthTitle', 'keywordInMetaDescription',
     'lengthMetaDescription', 'keywordInPermalink', 'keywordIn10Percent', 'keywordInContent',
-    'lengthContent', 'keywordInSubheadings', 'keywordDensity',
+    'lengthContent', 'keywordInSubheadings',
   ] as const
-  for (const key of advisoryKeys) {
-    const advisory = finding(report, key)
-    assert.equal(advisory.applicable, true, key)
-    assert.equal(advisory.passed, false, key)
-    assert.equal(advisory.repairable, false, key)
+  for (const key of repairKeys) {
+    const item = finding(report, key)
+    assert.equal(item.applicable, true, key)
+    assert.equal(item.passed, false, key)
+    assert.equal(item.repairable, true, key)
     assert.ok(report.warnings.some(warning => warning.key === key), key)
   }
   assert.equal(report.metrics.titleCharacters, Array.from('Hướng dẫn').length)
   assert.equal(report.metrics.keywordOccurrences, 0)
   assert.equal(report.metrics.keywordDensity, 0)
   assert.equal(report.score, Math.ceil(report.passed / report.applicable * 100))
-  assert.equal(report.warnings.some(warning => warning.repairable), false)
+  assert.equal(finding(report, 'keywordDensity').repairable, false)
+  assert.equal(finding(report, 'linksHasInternal').repairable, false)
 })
 
-test('only malformed slugs and readability issues remain automatically repairable', () => {
+test('slug length and readability can be repaired without forcing impossible keyword slugs', () => {
   for (const slug of ['', 'Cách chọn cà phê']) {
     const slugFinding = finding(evaluateSeoFields({ ...article, slug }), 'lengthPermalink')
     assert.equal(slugFinding.passed, false, slug)
@@ -148,7 +154,10 @@ test('only malformed slugs and readability issues remain automatically repairabl
   }
   const longSlug = finding(evaluateSeoFields({ ...article, slug: 'a'.repeat(76) }), 'lengthPermalink')
   assert.equal(longSlug.passed, false)
-  assert.equal(longSlug.repairable, false)
+  assert.equal(longSlug.repairable, true)
+  const longKeyword = finding(evaluateSeoFields({ ...article, keyword: 'rất dài '.repeat(20) }), 'keywordInPermalink')
+  assert.equal(longKeyword.passed, false)
+  assert.equal(longKeyword.repairable, false)
 
   const longParagraph = finding(evaluateSeoFields({
     ...article,
@@ -156,6 +165,24 @@ test('only malformed slugs and readability issues remain automatically repairabl
   }), 'contentHasShortParagraphs')
   assert.equal(longParagraph.passed, false)
   assert.equal(longParagraph.repairable, true)
+})
+
+test('requested word budget uses inclusive integer bounds and keeps legacy limits when absent', () => {
+  assert.deepEqual(seoWordRange(), { min: 600, max: 2500 })
+  assert.deepEqual(seoWordRange(NaN), { min: 600, max: 2500 })
+  assert.deepEqual(seoWordRange(1500), { min: 1275, max: 1725 })
+  assert.deepEqual(seoWordRange(600), { min: 600, max: 690 })
+  assert.deepEqual(seoWordRange(2500), { min: 2125, max: 2500 })
+  for (const [count, passed] of [[1274, false], [1275, true], [1725, true], [1726, false]] as const) {
+    const report = evaluateSeoFields({ ...article, targetWords: 1500, contentHtml: '<p>' + 'từ '.repeat(count) + '</p>' })
+    assert.equal(report.metrics.words, count)
+    assert.equal(finding(report, 'lengthContent').passed, passed, String(count))
+    assert.match(finding(report, 'lengthContent').message, /Yêu cầu 1500 từ/)
+  }
+  const legacy = evaluateSeoFields({ ...article, contentHtml: '<p>' + 'từ '.repeat(2000) + '</p>' })
+  const requested = evaluateSeoFields({ ...article, targetWords: 1500, contentHtml: '<p>' + 'từ '.repeat(2000) + '</p>' })
+  assert.equal(finding(legacy, 'lengthContent').passed, true)
+  assert.equal(finding(requested, 'lengthContent').passed, false)
 })
 
 test('internal link finding states presence without claiming destination verification', () => {

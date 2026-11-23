@@ -37,13 +37,20 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
   await page.addInitScript({ content: `
-    class TestEventSource extends EventTarget {
-      static instances = [];
-      constructor(url) { super(); this.url = url; TestEventSource.instances.push(this); }
-      close() {}
-    }
-    Object.defineProperty(window, 'EventSource', { configurable: true, value: TestEventSource });
-    Object.defineProperty(window, '__crmEventSources', { configurable: true, value: TestEventSource.instances });
+    const originalFetch = window.fetch.bind(window);
+    let stream;
+    const encoder = new TextEncoder();
+    window.__emitCrmEvent = (type, data = {}) => stream?.enqueue(encoder.encode('event: ' + type + '\\ndata: ' + JSON.stringify(data) + '\\n\\n'));
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+      if (url.pathname !== '/api/crm/jobs/events') return originalFetch(input, init);
+      const signal = init.signal;
+      const body = new ReadableStream({ start(controller) { stream = controller; }, cancel() { stream = undefined; } });
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      signal?.addEventListener('abort', () => { stream?.error(new DOMException('Aborted', 'AbortError')); stream = undefined; }, { once: true });
+      window.__crmStreamReady = true;
+      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+    };
   ` });
   const failed = { ...failedJob(), rewrite_key_mode: rewriteKeyMode };
   const active: JobDetails = { ...failedJob(), id: activeId, job_id: activeId, keyword: 'bài đang viết', status: 'writing', writing_stage: 'outline', can_rewrite: false, error_code: null, error_message: null };
@@ -93,6 +100,7 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/crm-test.js"></script></body></html>' });
     if (url.pathname === '/crm-test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
+    if (url.pathname === '/api/crm/session/bootstrap') return route.fulfill({ json: { browser_binding: 'b'.repeat(43), server_time: Date.now() } });
     if (url.pathname === '/api/crm/jobs') {
       listReads++;
       listRequests.push(url);
@@ -120,11 +128,11 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
   await page.goto(`${origin}/${options.query ? `?${options.query}` : ''}`);
   const row = (keyword: string) => page.getByRole('row').filter({ has: page.getByRole('button', { name: new RegExp(keyword) }) });
   await row(options.historicalReady ? completed.keyword : options.issueRows?.[0] === activeId ? active.keyword : failed.keyword).waitFor();
+  await page.waitForFunction(() => (window as any).__crmStreamReady === true);
   return {
     page, row, posts, unexpected, pageErrors, details, detailReads, listRequests, listReads: () => listReads,
     emitJobEvent: (type: string, data: Record<string, unknown> = {}) => page.evaluate(({ type: eventType, data: eventData }) => {
-      const source = (window as typeof window & { __crmEventSources: EventTarget[] }).__crmEventSources[0];
-      source.dispatchEvent(new MessageEvent(eventType, { data: JSON.stringify(eventData) }));
+      (window as any).__emitCrmEvent(eventType, eventData);
     }, { type, data }),
   };
 }
@@ -137,10 +145,11 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
         import {App, ConfigProvider} from 'antd';
         import {Jobs} from './web/src/Jobs';
         import {setCsrfToken} from './web/src/api';
+        import {prepareBrowserLogin} from './web/src/browser-proof';
         setCsrfToken('fixture-csrf');
-        createRoot(document.getElementById('root')!).render(
+        prepareBrowserLogin().then(() => createRoot(document.getElementById('root')!).render(
           <ConfigProvider theme={{token:{motion:false}}}><App><Jobs query={new URLSearchParams(window.location.search)} /></App></ConfigProvider>
-        );`,
+        ));`,
       resolveDir: process.cwd(), loader: 'tsx',
     },
     bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty' },

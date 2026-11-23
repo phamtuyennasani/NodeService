@@ -1,7 +1,7 @@
-import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Alert, App, Button, ConfigProvider, Drawer, Dropdown, Form, Input, Modal, Skeleton, Spin,
+  Alert, App, Button, Checkbox, ConfigProvider, Drawer, Dropdown, Form, Input, Modal, Skeleton, Spin,
 } from 'antd';
 import viVN from 'antd/locale/vi_VN';
 import dayjs from 'dayjs';
@@ -19,8 +19,9 @@ import '@fontsource/inter/vietnamese-400.css';
 import '@fontsource/inter/vietnamese-500.css';
 import '@fontsource/inter/vietnamese-600.css';
 import '@fontsource/inter/vietnamese-700.css';
-import { mutate, request, setCsrfToken } from './api';
-import type { Session } from './types';
+import { cancelLoginChallenge, mutate, request, setCsrfToken, setReauthenticationHandler } from './api';
+import { setBrowserSession } from './browser-proof';
+import type { LoginChallenge, Session } from './types';
 import { crmTheme } from './theme.js';
 import './styles.css';
 import './shell.css';
@@ -35,6 +36,7 @@ const Deliveries = lazy(() => import('./Jobs').then((page) => ({ default: page.D
 const Providers = lazy(() => import('./Providers').then((page) => ({ default: page.Providers })));
 const Pricing = lazy(() => import('./Pricing').then((page) => ({ default: page.Pricing })));
 const Settings = lazy(() => import('./Settings').then((page) => ({ default: page.Settings })));
+const Account = lazy(() => import('./Account').then((page) => ({ default: page.Account })));
 
 const navigationGroups = [
   { label: 'Vận hành', items: [
@@ -52,6 +54,7 @@ const navigationGroups = [
   ] },
   { label: 'Hệ thống', items: [
     { key: 'settings', label: 'Cài đặt', icon: SettingOutlined },
+    { key: 'account', label: 'Tài khoản', icon: UserOutlined },
   ] },
 ];
 const navigation = navigationGroups.flatMap((group) => group.items.map((item) => ({ ...item, group: group.label })));
@@ -80,17 +83,68 @@ function Today() {
 function Login({ onLogin, sessionError }: { onLogin: (session: Session) => void; sessionError?: string }) {
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const [challenge, setChallenge] = useState<LoginChallenge>();
+  const [resendAt, setResendAt] = useState(0);
+  const [expiresAt, setExpiresAt] = useState(0);
+  const [now, setNow] = useState(Date.now);
+  const [loginForm] = Form.useForm();
+  const [otpForm] = Form.useForm();
+  const { message } = App.useApp();
 
-  async function submit(values: { username: string; password: string }) {
+  useEffect(() => {
+    if (!challenge) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [challenge]);
+
+  function applyChallenge(next: LoginChallenge) {
+    const time = Date.now();
+    setChallenge(next);
+    setResendAt(time + next.resend_after * 1000);
+    setExpiresAt(time + next.expires_in * 1000);
+    setNow(time);
+    otpForm.resetFields(['code']);
+  }
+
+  async function submit(values: { username: string; password: string; remember_me?: boolean }) {
     setError(undefined);
     setPending(true);
     try {
-      onLogin(await mutate<Session>('/login', 'POST', values));
+      const response = await mutate<Session | LoginChallenge>('/login', 'POST', { ...values, remember_me: values.remember_me === true });
+      loginForm.resetFields(['password']);
+      if ('otp_required' in response) applyChallenge(response);
+      else onLogin(response);
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
       setPending(false);
     }
+  }
+
+  async function verify(values: { code: string; trust_device?: boolean }) {
+    if (!challenge) return;
+    setPending(true); setError(undefined);
+    try {
+      const response = await mutate<Session>('/login/verify', 'POST', { challenge_id: challenge.challenge_id, code: values.code, trust_device: values.trust_device === true });
+      otpForm.resetFields();
+      onLogin(response);
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setPending(false); }
+  }
+
+  async function resend() {
+    if (!challenge) return;
+    setPending(true); setError(undefined);
+    try {
+      const response = await mutate<LoginChallenge>('/login/resend', 'POST', { challenge_id: challenge.challenge_id });
+      applyChallenge({ ...challenge, ...response });
+      message.success('Đã gửi lại mã xác minh. Mã cũ không còn hiệu lực.');
+    } catch (cause) { setError((cause as Error).message); }
+    finally { setPending(false); }
+  }
+
+  function backToLogin() {
+    cancelLoginChallenge(); setChallenge(undefined); setError(undefined); otpForm.resetFields();
   }
 
   useEffect(() => {
@@ -113,18 +167,34 @@ function Login({ onLogin, sessionError }: { onLogin: (session: Session) => void;
       </section>
       <section className="crm-login-panel" aria-labelledby="login-heading">
         <div className="crm-login-form">
-          <h1 id="login-heading">Đăng nhập</h1>
-          <p>Nhập tài khoản quản trị để vào Bàn biên tập.</p>
+          <h1 id="login-heading">{challenge ? 'Xác minh thiết bị' : 'Đăng nhập'}</h1>
+          <p>{challenge ? `Nhập mã 8 chữ số đã gửi tới ${challenge.email_hint}.` : 'Nhập tài khoản quản trị để vào Bàn biên tập.'}</p>
           {(error ?? sessionError) && <Alert className="resource-error" type="error" showIcon title={error ?? sessionError} />}
-          <Form layout="vertical" requiredMark={false} size="large" onFinish={submit}>
+          {challenge ? <Form form={otpForm} layout="vertical" requiredMark={false} size="large" initialValues={{ trust_device: false }} onFinish={verify} preserve={false}>
+            <Form.Item name="code" label="Mã OTP" rules={[{ required: true, message: 'Nhập mã OTP.' }, { pattern: /^\d{8}$/, message: 'Mã OTP gồm 8 chữ số.' }]}>
+              <Input inputMode="numeric" autoComplete="one-time-code" maxLength={8} autoFocus disabled={pending} />
+            </Form.Item>
+            <p className="crm-login-help" role="status">{now >= expiresAt ? 'Mã đã hết hạn. Hãy gửi lại mã hoặc đăng nhập lại.' : `Mã có hiệu lực trong ${Math.ceil((expiresAt - now) / 60000)} phút.`}</p>
+            <Form.Item name="trust_device" valuePropName="checked" extra="Chỉ chọn trên thiết bị cá nhân. Bạn vẫn cần mật khẩu khi đăng nhập lại.">
+              <Checkbox>Không hỏi lại OTP trên thiết bị này trong 30 ngày</Checkbox>
+            </Form.Item>
+            <Button block type="primary" htmlType="submit" loading={pending} disabled={now >= expiresAt}>Xác minh và đăng nhập</Button>
+            <div className="crm-login-secondary">
+              <Button type="link" onClick={() => void resend()} disabled={pending || now < resendAt}>{now < resendAt ? `Gửi lại mã sau ${Math.ceil((resendAt - now) / 1000)}s` : 'Gửi lại mã OTP'}</Button>
+              <Button type="text" onClick={backToLogin} disabled={pending}>Đổi tài khoản</Button>
+            </div>
+          </Form> : <Form form={loginForm} layout="vertical" requiredMark={false} size="large" initialValues={{ remember_me: false }} onFinish={submit}>
             <Form.Item name="username" label="Tên đăng nhập" rules={[{ required: true, message: 'Nhập tên đăng nhập.' }]}>
               <Input prefix={<UserOutlined />} autoComplete="username" autoFocus={window.matchMedia('(min-width: 801px)').matches} />
             </Form.Item>
             <Form.Item name="password" label="Mật khẩu" rules={[{ required: true, message: 'Nhập mật khẩu.' }]}>
               <Input.Password prefix={<LockOutlined />} autoComplete="current-password" />
             </Form.Item>
+            <Form.Item name="remember_me" valuePropName="checked" extra="Giữ đăng nhập tối đa 30 ngày trên trình duyệt này. Không chọn trên máy dùng chung.">
+              <Checkbox>Ghi nhớ đăng nhập</Checkbox>
+            </Form.Item>
             <Button block type="primary" htmlType="submit" loading={pending} icon={<ArrowRightOutlined />} iconPlacement="end">Đăng nhập</Button>
-          </Form>
+          </Form>}
         </div>
       </section>
     </main>
@@ -137,6 +207,9 @@ function getLocation() {
 }
 
 function Workspace({ session, onSession, onSignOut }: { session: Session; onSession: (session: Session) => void; onSignOut: () => void }) {
+  const accountName = session.display_name?.trim() || session.username;
+  const nameParts = accountName.split(/\s+/);
+  const avatarText = (nameParts.length > 1 ? `${Array.from(nameParts[0])[0] ?? ''}${Array.from(nameParts.at(-1)!)[0] ?? ''}` : Array.from(accountName).slice(0, 2).join('')).toUpperCase();
   const [location, setLocation] = useState(getLocation);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
@@ -207,18 +280,20 @@ function Workspace({ session, onSession, onSignOut }: { session: Session; onSess
       <div className="crm-account">
         <Dropdown trigger={['click']} placement="topLeft" menu={{
           items: [
+            { key: 'account', icon: <UserOutlined />, label: 'Thông tin tài khoản' },
             { key: 'password', icon: <LockOutlined />, label: 'Đổi mật khẩu' },
             { key: 'logout', icon: <LogoutOutlined />, label: 'Đăng xuất' },
           ],
           onClick: ({ key }) => {
             setMobileMenu(false);
-            if (key === 'password') setPasswordOpen(true);
+            if (key === 'account') window.location.hash = 'account';
+            else if (key === 'password') setPasswordOpen(true);
             else void logout();
           },
         }}>
-          <button type="button" className="crm-account-button" aria-label={`Tài khoản ${session.username}`} aria-haspopup="menu">
-            <span className="crm-avatar" aria-hidden="true">{Array.from(session.username).slice(0, 2).join('').toUpperCase()}</span>
-            <span className="crm-identity"><strong>{session.username}</strong><span>Quản trị viên</span></span>
+          <button type="button" className="crm-account-button" aria-label={`Tài khoản ${accountName}`} aria-haspopup="menu">
+            <span className="crm-avatar" aria-hidden="true">{avatarText}</span>
+            <span className="crm-identity"><strong>{accountName}</strong><span>Quản trị viên</span></span>
             <DownOutlined className="crm-account-caret" aria-hidden="true" />
           </button>
         </Dropdown>
@@ -255,6 +330,7 @@ function Workspace({ session, onSession, onSignOut }: { session: Session; onSess
             {location.key === 'providers' && <Providers />}
             {location.key === 'prices' && <Pricing />}
             {location.key === 'settings' && <Settings />}
+            {location.key === 'account' && <Account onProfile={(profile) => onSession({ ...session, username: profile.username, display_name: profile.display_name, email: profile.email, email_verified: profile.email_verified })} onPasswordChange={() => setPasswordOpen(true)} />}
           </Suspense>
         </main>
       </div>
@@ -277,6 +353,7 @@ function Root() {
   const [sessionError, setSessionError] = useState<string>();
   function applySession(next: Session | null) {
     setCsrfToken(next?.csrf_token ?? '');
+    if (!next) setBrowserSession(null);
     setSession(next);
   }
 
@@ -306,6 +383,44 @@ function Root() {
   return <Workspace session={session} onSession={applySession} onSignOut={() => applySession(null)} />;
 }
 
+function ReauthenticationDialog() {
+  const [open, setOpen] = useState(false);
+  const [form] = Form.useForm<{ current_password: string }>();
+  const pending = useRef<((password: string | null) => void) | undefined>(undefined);
+  function finish(password: string | null) {
+    const resolve = pending.current;
+    pending.current = undefined;
+    form.resetFields();
+    setOpen(false);
+    resolve?.(password);
+  }
+  useEffect(() => {
+    setReauthenticationHandler(() => new Promise(resolve => {
+      pending.current?.(null);
+      pending.current = resolve;
+      form.resetFields();
+      setOpen(true);
+    }));
+    const cancel = () => finish(null);
+    window.addEventListener('crm-session-expired', cancel);
+    return () => {
+      setReauthenticationHandler(undefined);
+      pending.current?.(null);
+      pending.current = undefined;
+      window.removeEventListener('crm-session-expired', cancel);
+    };
+  }, [form]);
+  return <Modal title="Xác nhận bảo mật" open={open} onCancel={() => finish(null)}
+    onOk={() => form.submit()} okText="Xác nhận thao tác" cancelText="Hủy" destroyOnHidden>
+    <p>Nhập lại mật khẩu để xác nhận thao tác quản trị nhạy cảm. Xác nhận chỉ có hiệu lực cho một thao tác này.</p>
+    <Form form={form} layout="vertical" preserve={false} onFinish={values => finish(values.current_password)}>
+      <Form.Item name="current_password" label="Mật khẩu hiện tại" rules={[{ required: true, message: 'Nhập mật khẩu hiện tại.' }]}>
+        <Input.Password autoComplete="current-password" autoFocus />
+      </Form.Item>
+    </Form>
+  </Modal>;
+}
+
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 function subscribeToMotionPreference(notify: () => void) {
@@ -316,7 +431,7 @@ function subscribeToMotionPreference(notify: () => void) {
 function CrmApp() {
   const reduce = useSyncExternalStore(subscribeToMotionPreference, () => reducedMotion.matches);
   const theme = reduce ? { ...crmTheme, token: { ...crmTheme.token, motion: false } } : crmTheme;
-  return <ConfigProvider locale={viVN} theme={theme}><App><Root /></App></ConfigProvider>;
+  return <ConfigProvider locale={viVN} theme={theme}><App><Root /><ReauthenticationDialog /></App></ConfigProvider>;
 }
 
 createRoot(document.getElementById('root')!).render(<CrmApp />);

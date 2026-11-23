@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { ApiError, request } from './api';
+import { subscribeCrmEvents } from './sse';
 import type { JobDetails } from './types';
 
 /** Re-read only the changed job: event frames deliberately omit article data. */
@@ -12,7 +13,6 @@ export function useLiveJobs(callbacks: {
   const current = useRef(callbacks);
   current.current = callbacks;
   useEffect(() => {
-    const source = new EventSource('/api/crm/jobs/events');
     const pending = new Map<string, { again: boolean; timer?: number; controller?: AbortController }>();
     let disposed = false;
     function refresh(id: string) {
@@ -41,11 +41,11 @@ export function useLiveJobs(callbacks: {
         }
       }, 75);
     }
-    function receive(event: Event) {
+    function receive(data: string, deleted = false) {
       try {
-        const payload = JSON.parse((event as MessageEvent<string>).data) as { job_id?: string; deleted?: boolean };
+        const payload = JSON.parse(data) as { job_id?: string; deleted?: boolean };
         if (typeof payload?.job_id !== 'string' || !payload.job_id) return;
-        if (event.type === 'job.deleted' || payload.deleted) {
+        if (deleted || payload.deleted) {
           const state = pending.get(payload.job_id);
           if (state?.timer !== undefined) window.clearTimeout(state.timer);
           state?.controller?.abort();
@@ -57,14 +57,16 @@ export function useLiveJobs(callbacks: {
       }
     }
     const reconcile = () => { if (!document.hidden) current.current.reconcile(); };
-    source.addEventListener('job.created', receive);
-    source.addEventListener('job.updated', receive);
-    source.addEventListener('job.deleted', receive);
-    source.addEventListener('ready', reconcile);
+    const unsubscribe = subscribeCrmEvents('/jobs/events', {
+      'job.created': receive,
+      'job.updated': receive,
+      'job.deleted': data => receive(data, true),
+      ready: reconcile,
+    });
     document.addEventListener('visibilitychange', reconcile);
     return () => {
       disposed = true;
-      source.close();
+      unsubscribe();
       document.removeEventListener('visibilitychange', reconcile);
       for (const state of pending.values()) {
         if (state.timer !== undefined) window.clearTimeout(state.timer);

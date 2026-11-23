@@ -12,6 +12,19 @@ async function mockSchedule(browser: Browser, bundle: string, immediate = false)
   const posts: { method: string; body: unknown; csrf: string | undefined }[] = [];
   const unexpected: string[] = [];
   const pageErrors: string[] = [];
+  await page.addInitScript({ content: `
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+      if (url.pathname !== '/api/crm/jobs/events') return originalFetch(input, init);
+      const signal = init.signal;
+      let stream;
+      const body = new ReadableStream({ start(controller) { stream = controller; }, cancel() { stream = undefined; } });
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      signal?.addEventListener('abort', () => { stream?.error(new DOMException('Aborted', 'AbortError')); stream = undefined; }, { once: true });
+      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+    };
+  ` });
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.route('**/*', async route => {
     const request = route.request();
@@ -23,6 +36,7 @@ async function mockSchedule(browser: Browser, bundle: string, immediate = false)
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/crm-test.js"></script></body></html>' });
     if (url.pathname === '/crm-test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
+    if (url.pathname === '/api/crm/session/bootstrap') return route.fulfill({ json: { browser_binding: 'b'.repeat(43), server_time: Date.now() } });
     if (url.pathname === '/api/crm/jobs' && request.method() === 'GET') return route.fulfill({ json: { data: [], next_cursor: null } });
     if (url.pathname === '/api/crm/jobs/events') return route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' });
     if (url.pathname === '/api/crm/customers') return route.fulfill({ json: { data: [{ id: 'customer-test', name: 'Khách kiểm thử' }] } });
@@ -62,10 +76,11 @@ test('CRM schedule accepts numeric word lengths and rejects invalid lengths', as
         import {App, ConfigProvider} from 'antd';
         import {Jobs} from './web/src/Jobs';
         import {setCsrfToken} from './web/src/api';
+        import {prepareBrowserLogin} from './web/src/browser-proof';
         setCsrfToken('fixture-csrf');
-        createRoot(document.getElementById('root')!).render(
+        prepareBrowserLogin().then(() => createRoot(document.getElementById('root')!).render(
           <ConfigProvider theme={{token:{motion:false}}}><App><Jobs query={new URLSearchParams()} /></App></ConfigProvider>
-        );`,
+        ));`,
       resolveDir: process.cwd(), loader: 'tsx',
     },
     bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty' },

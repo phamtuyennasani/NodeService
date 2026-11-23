@@ -30,6 +30,7 @@ async function fixture(browser: Browser, bundle: string, conflict = false) {
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/test.js"></script></body></html>' });
     if (url.pathname === '/test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
+    if (url.pathname === '/api/crm/session/bootstrap') return route.fulfill({ json: { browser_binding: 'b'.repeat(43), server_time: Date.now() } });
     if (url.pathname === '/api/crm/settings') {
       if (request.method() === 'GET') {
         gets += 1;
@@ -55,7 +56,8 @@ test('CRM settings save operational values, confirm retention and handle concurr
     stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
       import {App,ConfigProvider} from 'antd'; import {Settings} from './web/src/Settings';
       import {setCsrfToken} from './web/src/api'; setCsrfToken('settings-csrf');
-      createRoot(document.getElementById('root')!).render(<ConfigProvider theme={{token:{motion:false}}}><App><Settings /></App></ConfigProvider>);`,
+      import {prepareBrowserLogin} from './web/src/browser-proof';
+      prepareBrowserLogin().then(() => createRoot(document.getElementById('root')!).render(<ConfigProvider theme={{token:{motion:false}}}><App><Settings /></App></ConfigProvider>));`,
       resolveDir: process.cwd(), loader: 'tsx' },
     bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty' },
     write: false, define: { 'process.env.NODE_ENV': '"test"' },

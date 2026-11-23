@@ -13,6 +13,7 @@ function evaluate(value?: unknown) {
     contentHtml: text(fields.contentHtml),
     siteUrl: text(fields.siteHost),
     locale: text(fields.locale) || 'vi',
+    targetWords: typeof fields.targetWords === 'number' ? fields.targetWords : undefined,
   })
   const { metrics } = report
   return {

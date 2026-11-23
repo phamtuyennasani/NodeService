@@ -4,9 +4,9 @@ import type { Config } from '../src/config.js'
 import type { Database } from '../src/db.js'
 import { jobEvents, type JobEvent } from '../src/job-events.js'
 import { seal } from '../src/security.js'
-import { cleanArticle, generateArticle, WorkerError, type Article, type ArticleOutline, type GenerationMetadata } from '../src/worker/provider.js'
+import { cleanArticle, generateArticle, repairArticle, WorkerError, type Article, type ArticleOutline, type GenerationMetadata } from '../src/worker/provider.js'
 import { estimateGenerationTokens } from '../src/worker/provider.js'
-import { evaluateSeo } from '../src/worker/seo.js'
+import { evaluateSeo, type SeoCriterion } from '../src/worker/seo.js'
 import { runWriterOnce, type WriterDependencies } from '../src/worker/writer.js'
 import { providerHasCapacity, ProviderCapacityPending, reserveProviderRequest } from '../src/worker/provider-limits.js'
 import { siteContentSearchTerms } from '../src/site-content.js'
@@ -122,10 +122,10 @@ const shortArticle: Article = {
   Title: 'Pha cà phê tại nhà', Content: '<p>Dùng nước lạnh và cà phê xay thô.</p>',
   Slug: 'pha-ca-phe', Desc: 'Cách chuẩn bị cà phê.', Description: 'Hướng dẫn pha cà phê.', Keywords: ['cà phê'],
 }
-function seoArticle(): Article {
+function seoArticle(targetWords = 600): Article {
   return {
     Title: 'Cà phê cold brew: cách pha ngon và bảo quản tại nhà',
-    Content: '<h2>Cà phê cold brew cho người mới</h2>' + Array.from({ length: 10 }, () => '<p>Cà phê cold brew ' + 'thơm '.repeat(58).trim() + '.</p>').join(''),
+    Content: '<h2>Cà phê cold brew cho người mới</h2>' + Array.from({ length: Math.max(2, Math.round(targetWords / 62)) }, () => '<p>Cà phê cold brew ' + 'thơm '.repeat(58).trim() + '.</p>').join(''),
     Slug: 'ca-phe-cold-brew', Desc: 'Hướng dẫn pha tại nhà.',
     Description: 'Cà phê cold brew ' + 'à'.repeat(140), Keywords: [keyword],
   }
@@ -138,7 +138,7 @@ function fixture(jobValues: Row = {}, configValues: Row = {}, accountingFailure 
   const job: Row = {
     _id: 'scheduled-job', site_id: 'test-site', customer_id: 'test-customer', mode: 'scheduled', provider: 'openai',
     model: 'test-model', keyword, tone: 'rõ ràng', style: 'hướng dẫn',
-    length: 1500, instructions: null, key_mode: 'service', encrypted_key: null,
+    length: 600, instructions: null, key_mode: 'service', encrypted_key: null,
     source_article_id: null, attempt_count: 0, status: 'scheduled', lease_token: null,
     available_at: new Date(0), result: null, error_code: null, error_message: null,
     ...jobValues,
@@ -175,9 +175,9 @@ function assertReady(f: ReturnType<typeof fixture>, article: Article, repairStat
   assert.equal(f.job.seo_repair_status, repairStatus)
   assert.equal(f.reservation.status, 'used')
   assert.deepEqual(Object.keys(f.job.result[0]).sort(), ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'].sort())
-  assert.deepEqual(f.tables.webhook_deliveries.map(({ job_id, event, status }) => ({ job_id, event, status })), [
+  assert.deepEqual(f.tables.webhook_deliveries.map(({ job_id, event, status }) => ({ job_id, event, status })), f.job.mode === 'scheduled' ? [
     { job_id: f.job._id, event: 'article.ready', status: 'pending' },
-  ])
+  ] : [])
 }
 
 test('scheduled writer researches, outlines and streams a compliant article without a repair call', async () => {
@@ -244,13 +244,13 @@ test('outline reasoning reserves extra draft output and matches the provider tok
       estimatedTokens = estimateGenerationTokens(input, 'article')
       reservedTokens = f.tables.provider_limits[0].requests.at(-1).tokens
       const body = [
-        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle()) },
+        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle(1000)) },
         { type: 'response.completed', response: { id: 'reasoning-draft', model: input.model, usage: { input_tokens: 25, output_tokens: 40 }, status: 'completed' } },
       ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')
       return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
     }),
   })
-  assertReady(f, seoArticle(), 'not_needed')
+  assertReady(f, seoArticle(1000), 'not_needed')
   assert.equal(requestedOutput, 15_216)
   assert.equal(reservedTokens, estimatedTokens)
   assert.ok(reservedTokens > requestedOutput, 'the reservation also accounts for the prompt')
@@ -265,13 +265,13 @@ test('unknown models keep the original draft budget when reasoning usage is abse
       generate: input => generateArticle(input, async (_url, request) => {
         requestedOutput = JSON.parse(String(request?.body)).max_output_tokens
         const body = [
-          { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle()) },
+          { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle(1000)) },
           { type: 'response.completed', response: { id: 'ordinary-draft', model: input.model, status: 'completed' } },
         ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')
         return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
       }),
     })
-    assertReady(f, seoArticle(), 'not_needed')
+    assertReady(f, seoArticle(1000), 'not_needed')
     assert.equal(requestedOutput, 7024)
   }
 })
@@ -296,13 +296,13 @@ test('a persisted truncated draft doubles its output budget without inflating th
     generate: input => generateArticle(input, async (_url, request) => {
       requestedOutput = JSON.parse(String(request?.body)).max_output_tokens
       const body = [
-        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle()) },
+        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle(1000)) },
         { type: 'response.completed', response: { id: 'retried-draft', model: input.model, status: 'completed' } },
       ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')
       return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
     }),
   })
-  assertReady(f, seoArticle(), 'not_needed')
+  assertReady(f, seoArticle(1000), 'not_needed')
   assert.equal(requestedOutput, 14_048)
   assert.ok(outlineTokens > 0)
   assert.equal(outlineTokens, originalOutlineTokens)
@@ -326,13 +326,13 @@ test('legacy exhausted drafts retain reasoning headroom and ignore another model
     generate: input => generateArticle(input, async (_url, request) => {
       requestedOutput = JSON.parse(String(request?.body)).max_output_tokens
       const body = [
-        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle()) },
+        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle(1000)) },
         { type: 'response.completed', response: { id: 'legacy-retry', model: input.model, status: 'completed' } },
       ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')
       return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
     }),
   })
-  assertReady(f, seoArticle(), 'not_needed')
+  assertReady(f, seoArticle(1000), 'not_needed')
   assert.equal(requestedOutput, 17_550)
 })
 
@@ -349,13 +349,13 @@ test('manual retries inherit token headroom from a verified failed predecessor',
     generate: input => generateArticle(input, async (_url, request) => {
       requestedOutput = JSON.parse(String(request?.body)).max_output_tokens
       const body = [
-        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle()) },
+        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle(1000)) },
         { type: 'response.completed', response: { id: 'manual-retry', model: input.model, status: 'completed' } },
       ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')
       return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
     }),
   })
-  assertReady(f, seoArticle(), 'not_needed')
+  assertReady(f, seoArticle(1000), 'not_needed')
   assert.equal(requestedOutput, 17_550)
   assert.equal(f.tables.jobs.find(row => row._id === 'failed-predecessor')?.status, 'failed')
 })
@@ -382,13 +382,13 @@ test('manual retries cannot inherit token budgets across customers, sites, model
       generate: input => generateArticle(input, async (_url, request) => {
         requestedOutput = JSON.parse(String(request?.body)).max_output_tokens
         const body = [
-          { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle()) },
+          { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle(1000)) },
           { type: 'response.completed', response: { id: 'isolated-retry', model: input.model, status: 'completed' } },
         ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')
         return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
       }),
     })
-    assertReady(f, seoArticle(), 'not_needed')
+    assertReady(f, seoArticle(1000), 'not_needed')
     assert.equal(requestedOutput, 7024, JSON.stringify(mismatch))
   }
 })
@@ -406,13 +406,13 @@ test('invalid JSON with full output usage does not trigger the legacy truncation
     generate: input => generateArticle(input, async (_url, request) => {
       requestedOutput = JSON.parse(String(request?.body)).max_output_tokens
       const body = [
-        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle()) },
+        { type: 'response.output_text.delta', delta: JSON.stringify(seoArticle(1000)) },
         { type: 'response.completed', response: { id: 'json-retry', model: input.model, status: 'completed' } },
       ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')
       return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
     }),
   })
-  assertReady(f, seoArticle(), 'not_needed')
+  assertReady(f, seoArticle(1000), 'not_needed')
   assert.equal(requestedOutput, 7024)
 })
 
@@ -630,14 +630,116 @@ test('one SEO repair applies improvements after the original draft is durably st
 test('SEO repair is discarded when it breaks a criterion the draft passed', async () => {
   const draft = articleWithLongParagraph()
   const f = fixture()
+  let repairs = 0
   await f.run({
     generate: async () => ({ article: draft, ...metadata }),
-    repair: async input => ({ article: { ...input.draft, Content: '<p>Quá ngắn.</p><p>Nội dung bị thay đổi.</p>' }, ...metadata }),
+    repair: async input => {
+      repairs += 1
+      return { article: { ...input.draft, Content: '<p>Quá ngắn.</p><p>Nội dung bị thay đổi.</p>' }, ...metadata }
+    },
   })
+  assert.equal(repairs, 1, 'a regressing patch must not spend another repair call')
   assertReady(f, draft, 'kept_draft')
 })
 
-test('short useful copy and natural keyword use remain advisory without an automatic repair', async () => {
+test('a second SEO pass uses the accepted draft to finish its remaining length warning', async () => {
+  const draft = { ...seoArticle(2400), Title: 'Hướng dẫn pha đồ uống lạnh ngon và bảo quản tại nhà' }
+  const first = seoArticle(2000)
+  const second = seoArticle(1500)
+  const f = fixture({ length: 1500 })
+  let repairs = 0
+  await f.run({
+    generate: async () => ({ article: draft, ...metadata }),
+    async repair(input) {
+      repairs += 1
+      if (repairs === 1) {
+        assert.deepEqual(input.draft, cleanArticle(draft))
+        assert.ok(input.issues.some(issue => issue.key === 'keywordInTitle'))
+        return { article: first, ...metadata, usage: { ...metadata.usage, reasoning: 100 } }
+      }
+      assert.equal(repairs, 2)
+      assert.deepEqual(input.draft, cleanArticle(first))
+      assert.deepEqual(input.issues.map(issue => issue.key), ['lengthContent'])
+      assert.deepEqual(f.job.result, [cleanArticle(first)], 'accepted progress is durable before another provider call')
+      assert.equal(f.job.seo_repair_status, 'applied')
+      assert.equal(input.tokenBudget?.reasoningTokens, 100)
+      return { article: second, ...metadata }
+    },
+  })
+  assert.equal(repairs, 2)
+  assertReady(f, second, 'applied')
+  assert.equal(f.job.seo_report.warnings.filter((row: Row) => row.repairable).length, 0)
+  assert.deepEqual(f.tables.ai_attempts.map(row => row.stage), ['outline', 'draft', 'seo_repair', 'seo_repair'])
+  assert.equal(new Set(f.tables.ai_attempts.map(row => row._id)).size, 4)
+  assert.ok(f.tables.ai_attempts.every(row => row.status === 'succeeded' && row.cost_usd !== null))
+})
+
+test('SEO repair stops after two improving passes even when an editable warning remains', async () => {
+  const draft = { ...seoArticle(2000), Title: 'Pha đồ uống lạnh tại nhà', Description: 'Hướng dẫn pha đồ uống lạnh.' }
+  const first = { ...draft, Title: seoArticle().Title }
+  const second = { ...first, Description: seoArticle().Description }
+  const f = fixture({ length: 1500 })
+  let repairs = 0
+  await f.run({
+    generate: async () => ({ article: draft, ...metadata }),
+    async repair(input) {
+      repairs += 1
+      assert.ok(repairs <= 2, 'the writer must not enter an open-ended SEO loop')
+      assert.deepEqual(input.draft, cleanArticle(repairs === 1 ? draft : first))
+      return { article: repairs === 1 ? first : second, ...metadata }
+    },
+  })
+  assert.equal(repairs, 2)
+  assertReady(f, second, 'applied')
+  assert.deepEqual(f.job.seo_report.warnings.filter((row: Row) => row.repairable).map((row: Row) => row.key), ['lengthContent'])
+  assert.equal(f.tables.ai_attempts.filter(row => row.stage === 'seo_repair').length, 2)
+})
+
+for (const outcome of ['unchanged', 'regressing', 'failed'] as const) {
+  test(`a second SEO pass that is ${outcome} keeps the accepted first revision`, async () => {
+    const draft = { ...seoArticle(2400), Title: 'Pha đồ uống lạnh tại nhà' }
+    const first = seoArticle(2000)
+    const f = fixture({ length: 1500 })
+    let repairs = 0
+    await f.run({
+      generate: async () => ({ article: draft, ...metadata }),
+      async repair(input) {
+        repairs += 1
+        if (repairs === 1) return { article: first, ...metadata }
+        assert.equal(repairs, 2)
+        assert.deepEqual(input.draft, cleanArticle(first))
+        if (outcome === 'failed') throw new WorkerError('AI_RESPONSE', 'Second repair unavailable', false, 0, metadata)
+        return { article: outcome === 'unchanged' ? input.draft : { ...seoArticle(1500), Title: 'Bị mất từ khóa' }, ...metadata }
+      },
+    })
+    assert.equal(repairs, 2)
+    assertReady(f, first, 'applied')
+    assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'keywordInTitle').passed, true)
+    assert.equal(f.tables.ai_attempts[3].status, outcome === 'failed' ? 'failed' : 'succeeded')
+  })
+}
+
+test('a follow-up repair exceeding provider capacity retains the accepted first revision', async () => {
+  const draft = { ...seoArticle(2400), Title: 'Pha đồ uống lạnh tại nhà' }
+  const first = seoArticle(2000)
+  const f = fixture({ length: 1500 })
+  let repairs = 0
+  await f.run({
+    generate: async () => ({ article: draft, ...metadata }),
+    async repair() {
+      repairs += 1
+      assert.equal(repairs, 1, 'capacity must be checked before calling the follow-up provider')
+      f.config.providerLimits.openai.tokensPerMinute = 1
+      return { article: first, ...metadata }
+    },
+  })
+  assert.equal(repairs, 1)
+  assertReady(f, first, 'applied')
+  assert.equal(f.tables.ai_attempts.filter(row => row.stage === 'seo_repair').length, 1)
+  assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'lengthContent').passed, false)
+})
+
+test('the shared writer repairs keyword placement, metadata and the requested article length', async () => {
   const article: Article = {
     Title: 'Cách pha bằng nước lạnh',
     Content: '<p>Trộn cà phê xay thô với nước sạch trong bình có nắp. Bắt đầu bằng mẻ nhỏ để dễ điều chỉnh độ đậm theo khẩu vị.</p>'
@@ -647,25 +749,57 @@ test('short useful copy and natural keyword use remain advisory without an autom
     Description: 'Hướng dẫn chuẩn bị, lọc và bảo quản đồ uống từ cà phê ngâm nước lạnh.',
     Keywords: ['cà phê'],
   }
-  const f = fixture()
+  const f = fixture({ length: 1500, mode: 'preview', status: 'queued' })
+  const revised = seoArticle(1500)
+  let repairs = 0
   await f.run({
     generate: async () => ({ article, ...metadata }),
-    async repair() { assert.fail('Advisory length and keyword heuristics must not spend another AI call') },
+    async repair(input) {
+      repairs += 1
+      assert.equal(input.length, 1500)
+      assert.deepEqual(f.job.result, [cleanArticle(article)], 'the useful draft is saved before SEO work')
+      const issues = new Set(input.issues.map(issue => issue.key))
+      for (const key of ['keywordInTitle', 'titleStartWithKeyword', 'lengthTitle', 'keywordInMetaDescription',
+        'lengthMetaDescription', 'keywordInPermalink', 'keywordIn10Percent', 'keywordInContent',
+        'lengthContent', 'keywordInSubheadings'] satisfies SeoCriterion[]) assert.ok(issues.has(key), key)
+      assert.equal(issues.has('keywordDensity'), false, 'density must not trigger keyword stuffing')
+      assert.equal(issues.has('linksHasInternal'), false, 'missing catalog links must not invite fabricated URLs')
+      return { article: revised, ...metadata }
+    },
   })
-  assertReady(f, article, 'not_needed')
-  assert.deepEqual(f.tables.ai_attempts.map(row => row.stage), ['outline', 'draft'])
-  const warnings = f.job.seo_report.warnings as Row[]
-  assert.ok(warnings.some(row => row.key === 'lengthTitle'))
-  assert.ok(warnings.some(row => row.key === 'lengthMetaDescription'))
-  assert.ok(warnings.some(row => row.key === 'lengthContent'))
-  assert.ok(warnings.some(row => row.key === 'keywordDensity'))
-  assert.ok(warnings.every(row => row.repairable === false))
-  assert.equal(f.job.seo_report.metrics.keywordOccurrences, 0)
+  assert.equal(repairs, 1)
+  assertReady(f, revised, 'applied')
+  assert.deepEqual(f.tables.ai_attempts.map(row => row.stage), ['outline', 'draft', 'seo_repair'])
+  assert.equal(f.job.seo_report.warnings.filter((row: Row) => row.repairable).length, 0)
+  assert.ok(f.job.seo_report.metrics.words >= 1275 && f.job.seo_report.metrics.words <= 1725)
+  assert.deepEqual(f.job.seo_report, evaluateSeo(cleanArticle(revised), { keyword, siteUrl: 'example.vn', targetWords: 1500 }))
+})
+
+test('a generally valid article is repaired when it misses the requested word budget', async () => {
+  const draft = seoArticle()
+  const revised = seoArticle(1500)
+  const f = fixture({ length: 1500 })
+  assert.equal(evaluateSeo(draft, { keyword }).findings.find(row => row.key === 'lengthContent')?.passed, true)
+  await f.run({
+    generate: async () => ({ article: draft, ...metadata }),
+    async repair(input) {
+      assert.deepEqual(input.issues.map(issue => issue.key), ['lengthContent'])
+      assert.match(input.issues[0].message, /1500/)
+      return { article: revised, ...metadata }
+    },
+  })
+  assertReady(f, revised, 'applied')
+  assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'lengthContent').passed, true)
 })
 
 test('SEO warnings remain editable and never turn a valid article into a failed job', async () => {
   const f = fixture()
-  await f.run({ generate: async () => ({ article: shortArticle, ...metadata }) })
+  let repairs = 0
+  await f.run({
+    generate: async () => ({ article: shortArticle, ...metadata }),
+    async repair(input) { repairs += 1; return { article: input.draft, ...metadata } },
+  })
+  assert.equal(repairs, 1, 'an unchanged patch must not spend another repair call')
   assertReady(f, shortArticle, 'kept_draft')
   assert.ok(f.job.seo_report.warnings.length > 0)
   assert.equal(f.tables.ai_attempts.length, 3)
@@ -673,13 +807,31 @@ test('SEO warnings remain editable and never turn a valid article into a failed 
 
 test('a repair error preserves the valid draft and records separate provider usage', async () => {
   const f = fixture()
+  let repairs = 0
   await f.run({
     generate: async () => ({ article: shortArticle, ...metadata }),
-    async repair() { throw new WorkerError('AI_RESPONSE', 'Lượt chỉnh lỗi', true, 0, metadata) },
+    async repair() { repairs += 1; throw new WorkerError('AI_RESPONSE', 'Lượt chỉnh lỗi', true, 0, metadata) },
   })
+  assert.equal(repairs, 1, 'a failed patch must not spend another repair call')
   assertReady(f, shortArticle, 'kept_draft')
   assert.equal(f.tables.ai_attempts[2].status, 'failed')
   assert.equal(f.tables.ai_attempts[2].cost_usd, '0.000195000000')
+})
+
+test('a metadata repair failure retains the full useful article with its SEO warnings', async () => {
+  const draft = { ...seoArticle(), Title: 'Cách chuẩn bị tại nhà', Description: 'Hướng dẫn pha đồ uống lạnh.' }
+  const f = fixture({ mode: 'preview', status: 'queued' })
+  await f.run({
+    generate: async () => ({ article: draft, ...metadata }),
+    async repair(input) {
+      assert.ok(input.issues.some(issue => issue.key === 'keywordInTitle'))
+      assert.ok(input.issues.some(issue => issue.key === 'lengthMetaDescription'))
+      throw new WorkerError('AI_RESPONSE', 'Metadata repair unavailable', false, 0, metadata)
+    },
+  })
+  assertReady(f, draft, 'kept_draft')
+  assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'lengthContent').passed, true)
+  assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'keywordInTitle').passed, false)
 })
 
 test('SEO repair timeout measures idle time between streamed chunks', { timeout: 2_000 }, async () => {
@@ -698,10 +850,82 @@ test('SEO repair timeout measures idle time between streamed chunks', { timeout:
   assert.equal(f.tables.ai_attempts[2].error_code, 'AI_SEO_REPAIR_TIMEOUT')
 })
 
+test('SEO repair still times out when the provider sends only SSE keepalives', { timeout: 3_000 }, async () => {
+  const f = fixture({}, { aiTimeoutMs: 5_000, seoRepairTimeoutMs: 60 })
+  const draft = articleWithLongParagraph()
+  let heartbeats = 0
+  let aborted = false
+  await f.run({
+    generate: async () => ({ article: draft, ...metadata }),
+    repair: input => repairArticle(input, async () => {
+      let timer: ReturnType<typeof setInterval>
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const ping = () => {
+            heartbeats += 1
+            controller.enqueue(new TextEncoder().encode(heartbeats % 2 ? ': ping\n\n' : 'data: {"type":"ping"}\n\n'))
+          }
+          ping()
+          ping()
+          timer = setInterval(ping, 5)
+          input.signal.addEventListener('abort', () => {
+            aborted = true
+            clearInterval(timer)
+            controller.error(input.signal.reason)
+          }, { once: true })
+        },
+        cancel() { clearInterval(timer) },
+      })
+      return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
+    }),
+  })
+  assert.ok(heartbeats >= 2)
+  assert.equal(aborted, true)
+  assertReady(f, draft, 'kept_draft')
+  assert.equal(f.tables.ai_attempts[2].error_code, 'AI_SEO_REPAIR_TIMEOUT')
+})
+
+test('meaningful provider reasoning keeps SEO repair active past its idle timeout', { timeout: 3_000 }, async () => {
+  const f = fixture({}, { aiTimeoutMs: 80, seoRepairTimeoutMs: 60 })
+  const draft = articleWithLongParagraph()
+  let reasoningChunks = 0
+  await f.run({
+    generate: async () => ({ article: draft, ...metadata }),
+    repair: input => repairArticle(input, async () => {
+      let timer: ReturnType<typeof setInterval>
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const send = (value: unknown) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`))
+          timer = setInterval(() => {
+            reasoningChunks += 1
+            send({ type: 'response.reasoning_summary_text.delta', delta: 'Checking paragraph structure. ' })
+            if (reasoningChunks < 10) return
+            clearInterval(timer)
+            send({ type: 'response.output_text.delta', delta: JSON.stringify({ Content: seoArticle().Content }) })
+            send({ type: 'response.completed', response: { status: 'completed' } })
+            controller.close()
+          }, 15)
+          input.signal.addEventListener('abort', () => {
+            clearInterval(timer)
+            controller.error(input.signal.reason)
+          }, { once: true })
+        },
+        cancel() { clearInterval(timer) },
+      })
+      return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
+    }),
+  })
+  assert.equal(reasoningChunks, 10)
+  assertReady(f, seoArticle(), 'applied')
+  assert.equal(f.tables.ai_attempts[2].status, 'succeeded')
+})
+
 test('usage settlement failure cannot lose an already valid article', async () => {
-  const f = fixture({}, {}, true)
+  const f = fixture({ length: 1500 }, {}, true)
   await f.run()
   assertReady(f, seoArticle(), 'kept_draft')
+  assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'lengthContent').passed, false)
+  assert.deepEqual(f.job.seo_report, evaluateSeo(cleanArticle(seoArticle()), { keyword, siteUrl: 'example.vn', targetWords: 1500 }))
 })
 
 test('an expired lease with a durable draft is recovered and queues exactly one ready delivery', async () => {
@@ -713,6 +937,19 @@ test('an expired lease with a durable draft is recovered and queues exactly one 
   assert.equal(f.tables.ai_attempts[0].status, 'abandoned')
   assert.equal(await f.run(deps), false)
   assert.equal(f.tables.webhook_deliveries.length, 1)
+})
+
+test('expired draft recovery checks the original requested word budget without calling AI', async () => {
+  const draft = seoArticle()
+  const f = fixture({ length: 1500, status: 'writing', result: [draft], lease_token: 'old-lease', lease_expires_at: new Date(0), attempt_count: 2 })
+  await f.run({
+    async outline() { assert.fail('Recovery must not outline again') },
+    async generate() { assert.fail('Recovery must not regenerate a durable article') },
+    async repair() { assert.fail('Recovery must not charge for another repair') },
+  })
+  assertReady(f, draft, 'kept_draft')
+  assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'lengthContent').passed, false)
+  assert.deepEqual(f.job.seo_report, evaluateSeo(cleanArticle(draft), { keyword, siteUrl: 'example.vn', targetWords: 1500 }))
 })
 
 test('an expired lease before any valid draft requeues and abandons the interrupted attempt', async () => {
@@ -876,7 +1113,7 @@ test('rewrite keeps instructions and uses the existing article as source for the
 
 test('an oversized outline is discarded before writing so it cannot exhaust the prompt budget', async () => {
   const f = fixture()
-  const input = { provider: 'openai' as const, key: 'test-key', model: 'test-model', keyword, tone: 'rõ ràng', style: 'hướng dẫn', length: 1500, instructions: null, source: null, siteDomain: 'example.vn', research: null }
+  const input = { provider: 'openai' as const, key: 'test-key', model: 'test-model', keyword, tone: 'rõ ràng', style: 'hướng dẫn', length: 600, instructions: null, source: null, siteDomain: 'example.vn', research: null }
   f.config.providerLimits.openai.tokensPerMinute = estimateGenerationTokens(input, 'article') + 10
   await f.run({
     async outline() {
@@ -940,7 +1177,7 @@ test('the report uses the requested main keyword instead of the related keyword 
   const f = fixture()
   const article = { ...seoArticle(), Keywords: ['pha chế', 'đồ uống'] }
   await f.run({ generate: async () => ({ article, ...metadata }) })
-  assert.deepEqual(f.job.seo_report, evaluateSeo(cleanArticle(article), { keyword, siteUrl: 'example.vn' }))
+  assert.deepEqual(f.job.seo_report, evaluateSeo(cleanArticle(article), { keyword, siteUrl: 'example.vn', targetWords: f.job.length }))
 })
 
 test('own-key attempts keep usage unpriced and do not read catalog pricing', async () => {
@@ -964,7 +1201,7 @@ test('writer uses current per-site catalog after outlining without an additional
   f.tables.site_content = [catalogPage('old', 'https://example.vn/old', 'Cà phê cold brew cũ')]
   const accepted = catalogPage('guide', 'https://example.vn/chon-hat', 'Chọn hạt cà phê cold brew')
   const article = { ...seoArticle(), Content: '<p>Tham khảo <a href="https://example.vn/chon-hat">cách chọn hạt cà phê</a>, '
-    + '<a href="https://example.vn/chon-hat">chọn hạt lần nữa</a> và <a href="https://example.vn/bia-link">dụng cụ pha</a>.</p><p>Chọn nguyên liệu phù hợp với khẩu vị.</p>' }
+    + '<a href="https://example.vn/chon-hat">chọn hạt lần nữa</a> và <a href="https://example.vn/bia-link">dụng cụ pha</a>.</p><p>Chọn nguyên liệu phù hợp với khẩu vị.</p>' + seoArticle().Content }
   await f.run({
     async outline(input) {
       assert.equal(input.internalLinks, undefined)
@@ -1058,7 +1295,7 @@ test('a synced empty, unrelated or unavailable catalog never permits invented li
         return original(name, ...args)
       }) as typeof f.db.db.collection
     }
-    await f.run({ generate: async () => ({ article: { ...seoArticle(), Content: '<p>Đọc <a href="https://example.vn/guessed">hướng dẫn pha cà phê</a>.</p><p>Chuẩn bị dụng cụ sạch.</p>' }, ...metadata }) })
+    await f.run({ generate: async () => ({ article: { ...seoArticle(), Content: '<p>Đọc <a href="https://example.vn/guessed">hướng dẫn pha cà phê</a>.</p><p>Chuẩn bị dụng cụ sạch.</p>' + seoArticle().Content }, ...metadata }) })
     assert.equal(f.job.status, 'ready', state)
     assert.equal(f.job.result[0].Content.includes('<a'), false, state)
     assert.equal(f.job.internal_link_report.status, state === 'unavailable' ? 'unavailable' : 'no_candidates')
@@ -1070,7 +1307,7 @@ test('optional catalog context is dropped instead of failing an otherwise afford
   const f = fixture()
   f.tables.sites[0].site_content_synced_at = new Date()
   f.tables.site_content = Array.from({ length: 8 }, (_, i) => catalogPage(`guide${i}`, `https://example.vn/guide${i}`, `Cà phê cold brew guide ${i}`, { summary: 'nguyên liệu '.repeat(100) }))
-  const input = { provider: 'openai' as const, key: 'test-key', model: 'test-model', keyword, tone: 'rõ ràng', style: 'hướng dẫn', length: 1500, instructions: null, source: null, research: null, siteDomain: 'example.vn', outline }
+  const input = { provider: 'openai' as const, key: 'test-key', model: 'test-model', keyword, tone: 'rõ ràng', style: 'hướng dẫn', length: 600, instructions: null, source: null, research: null, siteDomain: 'example.vn', outline }
   const baseline = estimateGenerationTokens({ ...input, internalLinks: [] }, 'article')
   await f.run({
     outline: async () => {

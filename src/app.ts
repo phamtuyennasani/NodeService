@@ -1,21 +1,30 @@
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import serveStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { registerApi } from './api/index.js';
 import type { Config } from './config.js';
 import type { Database } from './db.js';
+import { installRequestSecurity, securityOptions } from './request-security.js';
 
 export async function buildApp(db: Database, config: Config, logger = true) {
+  const security = securityOptions(config);
   const app = Fastify({
     logger: logger ? { redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]'] } : false,
+    // Flood rejections must not amplify into two access-log writes per request.
+    // Explicit authentication/security and application error logs remain enabled.
+    logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 1024 * 1024,
+    trustProxy: security.trustedProxies.length ? security.trustedProxies : false,
+    requestTimeout: security.requestTimeoutMs,
+    connectionTimeout: security.connectionTimeoutMs,
+    keepAliveTimeout: 5_000,
+    maxRequestsPerSocket: 100,
+    http: { maxHeaderSize: 16_384, headersTimeout: security.headersTimeoutMs, connectionsCheckingInterval: 1_000 },
   });
-
-  app.addHook('onRequest', async (_, reply) => {
-    reply.header('X-Content-Type-Options', 'nosniff');
-    reply.header('Referrer-Policy', 'same-origin');
-  });
+  app.server.maxHeadersCount = 64;
+  app.server.maxConnections = security.maxConnections;
+  installRequestSecurity(app, config);
 
   app.get('/health', async () => {
     await db.db.command({ ping: 1 });

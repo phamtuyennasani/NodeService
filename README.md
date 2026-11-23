@@ -23,6 +23,8 @@ npm start
 
 Khi phát triển, dùng `npm run dev:watch` để theo dõi mã nguồn, tự chạy lại build và khởi động lại dịch vụ sau mỗi thay đổi.
 
+Đăng nhập trên thiết bị mới yêu cầu OTP gửi tới email đã xác minh của tài khoản. Vào **Cài đặt → Email / SMTP** để cấu hình máy chủ, cổng, bảo mật, email gửi và thông tin đăng nhập SMTP; cổng 465 thường dùng TLS trực tiếp, cổng 587 dùng STARTTLS bắt buộc. Có thể dùng các biến `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM` và cặp `SMTP_USER`/`SMTP_PASSWORD` để khởi tạo khi chưa có cấu hình trong CRM. Không ghi OTP hoặc thông tin SMTP vào log. Khi tạo tài khoản bằng CLI, có thể cấp sẵn hộp thư do người vận hành đã xác minh qua `CRM_ADMIN_EMAIL`. Khi nâng cấp lên OTP, phiên đã gắn khóa trình duyệt và vẫn hợp lệ tiếp tục dùng được đến hạn thông thường: mở **Tài khoản** để xác minh email sau khi cấu hình SMTP, trước khi đăng xuất. Đăng nhập từ thiết bị chưa tin cậy không bỏ qua OTP khi thiếu email đã xác minh hoặc SMTP. Nếu không còn phiên hợp lệ, người vận hành cấp email bằng `npm run admin:email -- <username>` với `CRM_ADMIN_EMAIL` và mật khẩu hiện tại (nhập ẩn hoặc `CRM_ADMIN_PASSWORD`); lệnh này thu hồi toàn bộ phiên, thiết bị tin cậy và yêu cầu OTP cũ, không thay mật khẩu. Không đặt bí mật trực tiếp trong command line. Chi tiết xem [hướng dẫn bảo mật](docs/security.md).
+
 Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthropic, xAI hoặc **OpenAI Compatible** để thêm mã model, đặt tên hiển thị và bật các model muốn cung cấp. OpenAI, Anthropic và xAI dùng **Cấu hình key** để nhập API key. Với OpenAI Compatible, mở **Cấu hình kết nối**, nhập Base URL của API tương thích OpenAI và API key. Ở bản cài mới, GPT-4.1 được bật sẵn. Sau đó cấu hình **Khách hàng**, **Website** và **Bảng giá model**. Trong hồ sơ website, dùng **Cấp token** và **Cấp khóa ký** để lấy hai giá trị cho Laravel. Thêm model vào danh sách cho phép khi cấu hình gói dịch vụ. [CRM tại localhost:3210](http://localhost:3210/)
 
 Để dùng nhiều API tương thích OpenAI, mở tab dạng kết nối **OpenAI Compatible** trong **Nhà cung cấp AI**, rồi bấm **Thêm provider**. Các provider nằm trong danh sách bên trong tab này; chọn một provider để quản lý cấu hình và model của nó. Mỗi kết nối có tên, Base URL, API key mã hóa và danh sách model riêng; **Kiểm tra kết nối** và ping model dùng đúng kết nối đang chọn. Hai provider có thể dùng cùng mã model API: CRM lưu mã nội bộ riêng để cấp quyền khách hàng, lên lịch và tính giá chính xác, rồi gửi mã model API thực khi gọi upstream. Widget hiển thị thêm tên kết nối để phân biệt. Cấu hình OpenAI Compatible cũ được hiển thị là **Kết nối mặc định** nếu chưa đổi tên; các lịch/model đã có được giữ nguyên. Các giới hạn OpenAI Compatible trong **Cài đặt** áp dụng riêng cho từng kết nối, với cửa sổ đồng thời/phút độc lập.
@@ -39,9 +41,11 @@ Khi nâng cấp từ bản cũ, dừng các tiến trình NodeService bản cũ 
 
 Khi vận hành qua HTTPS, đặt `NODE_ENV=production` và `APP_ORIGIN` bằng URL HTTPS thực tế của CRM. `GET /health` kiểm tra kết nối MongoDB. Mở **Hệ thống → Cài đặt** để điều chỉnh số luồng viết/giao, thời gian chờ, số lần thử, nghiên cứu và giới hạn theo nhà cung cấp mà không cần sửa code hoặc khởi động lại. Các giá trị `.env` như `WORKER_CONCURRENCY`, `WEBHOOK_CONCURRENCY` và các biến `*_CONCURRENCY`, `*_REQUESTS_PER_MINUTE`, `*_TOKENS_PER_MINUTE` là mặc định khi chưa lưu cấu hình CRM. Giới hạn nhà cung cấp được phối hợp qua MongoDB; số luồng viết/giao tính trên mỗi tiến trình đang chạy.
 
+Xem [hướng dẫn bảo vệ CRM và triển khai reverse proxy](docs/security.md) trước khi mở dịch vụ ra Internet. Bản này bổ sung giới hạn lưu lượng/kết nối, chống dò mật khẩu dùng chung MongoDB, kiểm tra origin/CSRF và bảo vệ nội dung HTML. Phiên CRM yêu cầu cả cookie và chữ ký từ private key WebCrypto không cho xuất của trình duyệt; sao chép cookie đơn thuần không đủ truy cập. Thao tác nhạy cảm cần nhập lại mật khẩu cho từng lần thực hiện. Nâng cấp đồng bộ API/CRM và chạy migration; phiên cũ chưa gắn khóa phải đăng nhập lại, còn phiên đã gắn khóa hợp lệ có thể hoàn tất thiết lập email như hướng dẫn ở trên. Production cần HTTPS, WebCrypto và IndexedDB. Cơ chế này không bảo vệ tuyệt đối khi mã độc điều khiển chính trình duyệt. Giới hạn trong Node.js không thay thế CDN/WAF hoặc bảo vệ DDoS của hạ tầng.
+
 Khi thử với Laravel trên máy cục bộ, đặt `ALLOW_LOCAL_WEBHOOKS=true` để gửi webhook đến địa chỉ nội bộ.
 
-Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu khi được bật, lập dàn ý, viết bản nháp và kiểm tra SEO. Trường `use_research` cho phép chọn có dùng dữ liệu tìm kiếm web làm tư liệu hay không. Mặc định là `true` để giữ nguyên hành vi hiện có; đặt `false` để bỏ qua lượt tìm kiếm cho yêu cầu đó. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Với cảnh báo cấu trúc/khả năng đọc có thể sửa, hệ thống thử chỉnh tối đa một lần; chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Các ngưỡng ký tự, số từ, vị trí và mật độ từ khóa là gợi ý nội bộ, không tự kích hoạt lượt AI để tăng điểm. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
+Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu khi được bật, lập dàn ý, viết bản nháp và kiểm tra SEO. Trường `use_research` cho phép chọn có dùng dữ liệu tìm kiếm web làm tư liệu hay không. Mặc định là `true` để giữ nguyên hành vi hiện có; đặt `false` để bỏ qua lượt tìm kiếm cho yêu cầu đó. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Với cảnh báo tiêu đề, mô tả, slug, vị trí từ khóa, độ dài và khả năng đọc có thể sửa, hệ thống thử chỉnh tối đa hai lượt; chỉ tiếp tục lượt thứ hai nếu lượt đầu đã sửa được tiêu chí nhưng vẫn còn lỗi có thể sửa. Chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Độ dài dùng ngân sách yêu cầu ±15%, trong giới hạn 600–2.500 từ. Đây là checklist biên tập nội bộ; mật độ từ khóa và việc thiếu liên kết nội bộ không tự kích hoạt lượt AI để tăng điểm. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
 
 ### Nội dung tạo với hỗ trợ AI
 
@@ -64,6 +68,8 @@ CRM chỉ ghi nhận chi phí AI cho các bài dùng **key dịch vụ theo hạ
 ### Cài đặt vận hành và lưu trữ
 
 Cấu hình CRM được lưu trong collection `runtime_settings`, dùng chung cho các máy kết nối cùng database, kiểm tra lại tối đa mỗi 5 giây. Lưu cấu hình có kiểm tra phiên bản để tránh hai quản trị viên ghi đè thay đổi của nhau. Tác vụ đang chạy giữ cấu hình lúc nhận việc; giảm số luồng không hủy tác vụ đó. Số lần thử gồm lần đầu tiên và được xét khi kết thúc lần chạy hoặc phục hồi lease; một lần thử đã chờ trong hàng đợi vẫn có thể được xử lý sau khi giảm giới hạn. Nút **Điền mặc định** chỉ điền biểu mẫu từ cấu hình khởi động của máy API hiện tại, cần bấm **Lưu cài đặt** để áp dụng.
+
+Tab **Email / SMTP** có nút lưu riêng và **Kiểm tra kết nối** cho cấu hình đã lưu. Kiểm tra chỉ kết nối/TLS/xác thực SMTP, không gửi email và không xác nhận email sẽ vào hộp thư. Cấu hình lưu riêng tại `crm_mail_settings`, ưu tiên hơn biến môi trường, áp dụng ngay cho lượt gửi OTP tiếp theo. Mật khẩu được mã hóa bằng `ENCRYPTION_KEY` và không trả lại qua API; để trống giữ mật khẩu cũ khi máy chủ, cổng, chế độ bảo mật và tài khoản SMTP không đổi. Thay một trong các thông tin này cần nhập lại mật khẩu nếu có dùng xác thực. Để trống tài khoản SMTP sẽ bỏ thông tin đăng nhập, chỉ dùng cho máy chủ chuyển tiếp cho phép gửi không cần xác thực. Lưu và kiểm tra SMTP đều yêu cầu xác nhận mật khẩu tài khoản CRM. Sau khi lưu SMTP, mở **Tài khoản** để xác minh email nhận OTP.
 
 **Lưu trữ dữ liệu** mặc định tắt tự xóa (`0` ngày). Có thể đặt riêng thời gian lưu yêu cầu viết và lịch sử giao bài. Dọn dẹp chỉ chọn yêu cầu hoàn thành/thất bại/đã hủy, bỏ qua lượt giao đang chờ/đang gửi và bài nguồn còn được yêu cầu viết lại đang chờ/đang viết sử dụng. Xóa yêu cầu sẽ xóa nội dung bài, lịch sử AI, lượt giao và chi phí liên quan, ảnh hưởng báo cáo lịch sử; hạn mức đã tiêu thụ vẫn giữ nguyên. Chỉ xóa lịch sử giao không xóa bài viết. Bật hoặc rút ngắn thời gian lưu cần xác nhận trong giao diện.
 
@@ -164,6 +170,10 @@ Với `article.failed`, body chứa `{ "error": { "code": "...", "message": "...
 
 ## Gắn widget vào trang biên tập
 
+Widget là giao diện nhúng trên website khách hàng. Yêu cầu được gửi qua backend Laravel vào CRM và dùng cùng hàng đợi, hàm tạo job và worker với chức năng **Viết ngay** trong CRM: nghiên cứu (nếu bật), lập dàn ý, viết bản nháp và kiểm tra/chỉnh SEO. Widget không có prompt viết rút gọn hoặc một bộ máy viết riêng. Model, website, độ dài và các yêu cầu viết phải được giữ nguyên trên đường truyền; kết quả trả về là toàn bộ bài CRM đã lưu.
+
+Luồng tích hợp: **widget → backend Laravel → `POST /v1/article-jobs` → worker CRM → `/result` → backend Laravel → widget**. Xem [hướng dẫn tích hợp Laravel đầy đủ](docs/laravel-widget.md) để cấu hình quyền truy cập, chống tạo trùng và lấy nguyên nội dung bài viết.
+
 Chèn HTML sau các trường của form. Thay tên miền, selector và model cho phù hợp với website.
 
 ```html
@@ -212,9 +222,21 @@ Cài các route sau trên cùng origin với form Laravel và kiểm tra quyền
 - `POST /admin/ai/previews` nhận dữ liệu viết, cùng header `Idempotency-Key` và CSRF. Backend gắn mã yêu cầu với người dùng, thêm `mode: "preview"`, gắn key riêng khi cần, rồi dùng site token gọi Node.js. Lưu quyền tra cứu `job_id` theo người dùng và trả lại JSON có `job_id` và `status`.
 - `GET /admin/ai/previews/{job_id}` kiểm tra người dùng có quyền tra cứu công việc, rồi chuyển tiếp trạng thái. Khi `status` là `ready`, gọi endpoint `/result` và đính mảng đó vào thuộc tính `result` của JSON trả cho widget. Với job lỗi, chuyển tiếp trường `error_message`.
 
-Cả site token, API key và khóa webhook được dùng từ backend Laravel.
+Giữ nguyên mảng `/result`, đặc biệt toàn bộ HTML trong `Content`; không dùng mô tả/tóm tắt thay nội dung, không cắt bài theo độ dài vùng xem trước và không trả bài mẫu khi CRM chưa hoàn tất. Widget chỉ làm sạch HTML được phép để hiển thị/điền form. Site token, key dịch vụ và khóa webhook chỉ ở backend; cấu hình key cá nhân theo `keyMode: 'own'` là luồng tùy chọn riêng đã nêu ở trên.
 
 Để trang biên tập Laravel chấm cùng tiêu chí với CRM, xem [hướng dẫn đồng bộ bộ chấm SEO](docs/laravel-seo.md).
+
+### Xem widget cục bộ với dữ liệu CRM thật
+
+Chạy CRM/API và worker bằng `npm start` (hoặc các tiến trình riêng như phần đầu), rồi mở terminal khác trong cùng dự án:
+
+```sh
+npm run dev:widget
+```
+
+Trang xem thử chạy tại `http://127.0.0.1:3220`, dùng `.env` hiện có và website/khách hàng trong MongoDB. Có thể chọn website bằng `WIDGET_SITE_ID=<website_id> npm run dev:widget`. Đây là luồng viết thật, tạo job trong CRM, gọi nhà cung cấp AI và dùng hạn mức thực của khách hàng; không trả bài mẫu. Server xem thử chỉ dành cho phát triển cục bộ, không thay các route Laravel khi triển khai cho khách hàng.
+
+Các worker dùng cùng MongoDB database sẽ cùng lấy việc từ một hàng đợi. Khi thử bản build local cạnh môi trường khác, dùng `MONGODB_DATABASE` riêng cho cả CRM/worker và widget preview để tránh worker cũ nhận bài. Nếu chủ ý chạy chung database, mọi worker cần cùng phiên bản và `ENCRYPTION_KEY`; chỉ khởi động lại API không cập nhật các worker bên ngoài.
 
 ## Kiểm thử
 

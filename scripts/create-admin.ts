@@ -4,11 +4,14 @@ import { assertTransactionSupport, close, collection, connect } from '../src/db.
 import { randomUUID } from 'node:crypto';
 import { hashPassword } from '../src/security.js';
 import { migrate } from '../src/migrate.js';
+import { z } from 'zod';
 
 const username = process.argv[2]?.trim().toLowerCase();
 if (!username || !/^[\w.@-]{3,100}$/.test(username)) {
   throw new Error('Usage: npm run admin -- <username>');
 }
+const email = process.env.CRM_ADMIN_EMAIL?.trim().toLowerCase();
+if (email && !z.email().max(254).safeParse(email).success) throw new Error('CRM_ADMIN_EMAIL must be a valid email address');
 
 let password = process.env.CRM_ADMIN_PASSWORD;
 if (!password) {
@@ -32,11 +35,14 @@ try {
   await migrate(db);
   const result = await collection(db, 'users').updateOne(
     { username },
-    { $setOnInsert: { _id: randomUUID(), username, password_hash: await hashPassword(password), created_at: new Date() } },
+    { $setOnInsert: { _id: randomUUID(), username, password_hash: await hashPassword(password), created_at: new Date(),
+      ...(email ? { email, email_verified_at: new Date(), email_revision: 1 } : {}),
+    } },
     { upsert: true },
   );
   if (!result.upsertedCount) throw new Error('That CRM user already exists');
   console.log(`CRM user created: ${username}`);
+  if (!email) console.log('No login email provisioned. Set a verified account email before enabling email OTP sign-in.');
 } finally {
   await close(db);
 }

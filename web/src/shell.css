@@ -241,6 +241,11 @@
 .crm-login-form .ant-input-affix-wrapper { min-height: 46px; }
 .crm-login-form .ant-input-prefix { color: #6c7569; margin-inline-end: 10px; }
 .crm-login-form .ant-btn { justify-content: space-between; margin-top: 4px; min-height: 47px; padding-inline: 17px; font-weight: 600; }
+.crm-login-help { margin: -7px 0 20px; font-size: 12px; color: #657061; line-height: 1.6; }
+.crm-login-form .ant-form-item-extra { padding-top: 6px; font-size: 12px; line-height: 1.6; }
+.crm-login-form .ant-checkbox-wrapper { font-size: 13px; line-height: 1.6; }
+.crm-login-form .crm-login-secondary { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin-top: 10px; }
+.crm-login-form .crm-login-secondary .ant-btn { min-height: 36px; font-size: 12px; padding-inline: 0; }
 
 @media (max-width: 1100px) {
   .crm-workspace { --nav-width: 202px; --shell-inset: 22px; }

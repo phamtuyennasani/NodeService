@@ -203,7 +203,7 @@ async function recoverExpired(db: Database, config: Config, job: Job, deps: Writ
         removed: (job.internal_link_report?.removed ?? 0) + checked.removed, checked_at: new Date().toISOString(),
       }
     }
-    const report = evaluateSeo(article, { keyword: job.keyword, siteUrl: site?.domain })
+    const report = evaluateSeo(article, { keyword: job.keyword, siteUrl: site?.domain, targetWords: job.length })
     await transition(db, config, job, article, null, report,
       job.seo_repair_status ?? (repairable(report).length ? 'kept_draft' : 'not_needed'), true, linkReport)
   } else {
@@ -516,19 +516,22 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
         const result = await (deps.generate ?? generateArticle)({ ...input, signal, onChunk, beforeCompatibilityRetry })
         signal.throwIfAborted()
         draft = await checkLinks(cleanArticle(result.article))
-        report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain })
+        report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
         // Save before usage settlement as well: an accounting outage must not lose the article.
         await checkpoint(db, claim, 'seo_check', { result: [draft], seo_report: report, internal_link_report: linkReport })
         return { ...result, article: draft }
       })
     draft = written.article
     observeUsage(written)
-    report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain })
-    const issues = repairable(report)
+    report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
     repairStatus = 'not_needed'
-    if (issues.length) {
+    // A second pass is useful only after the first patch made measurable progress.
+    // Keep this bounded: unchanged, regressing or failed patches never trigger retries.
+    for (let pass = 0; pass < 2; pass += 1) {
+      const issues = repairable(report)
+      if (!issues.length) break
       const repairInput: Omit<RepairInput, 'signal' | 'onChunk'> = { ...input, draft, issues }
-      repairStatus = 'kept_draft'
+      if (repairStatus !== 'applied') repairStatus = 'kept_draft'
       try {
         const revised = await callAi(db, config, claim, 'seo_repair', estimateGenerationTokens(repairInput, 'repair'),
           config.seoRepairTimeoutMs ?? Math.min(90_000, config.aiTimeoutMs),
@@ -536,20 +539,22 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
             const result = await (deps.repair ?? repairArticle)({ ...repairInput, signal, onChunk, beforeCompatibilityRetry })
             return { ...result, article: await checkLinks(cleanArticle(result.article)) }
           })
-        const revisedReport = evaluateSeo(revised.article, { keyword: job.keyword, siteUrl: siteDomain })
-        if (improvesSeo(report, revisedReport)) {
-          draft = revised.article
-          report = revisedReport
-          repairStatus = 'applied'
-        }
+        observeUsage(revised)
+        const revisedReport = evaluateSeo(revised.article, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
+        if (!improvesSeo(report, revisedReport)) break
+        draft = revised.article
+        report = revisedReport
+        repairStatus = 'applied'
+        await checkpoint(db, claim, 'seo_check', { result: [draft], seo_report: report, internal_link_report: linkReport, seo_repair_status: repairStatus })
       } catch (failure) {
         const error = failureOf(failure)
         if (error.code === 'AI_LEASE_LOST') throw error
-        if (error.code === 'AI_TOKEN_CAPACITY') repairStatus = 'skipped'
+        if (error.code === 'AI_TOKEN_CAPACITY' && repairStatus !== 'applied') repairStatus = 'skipped'
+        break
       }
     }
     draft = await checkLinks(draft)
-    report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain })
+    report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
     await transition(db, config, job, draft, null, report, repairStatus, false, linkReport)
   } catch (failure) {
     if (failure instanceof ProviderCapacityPending) {
@@ -569,7 +574,7 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
     if (error.code === 'AI_LEASE_LOST') return
     // A valid draft remains deliverable even if optional processing is interrupted.
     await transition(db, config, job, draft, draft ? null : error,
-      draft ? report ?? evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain }) : null,
+      draft ? report ?? evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length }) : null,
       draft ? repairStatus ?? 'kept_draft' : null, false, linkReport)
   }
 }

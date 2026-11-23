@@ -43,13 +43,19 @@ async function mockCalendar(browser: Browser, bundle: string) {
   page.setDefaultTimeout(10000);
   await page.clock.install({ time: new Date('2026-11-22T04:00:00Z') });
   await page.addInitScript({ content: `
-    class TestEventSource extends EventTarget {
-      static instances = [];
-      constructor(url) { super(); this.url = url; this.readyState = 1; TestEventSource.instances.push(this); }
-      close() { this.readyState = 2; }
-    }
-    Object.defineProperty(window, 'EventSource', { configurable: true, value: TestEventSource });
-    Object.defineProperty(window, '__crmEventSources', { configurable: true, value: TestEventSource.instances });
+    const originalFetch = window.fetch.bind(window);
+    let stream;
+    const encoder = new TextEncoder();
+    window.__emitCrmEvent = (type) => stream?.enqueue(encoder.encode('event: ' + type + '\\ndata: ' + JSON.stringify({ job_id: 'calendar-job' }) + '\\n\\n'));
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+      if (url.pathname !== '/api/crm/jobs/events') return originalFetch(input, init);
+      const signal = init.signal;
+      const body = new ReadableStream({ start(controller) { stream = controller; }, cancel() { stream = undefined; } });
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      signal?.addEventListener('abort', () => { stream?.error(new DOMException('Aborted', 'AbortError')); stream = undefined; }, { once: true });
+      return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+    };
   ` });
   const calendarRequests: URL[] = [];
   const unexpected: string[] = [];
@@ -64,6 +70,7 @@ async function mockCalendar(browser: Browser, bundle: string) {
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/crm-test.js"></script></body></html>' });
     if (url.pathname === '/crm-test.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
+    if (url.pathname === '/api/crm/session/bootstrap') return route.fulfill({ json: { browser_binding: 'b'.repeat(43), server_time: Date.now() } });
     if (url.pathname === '/api/crm/customers') return route.fulfill({ json: { data: [{ id: 'customer-test', name: 'Khách kiểm thử' }] } });
     if (url.pathname === '/api/crm/websites') return route.fulfill({ json: { data: [{ id: 'website-test', name: 'Website kiểm thử', customer_id: 'customer-test' }] } });
     if (url.pathname === '/api/crm/dashboard') return route.fulfill({ json: report });
@@ -92,8 +99,7 @@ async function mockCalendar(browser: Browser, bundle: string) {
     fail: () => { failed = true; }, recover: () => { failed = false; },
     setWrittenCount: (value: number) => { writtenCount = value; },
     emitJobEvent: async (type: string) => page.evaluate(eventType => {
-      const source = (window as typeof window & { __crmEventSources: EventTarget[] }).__crmEventSources[0];
-      source.dispatchEvent(new MessageEvent(eventType, { data: JSON.stringify({ job_id: 'calendar-job' }) }));
+      (window as any).__emitCrmEvent(eventType);
     }, type),
     holdNext: () => {
       let entered!: () => void, release!: () => void;
@@ -124,9 +130,11 @@ test('CRM calendar opens from overview and presents scoped monthly and hourly ar
         import {createRoot} from 'react-dom/client';
         import {App, ConfigProvider} from 'antd';
         import {Dashboard} from './web/src/Dashboard';
+        import {prepareBrowserLogin} from './web/src/browser-proof';
+        prepareBrowserLogin().then(() => {
         createRoot(document.getElementById('root')!).render(
           <ConfigProvider theme={{token:{motion:false}}}><App><Dashboard query={new URLSearchParams(window.location.hash.startsWith('#overview?') ? window.location.hash.split('?')[1] : window.location.search)} /></App></ConfigProvider>
-        );`,
+        ); });`,
       resolveDir: process.cwd(), loader: 'tsx',
     },
     bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty' },

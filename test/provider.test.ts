@@ -32,12 +32,19 @@ function assertPeopleFirstSeoGuidance(value: unknown) {
   assert.match(prompt, /không viết chỉ để đạt điểm SEO hoặc thu hút lượt tìm kiếm/)
   assert.match(prompt, /Title mô tả trung thực nội dung/)
   assert.match(prompt, /không giật tít/)
-  assert.match(prompt, /không kéo dài hoặc cắt ý chỉ để đạt một số ký tự cố định/)
+  assert.match(prompt, /Title dài 41–70 ký tự, Description dài 155–160 ký tự/)
+  assert.match(prompt, /không cắt giữa câu hoặc thêm lời hứa thiếu căn cứ/)
+  assert.match(prompt, /Ngân sách TOÀN BỘ Content/)
+  assert.match(prompt, /bao gồm mở bài, đề mục, bảng, danh sách và kết luận/)
+  assert.match(prompt, /không nhân ngân sách cho từng H3/)
   assert.match(prompt, /Không thêm câu cho đủ số từ/)
+  assert.match(prompt, /Dùng nguyên cụm từ khóa chính một lần trong Title/)
+  assert.match(prompt, /trong đoạn mở thuộc 10% đầu Content/)
+  assert.match(prompt, /trong ít nhất một h2 hoặc h3/)
   assert.match(prompt, /không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
+  assert.match(prompt, /không tự tạo liên kết để lấy điểm/)
   assert.match(prompt, /không phải yêu cầu của Google, kiểm chứng chất lượng hay bảo đảm thứ hạng/)
   assert.match(prompt, /người biên tập kiểm tra tính chính xác trước khi xuất bản/)
-  assert.doesNotMatch(prompt, /155\s*[–-]\s*160/)
 }
 
 test('cleanArticle normalizes legacy article field names for reading and rewriting', () => {
@@ -126,6 +133,64 @@ const streamArticle = JSON.stringify({
   Desc: 'Mô tả ngắn.',
   Description: 'Mô tả SEO.',
   Keywords: ['stream'],
+})
+
+test('stream activity ignores keepalives and metadata while counting generated text, reasoning and advancing usage', async () => {
+  const cases = [
+    {
+      provider: 'openai-compatible',
+      metadata: { id: 'test-id', model: 'test-model', choices: [{ delta: { role: 'assistant', content: '' } }] },
+      reasoning: { choices: [{ delta: { reasoning_content: 'Planning the answer' } }] },
+      progress: { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, completion_tokens_details: { reasoning_tokens: 1 } } },
+      content: { choices: [{ delta: { content: streamArticle } }] },
+      end: '[DONE]',
+    },
+    {
+      provider: 'openai',
+      metadata: { type: 'response.created', response: { id: 'test-id', model: 'test-model' } },
+      reasoning: { type: 'response.reasoning_summary_text.delta', delta: 'Planning the answer' },
+      progress: { type: 'response.in_progress', usage: { input_tokens: 10, output_tokens: 2, output_tokens_details: { reasoning_tokens: 1 } } },
+      content: { type: 'response.output_text.delta', delta: streamArticle },
+      end: { type: 'response.completed', response: { status: 'completed' } },
+    },
+    {
+      provider: 'anthropic',
+      metadata: { type: 'message_start', message: { id: 'test-id', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } },
+      reasoning: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Planning the answer' } },
+      progress: { type: 'message_delta', delta: {}, usage: { output_tokens: 2 } },
+      content: { type: 'content_block_delta', delta: { type: 'text_delta', text: streamArticle } },
+      end: { type: 'message_stop' },
+    },
+  ] as const
+  for (const entry of cases) {
+    let activity = 0
+    const request = { ...input(entry.provider), onChunk: () => { activity += 1 } }
+    const frame = (value: unknown) => `data: ${typeof value === 'string' ? value : JSON.stringify(value)}\n\n`
+    const body = ': ping\n\nevent: ping\n\n' + [
+      { type: 'ping' }, entry.metadata, entry.reasoning, entry.progress, entry.progress,
+      { choices: [{ delta: {} }], type: 'content_block_delta', delta: { type: 'signature_delta', signature: 'signature-only' } },
+      entry.content, entry.end,
+    ].map(frame).join('')
+    const result = await generateArticle(request, async () => new Response(body, { headers: { 'content-type': 'text/event-stream' } }))
+    assert.deepEqual(result.article, JSON.parse(streamArticle))
+    assert.equal(activity, 3, entry.provider)
+  }
+})
+
+test('a plain JSON compatibility response retains incremental stream activity', async () => {
+  let activity = 0
+  const request = { ...input('openai-compatible'), onChunk: () => { activity += 1 } }
+  const raw = JSON.stringify({ choices: [{ message: { content: streamArticle } }] })
+  const split = Math.floor(raw.length / 2)
+  const result = await generateArticle(request, async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(raw.slice(0, split)))
+      controller.enqueue(new TextEncoder().encode(raw.slice(split)))
+      controller.close()
+    },
+  }), { headers: { 'content-type': 'application/json' } }))
+  assert.equal(activity, 2)
+  assert.deepEqual(result.article, JSON.parse(streamArticle))
 })
 
 test('OpenAI Compatible retries once when the endpoint declines stream usage', async () => {
@@ -576,6 +641,85 @@ test('metadata repair bounds factual context without transferring HTML or unrela
   assert.doesNotMatch(JSON.stringify(prompt), /<p|style=|PRIVATE_CONTEXT_TAIL|PRIVATE_RESEARCH_CLAIM/)
   const actualEstimate = request.max_tokens + 256 + Math.ceil((Buffer.byteLength(request.messages[0].content) + Buffer.byteLength(request.messages[1].content)) / 2)
   assert.equal(estimateGenerationTokens(repairInput, 'repair'), actualEstimate)
+})
+
+test('SEO repair receives measured draft length, requested word budget and criteria to preserve', async () => {
+  const Content = '<h2>Thử nghiệm</h2>' + '<p>'.concat('từ '.repeat(100).trim(), '</p>').repeat(20)
+  const draft = {
+    ...JSON.parse(streamArticle),
+    Title: 'Thử nghiệm: hướng dẫn kiểm tra nội dung bài viết',
+    Description: 'Thử nghiệm ' + 'à'.repeat(145),
+    Slug: 'thu-nghiem',
+    Content,
+  }
+  const repairInput: RepairInput = {
+    ...input('openai-compatible'), length: 1_500, draft,
+    issues: [{ key: 'lengthContent', message: 'Rút phần lặp để bám ngân sách đã yêu cầu.' }],
+  }
+  let request: Record<string, any> = {}
+  await repairArticle(repairInput, async (_url, init) => {
+    request = JSON.parse(String(init?.body))
+    return compatibleStream({ Content })
+  })
+  const prompt = JSON.parse(request.messages[1].content)
+  const inspection = prompt.kiểm_tra_hiện_tại
+  assert.equal(inspection.metrics.words, 2_002)
+  assert.deepEqual(inspection.ngân_sách_từ, { min: 1_275, max: 1_725 })
+  assert.deepEqual(inspection.kế_hoạch_độ_dài, {
+    currentWords: 2_002,
+    targetWords: 1_500,
+    acceptedRange: { min: 1_275, max: 1_725 },
+    action: 'shorten',
+    minimumChangeWords: 277,
+    approximateChangePercent: 14,
+    recommendedChangeWords: 502,
+    recommendedChangePercent: 26,
+  })
+  assert.ok(inspection.tiêu_chí_đã_đạt.includes('keywordInTitle'))
+  assert.ok(inspection.tiêu_chí_đã_đạt.includes('lengthTitle'))
+  assert.ok(inspection.tiêu_chí_đã_đạt.includes('keywordInMetaDescription'))
+  assert.ok(inspection.tiêu_chí_đã_đạt.includes('lengthMetaDescription'))
+  assert.equal(inspection.tiêu_chí_đã_đạt.includes('lengthContent'), false)
+  assert.deepEqual(inspection.điều_kiện_cần_giữ.map((condition: { key: string }) => condition.key), inspection.tiêu_chí_đã_đạt)
+  assert.ok(inspection.điều_kiện_cần_giữ.every((condition: { message: unknown }) => typeof condition.message === 'string' && condition.message.length > 0))
+  assert.match(inspection.điều_kiện_cần_giữ.find((condition: { key: string }) => condition.key === 'keywordInSubheadings').message, /h2|h3/)
+  assert.deepEqual(prompt.trường_được_phép_sửa, ['Content'])
+  assert.deepEqual(prompt.cảnh_báo, repairInput.issues)
+  assert.match(request.messages[0].content, /tiêu chí đã đạt/iu)
+  assert.match(request.messages[0].content, /1275–1725 từ/)
+  assert.match(request.messages[0].content, /không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
+  assert.match(request.messages[0].content, /Giữ nguyên cụm từ khóa trong đoạn mở và trong ít nhất một h2\/h3 đã có/)
+  assert.match(request.messages[0].content, /mỗi đoạn p sau chỉnh sửa vẫn tối đa 90 từ/)
+  assert.match(request.messages[0].content, /không chỉ xóa phần cuối/)
+})
+
+test('SEO length plan expands a short draft and is absent when content is outside the repair scope', async () => {
+  const draft = { ...JSON.parse(streamArticle), Content: '<p>' + 'từ '.repeat(1_000).trim() + '</p>' }
+  const repairInput: RepairInput = {
+    ...input('openai-compatible'), length: 1_500, draft,
+    issues: [{ key: 'lengthContent', message: 'Bổ sung giải thích hữu ích còn thiếu.' }],
+  }
+  let prompt: Record<string, any> = {}
+  const capture = (patch: object) => async (_url: unknown, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body))
+    prompt = JSON.parse(request.messages[1].content)
+    return compatibleStream(patch)
+  }
+  await repairArticle(repairInput, capture({ Content: draft.Content }))
+  assert.deepEqual(prompt.kiểm_tra_hiện_tại.kế_hoạch_độ_dài, {
+    currentWords: 1_000,
+    targetWords: 1_500,
+    acceptedRange: { min: 1_275, max: 1_725 },
+    action: 'expand',
+    minimumChangeWords: 275,
+    approximateChangePercent: 28,
+    recommendedChangeWords: 500,
+    recommendedChangePercent: 50,
+  })
+  await repairArticle({ ...repairInput, issues: [{ key: 'lengthTitle', message: 'Chỉnh tiêu đề.' }] }, capture({ Title: draft.Title }))
+  assert.deepEqual(prompt.trường_được_phép_sửa, ['Title'])
+  assert.equal(prompt.kiểm_tra_hiện_tại.kế_hoạch_độ_dài, undefined)
+  assert.equal(prompt.bản_nháp.Content, undefined)
 })
 
 test('content repair preserves safe inline formatting and existing URLs', async () => {

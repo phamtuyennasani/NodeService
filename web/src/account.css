@@ -1,0 +1,27 @@
+.account-page { max-width: 1050px; }
+.account-sections { display: grid; gap: 18px; }
+.account-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.account-description { margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.account-page .ant-form-item-extra { padding-top: 5px; font-size: 12px; }
+.account-page .ant-form-item { margin-bottom: 18px; }
+.account-mail-warning { margin-bottom: 18px; }
+.account-otp-fields { margin-top: 20px; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.account-security-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.account-security-row h3 { margin: 0 0 6px; font-size: 14px; }
+.account-security-row .account-description { margin-bottom: 0; }
+.account-session-note { padding-top: 20px; margin-top: 20px; border-top: 1px solid var(--line); font-size: 13px; }
+.account-session-note .account-description { margin: 6px 0 0; }
+.account-devices { list-style: none; padding: 0; margin: 0; }
+.account-devices li { display: flex; align-items: flex-start; gap: 14px; padding: 18px 0; border-top: 1px solid var(--line); }
+.account-device-icon { margin-top: 3px; font-size: 21px; color: var(--muted); }
+.account-device-detail { display: grid; gap: 5px; flex: 1; min-width: 0; font-size: 13px; }
+.account-device-detail strong { overflow-wrap: anywhere; line-height: 1.5; }
+.account-device-detail > span { color: var(--muted); font-size: 12px; }
+@media (max-width: 600px) {
+  .account-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .account-page .panel { padding: 17px; }
+  .account-security-row { flex-direction: column; gap: 13px; }
+  .account-devices li { gap: 9px; }
+  .account-device-detail .ant-tag { display: block; width: max-content; margin-top: 4px; }
+}

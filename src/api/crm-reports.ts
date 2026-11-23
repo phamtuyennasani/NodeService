@@ -12,6 +12,8 @@ import { pageOf, readCursor } from './public.js'
 import { cleanArticle, normalizeArticleFields } from '../worker/provider.js'
 import { DatabaseJobEvents, jobEvents } from '../job-events.js'
 import { excludedContentIdsSchema } from '../site-content.js'
+import { digest } from '../security.js'
+import { crmSessionCookieName } from './crm-session.js'
 
 const keys = z.object({ customer_id: idSchema.optional(), website_id: idSchema.optional() })
 const listSchema = keys.extend({ from: periodSchema.optional(), to: periodSchema.optional(), limit: z.coerce.number().int().min(1).max(250).default(100), cursor: z.string().max(512).optional(), q: z.string().trim().max(160).optional() })
@@ -190,6 +192,7 @@ function runtimeJob(row: any) {
 export function registerReports(app: FastifyInstance, db: Database, config: Config, getRuntimeConfig: () => Promise<Config> = async () => config) {
   const liveJobs = new DatabaseJobEvents(db, error => app.log.warn({ err: error }, 'CRM job event stream reconnecting'))
   const closeStreams = new Set<() => void>()
+  const streamsBySession = new Map<string, number>()
   app.addHook('onReady', async () => { liveJobs.start() })
   app.addHook('preClose', async () => {
     for (const close of closeStreams) close()
@@ -197,12 +200,24 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
   })
   app.get('/jobs/events', async (request, reply) => {
     const query = z.object({ job_id: idSchema.optional() }).parse(request.query)
+    const token = request.cookies?.[crmSessionCookieName(config)]
+    const sessionId = token ? digest(token) : `ip:${request.ip}`
+    if (closeStreams.size >= 128 || (streamsBySession.get(sessionId) ?? 0) >= 4) {
+      reply.header('Retry-After', '30')
+      throw new ApiError(429, 'stream_limit', 'Đang mở quá nhiều kết nối cập nhật. Hãy đóng bớt tab và thử lại.')
+    }
+    streamsBySession.set(sessionId, (streamsBySession.get(sessionId) ?? 0) + 1)
     const response = reply.raw
     reply.hijack()
+    for (const [name, value] of Object.entries(reply.getHeaders())) {
+      if (value !== undefined) response.setHeader(name, value)
+    }
     response.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Connection': 'keep-alive',
+      'X-Content-Type-Options': 'nosniff',
+      'Cross-Origin-Resource-Policy': 'same-origin',
       'X-Accel-Buffering': 'no',
     })
     response.write(`event: ready\ndata: ${JSON.stringify({ type: 'ready' })}\n\n`)
@@ -213,15 +228,40 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       if (!response.write(`event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`)) response.destroy()
     }
     const unsubscribe = liveJobs.subscribe(send, query.job_id)
-    const heartbeat = setInterval(() => {
+    let checkingSession = false
+    const heartbeat = setInterval(async () => {
       if (response.destroyed || response.writableEnded) return
-      response.write(': heartbeat\n\n')
+      if (checkingSession) return
+      checkingSession = true
+      try {
+        // Revoke an already-open stream after logout/password change rather
+        // than trusting the cookie only at connection establishment.
+        if (token) {
+          const session = await collection(db, 'sessions').findOne({ _id: sessionId, expires_at: { $gt: new Date() } }, { projection: { user_id: 1, credential_version: 1 }, maxTimeMS: 5_000 })
+          if (!session) return close()
+          const user = await collection(db, 'users').findOne({ _id: session.user_id }, { projection: { _id: 1, password_hash: 1 }, maxTimeMS: 5_000 })
+          if (!user || (session.credential_version && (!user.password_hash || session.credential_version !== digest(user.password_hash)))) return close()
+        }
+        if (!response.destroyed && !response.writableEnded && !response.write(': heartbeat\n\n')) response.destroy()
+      } catch { close() }
+      finally { checkingSession = false }
     }, 25_000)
     heartbeat.unref?.()
+    // EventSource reconnects with a fresh session check; also bounds lifetimes
+    // when a client stays connected without generating any job events.
+    const lifetime = setTimeout(() => close(), 5 * 60_000)
+    lifetime.unref?.()
+    let cleaned = false
     const cleanup = () => {
+      if (cleaned) return
+      cleaned = true
       clearInterval(heartbeat)
+      clearTimeout(lifetime)
       unsubscribe()
       closeStreams.delete(close)
+      const remaining = (streamsBySession.get(sessionId) ?? 1) - 1
+      if (remaining > 0) streamsBySession.set(sessionId, remaining)
+      else streamsBySession.delete(sessionId)
     }
     const close = () => { cleanup(); response.end() }
     closeStreams.add(close)

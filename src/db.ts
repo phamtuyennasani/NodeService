@@ -13,7 +13,13 @@ export interface TransactionContext {
 export type MongoSource = Database | TransactionContext
 
 export function connect(uri: string, databaseName = 'node_service', maxPoolSize = 20): Database {
-  const client = new MongoClient(uri, { maxPoolSize })
+  // Bound connection and pool waits so request floods or an unavailable database
+  // cannot leave an unbounded queue of pending HTTP handlers in memory.
+  const client = new MongoClient(uri, {
+    maxPoolSize, maxConnecting: 2, waitQueueTimeoutMS: 5_000,
+    serverSelectionTimeoutMS: 10_000, connectTimeoutMS: 10_000,
+    socketTimeoutMS: 45_000, maxIdleTimeMS: 60_000,
+  })
   return { client, db: client.db(databaseName) }
 }
 

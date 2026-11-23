@@ -1,5 +1,6 @@
 import createDOMPurify from 'dompurify';
 import { sanitizeArticleStyle } from '../src/article-styles';
+import type { SeoReport } from '../src/worker/seo';
 import styles from './styles.css';
 
 const articlePurifier = createDOMPurify(window);
@@ -30,15 +31,18 @@ interface Config {
   api_key?: string;
   apiKey?: string;
   model?: string;
-  fields: Partial<Record<Field | LegacyField, Target>>;
+  fields: Partial<Record<Field | LegacyField | 'FocusKeyword', Target>>;
   models?: { value: string; label: string }[];
-  defaults?: { model?: string; tone?: string; style?: string; length?: number; use_research?: boolean };
+  defaults?: { model?: string; tone?: string; style?: string; length?: number; use_research?: boolean; instructions?: string };
 }
 
 interface Preview {
   job_id: string;
   status: string;
   result?: unknown;
+  keyword?: string;
+  seo_report?: SeoReport | null;
+  seo_repair_status?: 'not_needed' | 'applied' | 'kept_draft' | 'skipped' | null;
   error_message?: string;
 }
 
@@ -70,23 +74,23 @@ function articleFrom(value: unknown): Article {
   }
   const article = record as Article;
   const content = articlePurifier.sanitize(article.Content, {
-    ALLOWED_TAGS: ['p', 'br', 'h2', 'h3', 'h4', 'strong', 'b', 'em', 'i', 'a', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'td', 'th'],
+    ALLOWED_TAGS: ['p', 'br', 'h2', 'h3', 'h4', 'strong', 'b', 'em', 'i', 'a', 'span', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'hr'],
     ALLOWED_ATTR: ['href', 'title', 'style', 'scope', 'colspan', 'rowspan'],
   });
   if (!content.trim()) throw new Error('Kết quả thiếu nội dung bài viết.');
   return { ...article, Content: content };
 }
 
-function prepareWrites(config: Config, article: Article) {
+function prepareWrites(config: Config, article: Article, focusKeyword: string) {
   const form = find(config.form);
   const seen = new Set<Element>();
-  return fields.flatMap(field => {
-    const target = readField(config.fields, field);
+  return [...fields, 'FocusKeyword' as const].flatMap(field => {
+    const target = field === 'FocusKeyword' ? config.fields.FocusKeyword : readField(config.fields, field);
     if (!target) return [];
     const element = find(typeof target === 'string' ? target : target.selector, form);
     if (seen.has(element)) throw new Error(`Đích của trường ${field} bị trùng.`);
     seen.add(element);
-    const value = field === 'Keywords' ? article[field].join(', ') : article[field];
+    const value = field === 'FocusKeyword' ? focusKeyword : field === 'Keywords' ? article[field].join(', ') : article[field];
     if (typeof target === 'object' && target.setValue) {
       const { setValue } = target;
       return [() => setValue(element, value)];
@@ -197,6 +201,7 @@ function mount(config: Config) {
           <label class="field">Phong cách viết<select name="style" required>${styleOptions.map(value => `<option value="${value}">${value}</option>`).join('')}</select></label>
         </div>
         <label class="field length-field">Độ dài <span>(600–2500 từ)</span><input name="length" type="number" min="600" max="2500" step="1" required></label>
+        <label class="field">Hướng dẫn thêm <span>(không bắt buộc)</span><textarea name="instructions" maxlength="4000" rows="3" placeholder="Yêu cầu bổ sung cho bài viết"></textarea></label>
         <label class="research-option"><input name="use_research" type="checkbox" checked><span>Sử dụng dữ liệu tìm kiếm để hỗ trợ viết bài</span></label>
         <div class="form-actions"><small>Nội dung sẽ được xem trước trước khi điền vào form.</small><button type="submit" class="primary submit"><span>Viết ngay</span><span class="button-arrow" aria-hidden="true">→</span></button></div>
       </form>
@@ -204,6 +209,13 @@ function mount(config: Config) {
       <section class="preview" aria-label="Xem trước bài viết" hidden>
         <h3 class="title"></h3>
         <dl class="metadata"></dl>
+        <section class="seo-review" aria-label="Kết quả kiểm tra SEO từ CRM" hidden>
+          <h4>Kiểm tra SEO từ CRM</h4>
+          <p class="seo-summary"></p>
+          <p class="seo-repair"></p>
+          <p>Điểm là checklist biên tập nội bộ, không bảo đảm thứ hạng tìm kiếm. Người biên tập cần kiểm tra nội dung trước khi xuất bản.</p>
+          <details><summary class="seo-details-label"></summary><ul class="seo-findings"></ul></details>
+        </section>
         <article class="body"></article>
         <footer><button type="button" class="secondary discard">Đóng</button>
           <button type="button" class="primary accept">Chấp nhận</button></footer>
@@ -241,12 +253,14 @@ function mount(config: Config) {
   tone.value = toneOptions.includes(config.defaults?.tone ?? '') ? config.defaults!.tone! : 'Thân thiện';
   style.value = styleOptions.includes(config.defaults?.style ?? '') ? config.defaults!.style! : 'Hướng dẫn';
   select<HTMLInputElement>('[name="length"]').value = String(config.defaults?.length ?? 800);
+  select<HTMLTextAreaElement>('[name="instructions"]').value = config.defaults?.instructions ?? '';
   useResearch.checked = config.defaults?.use_research ?? true;
 
   let pending: { body: string; id: string; jobId?: string } | undefined;
   let controller: AbortController | undefined;
   let catalogRequest: AbortController | undefined;
   let result: Article | undefined;
+  let resultKeyword = '';
   let applying = false;
 
   function setStatus(message = '', error = false) {
@@ -294,14 +308,47 @@ function mount(config: Config) {
     }
   }
 
-  function showArticle(article: Article) {
+  function showSeoReport(job: Preview) {
+    const section = select<HTMLElement>('.seo-review');
+    const report = job.seo_report;
+    section.hidden = !report;
+    if (!report) return;
+    select('.seo-summary').textContent = `${report.score}/100 điểm tiêu chí nội bộ · ${report.passed}/${report.applicable} tiêu chí đạt · ${report.warnings.length} tiêu chí cần xem lại.`;
+    select('.seo-repair').textContent = job.seo_repair_status === 'applied'
+      ? 'Đã áp dụng chỉnh sửa SEO. Báo cáo được kiểm tra từ bản cuối trong CRM.'
+      : job.seo_repair_status === 'kept_draft'
+        ? 'CRM giữ lại bản nháp vì lượt chỉnh sửa SEO chưa hoàn tất hoặc chưa cải thiện đủ các tiêu chí. Xem các gợi ý dưới đây.'
+        : job.seo_repair_status === 'skipped'
+          ? 'CRM đã lưu bài. Các tiêu chí còn thiếu cần được biên tập viên xem lại.'
+          : 'Đây là kết quả kiểm tra của bài viết được lưu trong CRM.';
+    select('.seo-details-label').textContent = `Xem ${report.findings.length} tiêu chí SEO`;
+    const findings = select('.seo-findings');
+    findings.replaceChildren();
+    for (const finding of report.findings) {
+      const row = document.createElement('li');
+      const state = !finding.applicable ? 'Chưa áp dụng' : finding.passed ? 'Đạt' : 'Cần xem lại';
+      row.dataset.state = !finding.applicable ? 'excluded' : finding.passed ? 'passed' : 'warning';
+      const label = document.createElement('strong');
+      label.textContent = `${finding.label}: ${state}`;
+      row.append(label);
+      if (!finding.passed && finding.message) {
+        const message = document.createElement('p');
+        message.textContent = finding.message;
+        row.append(message);
+      }
+      findings.append(row);
+    }
+  }
+
+  function showArticle(article: Article, job: Preview, keyword: string) {
     result = article;
+    resultKeyword = typeof job.keyword === 'string' && job.keyword.trim() ? job.keyword : keyword;
     select('.title').textContent = article.Title;
     const metadata = select('.metadata');
     metadata.replaceChildren();
     for (const [label, value] of [
       ['Slug', article.Slug], ['Mô tả', article.Desc], ['Mô tả SEO', article.Description],
-      ['Từ khóa', article.Keywords.join(', ')],
+      ['Từ khóa chính', resultKeyword], ['Từ khóa liên quan', article.Keywords.join(', ')],
     ]) {
       const term = document.createElement('dt');
       const detail = document.createElement('dd');
@@ -310,6 +357,7 @@ function mount(config: Config) {
       metadata.append(term, detail);
     }
     select('.body').innerHTML = article.Content;
+    showSeoReport(job);
     form.hidden = true;
     preview.hidden = false;
     accept.focus();
@@ -339,7 +387,7 @@ function mount(config: Config) {
         throw new Error(job.error_message || 'Yêu cầu viết bài đã dừng.');
       }
       running.signal.throwIfAborted();
-      showArticle(articleFrom(job.result));
+      showArticle(articleFrom(job.result), job, JSON.parse(task.body).keyword);
       pending = undefined;
       setStatus();
     } catch (error) {
@@ -369,6 +417,7 @@ function mount(config: Config) {
     controller = undefined;
     updateSubmit();
     result = undefined;
+    resultKeyword = '';
     form.hidden = false;
     preview.hidden = true;
     setStatus();
@@ -384,6 +433,11 @@ function mount(config: Config) {
       model: personalCredentials?.model ?? body.model,
       length: Number(body.length),
     };
+    if (body.instructions.length > 4000) {
+      setStatus('Hướng dẫn thêm không được vượt quá 4.000 ký tự.', true);
+      return;
+    }
+    if (!requestBody.instructions) delete requestBody.instructions;
     if (Object.entries(requestBody).some(([name, value]) => name !== 'length' && !value)) {
       setStatus('Hãy nhập đủ thông tin bài viết.', true);
       return;
@@ -401,7 +455,7 @@ function mount(config: Config) {
     applying = true;
     accept.disabled = true;
     try {
-      const apply = prepareWrites(config, result);
+      const apply = prepareWrites(config, result, resultKeyword);
       for (const write of apply) await write();
       dialog.close();
     } catch (error) {

@@ -3,6 +3,7 @@ import { Alert, App, Button, Form, InputNumber, Skeleton, Switch, Tabs } from 'a
 import { ReloadOutlined, SaveOutlined, UndoOutlined } from '@ant-design/icons';
 import { ApiError, mutate, useResource } from './api';
 import { datetime, PageHeading, Panel, ResourceError } from './shared';
+import { SmtpSettings } from './SmtpSettings';
 import './settings.css';
 
 type Provider = 'openai' | 'anthropic' | 'xai' | 'openai-compatible';
@@ -66,6 +67,7 @@ export function Settings() {
   const [saveError, setSaveError] = useState<string>();
   const [conflict, setConflict] = useState(false);
   const [activeTab, setActiveTab] = useState('operations');
+  const [smtpVisited, setSmtpVisited] = useState(false);
   const [form] = Form.useForm<RuntimeSettings>();
   const { message, modal } = App.useApp();
 
@@ -179,11 +181,16 @@ export function Settings() {
   </div>;
 
   return <div className="settings-page">
-    <PageHeading title="Cài đặt" description="Cấu hình vận hành CRM dùng chung cho các máy kết nối cùng database." action={<div className="heading-actions">
+    <PageHeading title="Cài đặt" description="Cấu hình vận hành và email CRM dùng chung cho các máy kết nối cùng database." action={activeTab !== 'smtp' ? <div className="heading-actions">
       <Button icon={<ReloadOutlined />} onClick={reload} disabled={saving || resource.loading}>Tải lại</Button>
       <Button type="primary" aria-label="Lưu cài đặt" icon={<SaveOutlined />} onClick={() => form.submit()} loading={saving} disabled={!current || !dirty || conflict || resource.loading}>Lưu cài đặt</Button>
-    </div>} />
-    <ResourceError error={resource.error} onRetry={resource.reload} />
+    </div> : undefined} />
+    <Tabs className="settings-navigation" activeKey={activeTab} onChange={key => { setActiveTab(key); if (key === 'smtp') setSmtpVisited(true); }} items={[
+      { key: 'operations', label: 'Vận hành' }, { key: 'limits', label: 'Giới hạn AI' },
+      { key: 'retention', label: 'Lưu trữ dữ liệu' }, { key: 'smtp', label: 'Email / SMTP' },
+    ]} />
+    <div hidden={activeTab === 'smtp'}>
+    <ResourceError error={resource.error} onRetry={reload} />
     {saveError && <Alert className="resource-error" type="error" showIcon title="Chưa lưu cài đặt" description={saveError} action={conflict ? <Button size="small" onClick={reload}>Tải cấu hình mới</Button> : undefined} />}
     {!current && resource.loading && <Panel><Skeleton active paragraph={{ rows: 8 }} /></Panel>}
     {current && <>
@@ -195,13 +202,13 @@ export function Settings() {
         setActiveTab(first === 'provider_limits' ? 'limits' : ['job_retention_days', 'delivery_retention_days', 'cleanup_interval_minutes'].includes(String(first)) ? 'retention' : 'operations');
         message.error('Kiểm tra các giá trị cấu hình chưa hợp lệ.');
       }}>
-        <Tabs activeKey={activeTab} onChange={setActiveTab} destroyOnHidden={false} items={[
-          { key: 'operations', label: 'Vận hành', children: operating, forceRender: true },
-          { key: 'limits', label: 'Giới hạn AI', children: limits, forceRender: true },
-          { key: 'retention', label: 'Lưu trữ dữ liệu', children: retention, forceRender: true },
-        ]} />
+        <div hidden={activeTab !== 'operations'}>{operating}</div>
+        <div hidden={activeTab !== 'limits'}>{limits}</div>
+        <div hidden={activeTab !== 'retention'}>{retention}</div>
       </Form>
       <p className="settings-infrastructure">Kết nối MongoDB, ENCRYPTION_KEY, tên miền, cổng dịch vụ và các khóa bí mật tiếp tục được quản lý qua biến môi trường. API key và model được quản lý tại menu Nhà cung cấp AI.</p>
     </>}
+    </div>
+    {smtpVisited && <div hidden={activeTab !== 'smtp'}><SmtpSettings /></div>}
   </div>;
 }

@@ -1,0 +1,93 @@
+# Place inside Nginx's http context (for example conf.d/crm.conf).
+# Replace crm.example.com, certificate paths and upstream before nginx -t.
+# Only Nginx should reach the loopback Node.js listener.
+# If behind a CDN, configure verified real_ip ranges first and firewall the origin.
+
+limit_req_zone $binary_remote_addr zone=crm_api:10m rate=4r/s;
+limit_req_zone $binary_remote_addr zone=crm_login:10m rate=10r/m;
+limit_req_zone $server_name zone=crm_all:1m rate=200r/s;
+limit_conn_zone $binary_remote_addr zone=crm_per_ip:10m;
+limit_conn_zone $server_name zone=crm_connections:1m;
+
+# Deliberately omit query strings, cookies, Authorization and request bodies.
+log_format crm_safe '$remote_addr [$time_local] "$request_method $uri $server_protocol" '
+                    '$status $body_bytes_sent $request_time';
+
+upstream crm_node {
+    server 127.0.0.1:3210;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    server_name crm.example.com;
+    return 308 https://crm.example.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name crm.example.com;
+    ssl_certificate /etc/letsencrypt/live/crm.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/crm.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    server_tokens off;
+
+    client_max_body_size 1m;
+    client_header_timeout 10s;
+    client_body_timeout 10s;
+    send_timeout 30s;
+    keepalive_timeout 5s;
+    keepalive_requests 100;
+    large_client_header_buffers 2 8k;
+    reset_timedout_connection on;
+
+    limit_req_status 429;
+    limit_conn_status 503;
+    limit_req zone=crm_all burst=300 nodelay;
+    limit_conn crm_per_ip 20;
+    limit_conn crm_connections 200;
+
+    # Avoid an access-log write for every rejected request during a flood.
+    # Monitor edge counters/status metrics separately; rotate all retained logs.
+    access_log off;
+    error_log /var/log/nginx/crm-error.log warn;
+    limit_req_log_level notice;
+    limit_conn_log_level notice;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host crm.example.com;
+    # Overwrite rather than append an untrusted client-supplied header.
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Connection "";
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 20s;
+    proxy_read_timeout 60s;
+    proxy_request_buffering on;
+    proxy_cache off;
+
+    location = /api/crm/login {
+        limit_req zone=crm_login burst=5 nodelay;
+        limit_req zone=crm_all burst=300 nodelay;
+        proxy_pass http://crm_node;
+    }
+
+    location = /api/crm/jobs/events {
+        limit_req zone=crm_api burst=40 nodelay;
+        limit_req zone=crm_all burst=300 nodelay;
+        proxy_buffering off;
+        proxy_read_timeout 330s;
+        gzip off;
+        proxy_pass http://crm_node;
+    }
+
+    location ~ ^/(api|v1)(/|$) {
+        limit_req zone=crm_api burst=40 nodelay;
+        limit_req zone=crm_all burst=300 nodelay;
+        proxy_pass http://crm_node;
+    }
+
+    location / {
+        proxy_pass http://crm_node;
+    }
+}
