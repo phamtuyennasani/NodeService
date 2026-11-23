@@ -15,7 +15,7 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
     Title: 'Lựa chọn thiết bị theo chất lượng nước', Content: '<p>Đánh giá nguồn nước và chi phí bảo trì.</p>',
     Slug: 'lua-chon-thiet-bi', Desc: 'Tóm tắt.', Description: 'Mô tả SEO.', Keywords: ['nguồn nước', 'lõi lọc'],
   };
-  const report = evaluateSeo(article, { keyword });
+  let report = evaluateSeo(article, { keyword, siteUrl: origin });
   const warning = report.findings.find(finding => finding.applicable && !finding.passed)!;
   warning.message = '<img src=x onerror=alert(1)> Cần bổ sung từ khóa chính.';
   report.warnings = report.findings.filter(finding => finding.applicable && !finding.passed);
@@ -46,11 +46,23 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
     await dialog.getByLabel('Từ khóa', { exact: true }).fill(typedKeyword);
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     const seo = dialog.getByRole('region', { name: 'Kết quả kiểm tra SEO từ CRM' });
+    const assertSeoCounts = async () => {
+      const excluded = report.findings.filter(finding => !finding.applicable).length;
+      assert.equal(await seo.locator('.seo-summary').textContent(), `${report.score}/100 điểm tiêu chí nội bộ · ${report.passed}/${report.applicable} tiêu chí đạt · ${report.warnings.length} tiêu chí cần xem lại.`);
+      assert.equal(await seo.locator('summary').textContent(), `Xem ${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng)`);
+      await seo.locator('summary').click();
+      assert.equal(await seo.locator('li').count(), report.findings.length);
+      assert.equal(await seo.locator('li[data-state="passed"]').count(), report.passed);
+      assert.equal(await seo.locator('li[data-state="warning"]').count(), report.warnings.length);
+      assert.equal(await seo.locator('li[data-state="excluded"]').count(), excluded);
+      assert.equal(report.findings.length, report.applicable + excluded);
+      assert.equal(report.applicable, report.passed + report.warnings.length);
+      assert.match(await seo.innerText(), /Tiêu chí chưa áp dụng không tính vào điểm\./);
+    };
     await seo.waitFor();
-    assert.equal(await seo.locator('.seo-summary').textContent(), `${report.score}/100 điểm tiêu chí nội bộ · ${report.passed}/${report.applicable} tiêu chí đạt · ${report.warnings.length} tiêu chí cần xem lại.`);
+    assert.equal(report.applicable, 15);
+    await assertSeoCounts();
     assert.match(await seo.locator('.seo-repair').innerText(), /CRM giữ lại bản nháp/);
-    await seo.locator('summary').click();
-    assert.equal(await seo.locator('li').count(), report.findings.length);
     const warningRow = seo.locator('li').filter({ hasText: warning.message });
     assert.equal(await warningRow.count(), 1);
     assert.equal(await warningRow.getAttribute('data-state'), 'warning');
@@ -60,6 +72,16 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(await page.locator('[name=focus_keyword]').inputValue(), keyword);
     assert.equal(await page.locator('[name=keywords]').inputValue(), article.Keywords.join(', '));
+
+    report = evaluateSeo(article, { keyword });
+    await launch.click();
+    await dialog.getByRole('button', { name: 'Viết ngay' }).click();
+    await seo.waitFor();
+    assert.equal(report.applicable, 14, 'missing website context excludes the internal-link check too');
+    if (await seo.locator('details').getAttribute('open') !== null) await seo.locator('summary').click();
+    await assertSeoCounts();
+    await dialog.getByRole('button', { name: 'Chấp nhận' }).click();
+    await dialog.waitFor({ state: 'hidden' });
 
     includeMetadata = false;
     await launch.click();
@@ -274,11 +296,12 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     await dialog.getByLabel('Từ khóa').fill('Cà phê');
     await write.click();
     await dialog.getByText('Yêu cầu đang chờ xử lý…').waitFor();
-    await close.click();
-    // Removing a model while a job is queued still lets the editor read the accepted job.
-    await launch.click();
+    assert.equal(await close.isDisabled(), true);
+    await page.keyboard.press('Escape');
+    assert.equal(await dialog.isVisible(), true, 'writing keeps the dialog open');
     await waitForPreview();
-    assert.equal(catalogReads, 4);
+    assert.equal(await close.isDisabled(), false);
+    assert.equal(catalogReads, 3);
     assert.equal(posts.length, 3);
     assert.equal((posts[2] as { model: string }).model, 'claude-test');
     assert.equal('api_key' in (posts[2] as object), false);

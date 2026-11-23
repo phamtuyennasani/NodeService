@@ -8,6 +8,7 @@ Cần Node.js 24 LTS và MongoDB Atlas hoặc MongoDB 7 trở lên chạy dướ
 
 ```sh
 npm ci
+npx playwright install --with-deps chromium --only-shell
 cp .env.example .env
 openssl rand -base64 32
 ```
@@ -22,6 +23,8 @@ npm start
 ```
 
 Khi phát triển, dùng `npm run dev:watch` để theo dõi mã nguồn, tự chạy lại build và khởi động lại dịch vụ sau mỗi thay đổi.
+
+Trong **Yêu cầu viết → Chi tiết**, nút **Xuất PDF** xuất hiện khi đã có nội dung bài viết. File PDF A4 giữ tiêu đề, danh sách, bảng và CSS inline an toàn; dàn ý đứng trước, bài viết bắt đầu ở trang mới. Không có dàn ý thì chỉ xuất bài viết. Nội dung dài tự nối trang để giữ đủ chữ, không ép vào đúng hai trang. Chromium headless ở bước cài đặt trên cần có trên máy/container chạy API cả khi cài bằng `npm ci --omit=dev`; không tự tải trình duyệt trong lúc xử lý yêu cầu. Linux cần các thư viện hệ thống do `--with-deps` cài đặt. Mỗi tiến trình giới hạn hai lượt render đồng thời, mỗi lượt tối đa 25 giây, 60 trang và 20 MB; API yêu cầu phiên CRM hợp lệ cùng chữ ký trình duyệt, giới hạn 6 lượt/phút cho mỗi khóa giới hạn lưu lượng hiện có. Nội dung HTML được lọc, tắt JavaScript và chặn tải mạng khi xuất.
 
 Đăng nhập trên thiết bị mới yêu cầu OTP gửi tới email đã xác minh của tài khoản. Vào **Cài đặt → Email / SMTP** để cấu hình máy chủ, cổng, bảo mật, email gửi và thông tin đăng nhập SMTP; cổng 465 thường dùng TLS trực tiếp, cổng 587 dùng STARTTLS bắt buộc. Có thể dùng các biến `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM` và cặp `SMTP_USER`/`SMTP_PASSWORD` để khởi tạo khi chưa có cấu hình trong CRM. Không ghi OTP hoặc thông tin SMTP vào log. Khi tạo tài khoản bằng CLI, có thể cấp sẵn hộp thư do người vận hành đã xác minh qua `CRM_ADMIN_EMAIL`. Khi nâng cấp lên OTP, phiên đã gắn khóa trình duyệt và vẫn hợp lệ tiếp tục dùng được đến hạn thông thường: mở **Tài khoản** để xác minh email sau khi cấu hình SMTP, trước khi đăng xuất. Đăng nhập từ thiết bị chưa tin cậy không bỏ qua OTP khi thiếu email đã xác minh hoặc SMTP. Nếu không còn phiên hợp lệ, người vận hành cấp email bằng `npm run admin:email -- <username>` với `CRM_ADMIN_EMAIL` và mật khẩu hiện tại (nhập ẩn hoặc `CRM_ADMIN_PASSWORD`); lệnh này thu hồi toàn bộ phiên, thiết bị tin cậy và yêu cầu OTP cũ, không thay mật khẩu. Không đặt bí mật trực tiếp trong command line. Chi tiết xem [hướng dẫn bảo mật](docs/security.md).
 
@@ -220,7 +223,7 @@ Cài các route sau trên cùng origin với form Laravel và kiểm tra quyền
 - `GET /admin/ai/models` dùng site token ở backend Laravel để gọi `GET /v1/models`. Chuyển nguyên phản hồi JSON cho widget. Widget tải danh sách mỗi khi mở form viết mới. Cấu hình cũ dùng mảng `models` vẫn được hỗ trợ. Với khách hàng dùng key cá nhân, Laravel có thể truyền `keyMode: "own"`, `provider`, `api_key` và `model` vào cấu hình widget. Key chỉ được lưu mã hóa trong job đang chờ xử lý như mô tả ở phần API, không ghi vào hồ sơ cấu hình CRM.
 
 - `POST /admin/ai/previews` nhận dữ liệu viết, cùng header `Idempotency-Key` và CSRF. Backend gắn mã yêu cầu với người dùng, thêm `mode: "preview"`, gắn key riêng khi cần, rồi dùng site token gọi Node.js. Lưu quyền tra cứu `job_id` theo người dùng và trả lại JSON có `job_id` và `status`.
-- `GET /admin/ai/previews/{job_id}` kiểm tra người dùng có quyền tra cứu công việc, rồi chuyển tiếp trạng thái. Khi `status` là `ready`, gọi endpoint `/result` và đính mảng đó vào thuộc tính `result` của JSON trả cho widget. Với job lỗi, chuyển tiếp trường `error_message`.
+- `GET /admin/ai/previews/{job_id}` kiểm tra người dùng có quyền tra cứu công việc, rồi chuyển tiếp `status` và `writing_stage` để widget hiện đúng bước nghiên cứu, lập dàn ý, viết nội dung hoặc xử lý SEO của CRM. Khi `status` là `ready`, gọi endpoint `/result` và đính mảng đó vào thuộc tính `result` của JSON trả cho widget. Với job lỗi, chuyển tiếp trường `error_message`.
 
 Giữ nguyên mảng `/result`, đặc biệt toàn bộ HTML trong `Content`; không dùng mô tả/tóm tắt thay nội dung, không cắt bài theo độ dài vùng xem trước và không trả bài mẫu khi CRM chưa hoàn tất. Widget chỉ làm sạch HTML được phép để hiển thị/điền form. Site token, key dịch vụ và khóa webhook chỉ ở backend; cấu hình key cá nhân theo `keyMode: 'own'` là luồng tùy chọn riêng đã nêu ở trên.
 
@@ -237,6 +240,10 @@ npm run dev:widget
 Trang xem thử chạy tại `http://127.0.0.1:3220`, dùng `.env` hiện có và website/khách hàng trong MongoDB. Có thể chọn website bằng `WIDGET_SITE_ID=<website_id> npm run dev:widget`. Đây là luồng viết thật, tạo job trong CRM, gọi nhà cung cấp AI và dùng hạn mức thực của khách hàng; không trả bài mẫu. Server xem thử chỉ dành cho phát triển cục bộ, không thay các route Laravel khi triển khai cho khách hàng.
 
 Các worker dùng cùng MongoDB database sẽ cùng lấy việc từ một hàng đợi. Khi thử bản build local cạnh môi trường khác, dùng `MONGODB_DATABASE` riêng cho cả CRM/worker và widget preview để tránh worker cũ nhận bài. Nếu chủ ý chạy chung database, mọi worker cần cùng phiên bản và `ENCRYPTION_KEY`; chỉ khởi động lại API không cập nhật các worker bên ngoài.
+
+CRM/API khởi tạo một giá trị kiểm tra mã hóa dùng chung trong `service_security` và xác thực lại mỗi lần khởi động. Worker và widget preview phải dùng đúng `ENCRYPTION_KEY` đó; sai khóa sẽ dừng trước khi nhận việc. Với database mới hoặc khi nâng cấp lần đầu, khởi động vai trò `api`/`all` trước rồi mới chạy worker. Không xóa giá trị kiểm tra hoặc tạo lại `ENCRYPTION_KEY` để bỏ qua lỗi: cần khôi phục khóa gốc, đồng bộ và khởi động lại **tất cả** tiến trình. Các worker phiên bản cũ chưa có kiểm tra này vẫn phải dừng/nâng cấp. Giá trị kiểm tra mới không khôi phục được API key đã mã hóa bằng một khóa khác trước đó; CRM hiển thị rõ key không đọc được để quản trị viên xử lý.
+
+API từ chối nhận yêu cầu dùng key dịch vụ không giải mã được trước khi giữ quota. Nếu key thay đổi sau khi đã nhận bài, worker giữ job ở hàng đợi với mã `AI_KEY_UNREADABLE`, thử lại sau 60 giây và không tăng số lần thất bại hoặc xóa key riêng/quota. Sau khi sửa đúng cấu hình, job tiếp tục; quản trị viên có thể hủy job đang chờ theo cách thông thường. Lỗi xác thực do nhà cung cấp trả về vẫn được xử lý riêng.
 
 ## Kiểm thử
 

@@ -9,7 +9,7 @@ const origin = 'http://localhost:3234';
 const customA = 'openai-compatible-11111111-1111-4111-8111-111111111111';
 const customB = 'openai-compatible-22222222-2222-4222-8222-222222222222';
 
-async function fixture(browser: Browser, bundle: string, options: { failList?: boolean; failCreate?: boolean; customOnly?: boolean } = {}) {
+async function fixture(browser: Browser, bundle: string, options: { failList?: boolean; failCreate?: boolean; customOnly?: boolean; unreadableKey?: boolean } = {}) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.setDefaultTimeout(10000);
   const providers: CatalogProvider[] = [
@@ -23,6 +23,13 @@ async function fixture(browser: Browser, bundle: string, options: { failList?: b
       provider: customA, kind: 'openai-compatible', display_name: 'Gateway Alpha', enabled: true,
       service_key_configured: true, api_key_configured: true, base_url: 'https://alpha.example.test/v1', models: [],
     });
+  }
+  if (options.unreadableKey) {
+    for (const provider of providers) {
+      provider.api_key_status = 'unreadable';
+      provider.api_key_configured = false;
+      provider.service_key_configured = false;
+    }
   }
   const mutations: { path: string; method: string; body: any; csrf?: string }[] = [];
   const errors: string[] = [];
@@ -130,6 +137,26 @@ test('CRM providers manages independent OpenAI Compatible connections', async t 
   });
   const browser = await chromium.launch();
   try {
+    await t.test('unreadable keys show server configuration guidance in provider details and editor', async () => {
+      const { page, errors } = await fixture(browser, bundle.outputFiles[0].text, { unreadableKey: true });
+      try {
+        const detail = page.locator('.record-provider-detail');
+        await detail.getByText('Máy chủ không giải mã được API key đã lưu.', { exact: true }).waitFor();
+        assert.match(await detail.locator('.record-provider-key').innerText(), /Key dịch vụ không đọc được/);
+        assert.doesNotMatch(await detail.locator('.record-provider-key').innerText(), /chưa cấu hình|đã cấu hình/);
+        await page.getByRole('navigation', { name: 'Chọn dạng kết nối AI', exact: true }).getByRole('button', { name: /OpenAI Compatible/ }).click();
+        assert.match(await detail.locator('.record-provider-key').innerText(), /API key không đọc được/);
+        await detail.getByRole('button', { name: 'Cấu hình kết nối', exact: true }).click();
+        const dialog = page.getByRole('dialog');
+        await dialog.getByText('Máy chủ không giải mã được API key đã lưu.', { exact: true }).waitFor();
+        assert.match(await dialog.innerText(), /Khôi phục ENCRYPTION_KEY ban đầu/);
+        assert.match(await dialog.innerText(), /dùng cùng giá trị trên CRM\/API và worker/);
+        assert.match(await dialog.innerText(), /Nếu cần nhập lại API key, hãy sửa xong cấu hình máy chủ trước/);
+        assert.equal(await dialog.getByLabel('API key', { exact: true }).inputValue(), '');
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    });
+
     await t.test('top navigation contains four connection types and compatible providers are nested within their type', async () => {
       const { page, errors } = await fixture(browser, bundle.outputFiles[0].text);
       try {

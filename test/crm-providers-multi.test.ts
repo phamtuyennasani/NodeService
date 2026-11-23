@@ -248,3 +248,26 @@ test('provider errors do not expose upstream payloads or encrypted credentials',
   f.tables.ai_providers.find(row => row._id === provider.provider)!.encrypted_api_key = 'unreadable-fixture-ciphertext'
   assert.equal((await f.app.inject({ method: 'POST', url: '/providers/' + provider.provider + '/check' })).json<Row>().error.code, 'provider_key_unavailable')
 })
+
+test('provider configuration reports an unreadable saved key instead of a usable service credential', async t => {
+  const f = await fixture(t)
+  const provider = await f.create('Unreadable')
+  const saved = f.tables.ai_providers.find(row => row._id === provider.provider)!
+  saved.encrypted_api_key = seal('other-server-fixture-key', Buffer.alloc(32, 23))
+  // A corrupt stored key wins over an otherwise valid environment fallback.
+  f.tables.ai_providers.find(row => row._id === 'openai')!.encrypted_api_key = saved.encrypted_api_key
+  const response = await f.app.inject('/providers')
+  assert.equal(response.statusCode, 200)
+  for (const id of [provider.provider, 'openai']) {
+    const view = response.json<Row>().data.find((row: Row) => row.provider === id)
+    assert.equal(view.api_key_status, 'unreadable')
+    assert.equal(view.api_key_configured, false)
+    assert.equal(view.service_key_configured, false)
+  }
+  assert.ok(!response.body.includes(saved.encrypted_api_key))
+  const check = await f.app.inject({ method: 'POST', url: '/providers/' + provider.provider + '/check' })
+  assert.equal(check.statusCode, 422)
+  assert.equal(check.json<Row>().error.code, 'provider_key_unavailable')
+  assert.match(check.json<Row>().error.message, /không giải mã được/)
+  assert.ok(!check.body.includes('other-server-fixture-key'))
+})

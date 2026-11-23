@@ -3,9 +3,12 @@ import { setImmediate as nextTurn, setTimeout as wait } from 'node:timers/promis
 import test from 'node:test'
 import type { Config } from '../src/config.js'
 import type { Database } from '../src/db.js'
+import { assertEncryptionContext, EncryptionContextError } from '../src/encryption-context.js'
 import { migrate } from '../src/migrate.js'
 import { startWorkerHeartbeat, type WorkerHeartbeatState } from '../src/worker/heartbeat.js'
 import { runWorkers } from '../src/worker/index.js'
+
+const checkEncryption = async () => {}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -143,6 +146,7 @@ test('pool reports active work separately from idle delays and keeps live pulses
   let snapshot!: () => WorkerHeartbeatState
   let target = 2
   const running = runWorkers(f.db, config, controller.signal, 'webhook', {
+    checkEncryption,
     createHeartbeat(db, role, getState) {
       assert.equal(role, 'webhook')
       snapshot = getState
@@ -193,6 +197,7 @@ test('pool stops advertising acceptance after settings fail and resumes after re
   let claims = 0
   const jobs: ReturnType<typeof deferred<boolean>>[] = []
   const running = runWorkers({} as Database, config, controller.signal, 'writer', {
+    checkEncryption,
     createHeartbeat(_db, _role, getState) {
       snapshot = getState
       return { refresh() {}, async stop() {} }
@@ -234,6 +239,7 @@ test('production pool path persists and removes a heartbeat without injected tel
   const job = deferred<boolean>()
   let claimed = false
   const running = runWorkers(f.db, config, controller.signal, 'writer', {
+    checkEncryption,
     async getConfig() { return config },
     async runOnce() { claimed = true; return job.promise },
   })
@@ -281,6 +287,39 @@ test('an already stopped pool does not create telemetry or claim work', async ()
   controller.abort()
   const unexpected = () => { throw new Error('stopped pool must remain inactive') }
   await runWorkers({} as Database, {} as Config, controller.signal, 'writer', {
-    createHeartbeat: unexpected, getConfig: unexpected, runOnce: unexpected,
+    checkEncryption: unexpected, createHeartbeat: unexpected, getConfig: unexpected, runOnce: unexpected,
+  })
+})
+
+test('a worker with the wrong database encryption context cannot advertise capacity or claim jobs', async t => {
+  for (const role of ['writer', 'webhook'] as const) await t.test(role, async () => {
+    let context: Record<string, unknown> | undefined
+    const db = { db: { collection(name: string) {
+      assert.equal(name, 'service_security', 'no queue, heartbeat or runtime reads before encryption validation')
+      return {
+        async updateOne(_filter: object, update: { $setOnInsert: Record<string, unknown> }) {
+          context ??= structuredClone(update.$setOnInsert)
+        },
+        async findOne() { return structuredClone(context ?? null) },
+      }
+    } } } as unknown as Database
+    await assertEncryptionContext(db, { encryptionKey: Buffer.alloc(32, 31) }, true)
+    const original = structuredClone(context)
+    const config = { encryptionKey: Buffer.alloc(32, 32), workerConcurrency: 1, webhookConcurrency: 1, workerPollMs: 5 } as Config
+    const calls: string[] = []
+    await assert.rejects(runWorkers(db, config, new AbortController().signal, role, {
+      createHeartbeat() { calls.push('heartbeat'); return { refresh() {}, async stop() {} } },
+      async getConfig() { calls.push('settings'); return config },
+      async runOnce() { calls.push('claim'); return false },
+    }), error => {
+      assert.ok(error instanceof EncryptionContextError)
+      assert.equal(error.code, 'ENCRYPTION_KEY_MISMATCH')
+      assert.match(error.message, /Restore the original key/)
+      assert.ok(!error.message.includes(String(context?.check)), 'safe failure cannot expose the database ciphertext')
+      assert.ok(!error.message.includes(config.encryptionKey.toString('base64')), 'safe failure cannot expose the local key')
+      return true
+    })
+    assert.deepEqual(calls, [])
+    assert.deepEqual(context, original, 'an incompatible worker cannot overwrite the database encryption context')
   })
 })

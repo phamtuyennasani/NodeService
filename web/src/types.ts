@@ -1,7 +1,8 @@
 import type { SeoReport } from '../../src/worker/seo.js';
 import type { ArticleOutline } from '../../src/worker/provider.js';
 
-export type WritingStage = 'research' | 'outline' | 'draft' | 'seo_check' | 'seo_repair';
+import type { WritingStage } from '../../src/writing-stage.js';
+export type { WritingStage } from '../../src/writing-stage.js';
 export type SeoRepairStatus = 'not_needed' | 'applied' | 'kept_draft' | 'skipped';
 
 export interface Session {
@@ -64,6 +65,7 @@ export interface CatalogProvider {
   service_key_configured: boolean;
   base_url?: string | null;
   api_key_configured?: boolean;
+  api_key_status?: 'missing' | 'ready' | 'unreadable';
   enabled: boolean;
   models: CatalogModel[];
 }

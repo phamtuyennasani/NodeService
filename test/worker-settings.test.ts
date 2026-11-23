@@ -10,6 +10,7 @@ import { WorkerError } from '../src/worker/provider.js'
 import { runWriterOnce } from '../src/worker/writer.js'
 
 const createHeartbeat = () => ({ refresh() {}, async stop() {} })
+const checkEncryption = async () => {}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -32,6 +33,7 @@ test('runtime worker pool scales both ways without interrupting in-flight snapsh
   const tasks: { config: Config, finish: ReturnType<typeof deferred<boolean>> }[] = []
   let stopped = false
   const running = runWorkers({} as Database, base, controller.signal, 'writer', {
+    checkEncryption,
     createHeartbeat,
     async getConfig() { return { ...base, workerConcurrency: target } },
     async runOnce(_db, config) {
@@ -73,6 +75,7 @@ test('webhook pool uses delivery concurrency and delays empty queue polling', { 
   const config = { workerConcurrency: 8, webhookConcurrency: 2, workerPollMs: 70 } as Config
   let calls = 0
   const running = runWorkers({} as Database, config, controller.signal, 'webhook', {
+    checkEncryption,
     createHeartbeat,
     async getConfig() { return { ...config } },
     async runOnce() { calls += 1; return false },
@@ -97,6 +100,7 @@ test('a failed settings refresh prevents new claims until settings can be read',
   let reads = 0
   let claims = 0
   const running = runWorkers({} as Database, config, controller.signal, 'writer', {
+    checkEncryption,
     createHeartbeat,
     async getConfig() {
       reads += 1
@@ -126,6 +130,7 @@ test('a shorter poll setting wakes idle slots instead of retaining their old del
   let calls = 0
   let stopped = false
   const running = runWorkers({} as Database, config, controller.signal, 'writer', {
+    checkEncryption,
     createHeartbeat,
     async getConfig() { return { ...config, workerPollMs: poll } },
     async runOnce() { calls += 1; return false },

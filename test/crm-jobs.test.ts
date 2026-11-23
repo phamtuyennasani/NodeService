@@ -87,6 +87,7 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
   const unexpected: string[] = [];
   const pageErrors: string[] = [];
   const detailReads: string[] = [];
+  const pdfRequests: { method: string; path: string; proof?: string }[] = [];
   const listRequests: URL[] = [];
   let listReads = 0;
   page.on('pageerror', error => pageErrors.push(error.message));
@@ -120,6 +121,10 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
       posts.push({ method: request.method(), body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
       return route.fulfill({ status: 202, json: { job_id: rewrittenId, status: 'queued', retry_of_job_id: failedId } });
     }
+    if (url.pathname === `/api/crm/jobs/${completedId}/pdf`) {
+      pdfRequests.push({ method: request.method(), path: url.pathname, proof: request.headers()['x-crm-proof'] });
+      return route.fulfill({ contentType: 'application/pdf', body: Buffer.from('%PDF-1.4\nSynthetic CRM PDF\n%%EOF') });
+    }
     const detail = details.get(url.pathname.replace('/api/crm/jobs/', ''));
     if (detail) { detailReads.push(detail.id); return route.fulfill({ json: detail }); }
     unexpected.push(`${request.method()} ${url.pathname}`);
@@ -130,7 +135,7 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
   await row(options.historicalReady ? completed.keyword : options.issueRows?.[0] === activeId ? active.keyword : failed.keyword).waitFor();
   await page.waitForFunction(() => (window as any).__crmStreamReady === true);
   return {
-    page, row, posts, unexpected, pageErrors, details, detailReads, listRequests, listReads: () => listReads,
+    page, row, posts, unexpected, pageErrors, details, detailReads, pdfRequests, listRequests, listReads: () => listReads,
     emitJobEvent: (type: string, data: Record<string, unknown> = {}) => page.evaluate(({ type: eventType, data: eventData }) => {
       (window as any).__emitCrmEvent(eventType, eventData);
     }, { type, data }),
@@ -157,6 +162,114 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
   });
   const browser = await chromium.launch();
   try {
+    await t.test('PDF export is absent until a job contains visible article content', async () => {
+      const { page, row, details, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        for (const keyword of ['dịch vụ thiết kế website', 'bài đang viết']) {
+          await row(keyword).getByRole('button', { name: new RegExp(keyword) }).click();
+          const drawer = page.locator('.ant-drawer');
+          await drawer.getByText(keyword === 'bài đang viết' ? activeId : failedId, { exact: true }).waitFor();
+          assert.equal(await drawer.getByRole('button', { name: 'Xuất PDF', exact: true }).count(), 0);
+          await drawer.getByRole('button', { name: 'Close', exact: true }).click();
+          await drawer.waitFor({ state: 'hidden' });
+        }
+        const completed = details.get(completedId)!;
+        details.set(completedId, { ...completed, result: [{ ...completed.result![0], Content: '<p>&nbsp;<br></p><script>hidden</script>' }] });
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        await drawer.getByText(completedId, { exact: true }).waitFor();
+        assert.equal(await drawer.getByRole('button', { name: 'Xuất PDF', exact: true }).count(), 0);
+        assert.deepEqual(unexpected, []); assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('PDF export downloads through a signed read and also works without a saved outline', async () => {
+      const { page, row, pdfRequests, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text, 'service', { outline: 'missing' });
+      try {
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const button = page.locator('.ant-drawer').getByRole('button', { name: 'Xuất PDF', exact: true });
+        const downloadStarted = page.waitForEvent('download');
+        await button.click();
+        const download = await downloadStarted;
+        assert.equal(download.suggestedFilename(), 'bai-viet-hoan-tat-6ca7e10e-baf.pdf');
+        assert.equal((await readFile((await download.path())!)).toString(), '%PDF-1.4\nSynthetic CRM PDF\n%%EOF');
+        assert.equal(pdfRequests.length, 1);
+        assert.equal(pdfRequests[0].method, 'GET');
+        assert.equal(pdfRequests[0].path, `/api/crm/jobs/${completedId}/pdf`);
+        assert.match(pdfRequests[0].proof || '', /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+        assert.equal(await button.isEnabled(), true);
+        if (process.env.CRM_PDF_BUTTON_SCREENSHOT) {
+          await page.addStyleTag({ content: (await readFile('web/src/styles.css', 'utf8')).replace(/^@import[^;]+;\s*/m, '') });
+          await page.addStyleTag({ content: await readFile('web/src/records.css', 'utf8') });
+          await page.screenshot({ path: process.env.CRM_PDF_BUTTON_SCREENSHOT, fullPage: true });
+          await page.setViewportSize({ width: 390, height: 900 });
+          assert.equal(await button.isVisible(), true);
+          assert.equal(await page.locator('.ant-drawer-content-wrapper').evaluate(element => element.scrollWidth <= element.clientWidth), true);
+          if (process.env.CRM_PDF_BUTTON_MOBILE_SCREENSHOT) await page.screenshot({ path: process.env.CRM_PDF_BUTTON_MOBILE_SCREENSHOT, fullPage: true });
+        }
+        assert.deepEqual(unexpected, []); assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
+    await t.test('PDF export prevents duplicates while pending and allows retry after a backend error', async () => {
+      const { page, row, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      let release!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      let calls = 0;
+      await page.route(`**/api/crm/jobs/${completedId}/pdf`, async route => {
+        calls++;
+        if (calls === 1) {
+          await pending;
+          return route.fulfill({ status: 503, json: { error: { code: 'pdf_busy', message: 'Máy chủ đang bận tạo PDF. Vui lòng thử lại.' } } });
+        }
+        return route.fulfill({ contentType: 'application/pdf', body: Buffer.from('%PDF-1.4\nRetry\n%%EOF') });
+      });
+      try {
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const button = page.locator('.ant-drawer').getByRole('button', { name: 'Xuất PDF', exact: true });
+        const requested = page.waitForRequest(`**/api/crm/jobs/${completedId}/pdf`);
+        await button.click(); await requested;
+        assert.equal(await button.evaluate(element => element.classList.contains('ant-btn-loading')), true);
+        await button.evaluate(element => { (element as HTMLButtonElement).click(); (element as HTMLButtonElement).click(); });
+        assert.equal(calls, 1);
+        release();
+        await page.getByText('Máy chủ đang bận tạo PDF. Vui lòng thử lại.', { exact: true }).waitFor();
+        await page.waitForFunction(() => !document.querySelector('.ant-drawer .ant-btn-loading'));
+        const downloadStarted = page.waitForEvent('download');
+        await button.click(); await downloadStarted;
+        assert.equal(calls, 2);
+        assert.deepEqual(unexpected, []); assert.deepEqual(pageErrors, []);
+      } finally { release(); await page.close(); }
+    });
+
+    await t.test('closing a job while PDF is pending cancels the request and does not download the previous job', async () => {
+      const { page, row, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      let release!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      const downloads: string[] = [];
+      page.on('download', download => downloads.push(download.suggestedFilename()));
+      await page.route(`**/api/crm/jobs/${completedId}/pdf`, async route => {
+        await pending;
+        await route.fulfill({ contentType: 'application/pdf', body: Buffer.from('%PDF-1.4\nStale\n%%EOF') }).catch(() => {});
+      });
+      try {
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        const requested = page.waitForRequest(`**/api/crm/jobs/${completedId}/pdf`);
+        await drawer.getByRole('button', { name: 'Xuất PDF', exact: true }).click();
+        const request = await requested;
+        const canceled = page.waitForEvent('requestfailed', { predicate: failed => failed === request });
+        await drawer.getByRole('button', { name: 'Close', exact: true }).click();
+        await canceled;
+        await row('bài đang viết').getByRole('button', { name: /bài đang viết/ }).click();
+        await drawer.getByText(activeId, { exact: true }).waitFor();
+        release();
+        assert.deepEqual(downloads, []);
+        assert.equal(await drawer.getByRole('button', { name: 'Xuất PDF', exact: true }).count(), 0);
+        assert.deepEqual(unexpected, []); assert.deepEqual(pageErrors, []);
+      } finally { release(); await page.close(); }
+    });
+
     await t.test('writing detail displays the recorded Laravel post ID for its delivery', async () => {
       const { page, row, details, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
       try {

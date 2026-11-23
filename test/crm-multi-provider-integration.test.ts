@@ -182,6 +182,47 @@ test('public catalogs expose connection labels and grants cannot leak across com
   assert.equal(f.tables.quota_reservations.length, 0)
 })
 
+test('unreadable service keys are excluded from the catalog and rejected before reserving quota', async t => {
+  const f = await fixture(t)
+  f.tables.ai_providers[0].encrypted_api_key = seal('other-server-fixture-key', Buffer.alloc(32, 29))
+  const catalog = await f.catalog()
+  assert.equal(catalog.statusCode, 200)
+  assert.deepEqual(catalog.json<Row>().data, [])
+  // The other connection remains healthy and independent.
+  assert.equal((await f.catalog(1)).json<Row>().data.length, 1)
+  const response = await f.create()
+  assert.equal(response.statusCode, 422, response.body)
+  assert.equal(response.json<Row>().error.code, 'service_key_unreadable')
+  assert.match(response.json<Row>().error.message, /không giải mã được/)
+  assert.ok(!response.body.includes('other-server-fixture-key'))
+  assert.ok(!response.body.includes(f.tables.ai_providers[0].encrypted_api_key))
+  assert.equal(f.tables.jobs.length, 0)
+  assert.equal(f.tables.quota_reservations.length, 0)
+})
+
+test('missing service credentials remain distinct from encrypted credentials that cannot be read', async t => {
+  const f = await fixture(t)
+  delete f.tables.ai_providers[0].encrypted_api_key
+  const response = await f.create()
+  assert.equal(response.statusCode, 422)
+  assert.equal(response.json<Row>().error.code, 'service_key_unavailable')
+  assert.equal(f.tables.jobs.length, 0)
+  assert.equal(f.tables.quota_reservations.length, 0)
+})
+
+test('personal key jobs do not depend on the readability of a provider service credential', async t => {
+  const f = await fixture(t)
+  f.tables.customers[0].key_mode = 'own'
+  f.tables.ai_providers[0].encrypted_api_key = 'unreadable-fixture-ciphertext'
+  const catalog = await f.catalog()
+  assert.equal(catalog.statusCode, 200)
+  assert.equal(catalog.json<Row>().data.length, 2)
+  const response = await f.create(0, { provider: f.providers[0]._id, api_key: 'own-fixture-key' })
+  assert.equal(response.statusCode, 202, response.body)
+  assert.equal(unseal(f.tables.jobs[0].encrypted_key, f.config.encryptionKey), 'own-fixture-key')
+  assert.equal(f.tables.quota_reservations.length, 0)
+})
+
 test('personal keys require the selected custom model and route identity without changing its endpoint', async t => {
   const f = await fixture(t)
   f.tables.customers[0].key_mode = 'own'

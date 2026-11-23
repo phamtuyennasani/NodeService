@@ -5,6 +5,7 @@ import { migrate } from './migrate.js';
 import { runWorkers } from './worker/index.js';
 import { runMaintenance } from './worker/maintenance.js';
 import { effectiveConfig } from './runtime-settings.js';
+import { assertEncryptionContext } from './encryption-context.js';
 
 const role = process.argv[2] || 'all';
 if (!['all', 'api', 'writer', 'webhook'].includes(role)) {
@@ -26,6 +27,7 @@ process.once('SIGTERM', stop);
 
 try {
   await assertTransactionSupport(db);
+  await assertEncryptionContext(db, config, role === 'api' || role === 'all');
   await migrate(db);
   // Validate persisted operational settings before starting any role.
   await effectiveConfig(db, config);

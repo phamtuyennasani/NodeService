@@ -2,6 +2,7 @@ import { setTimeout as wait } from 'node:timers/promises'
 import type { Config } from '../config.js'
 import type { Database } from '../db.js'
 import { effectiveConfig } from '../runtime-settings.js'
+import { assertEncryptionContext } from '../encryption-context.js'
 import { runWebhookOnce } from './delivery.js'
 import { startWorkerHeartbeat, type WorkerHeartbeat, type WorkerHeartbeatState, type WorkerRole } from './heartbeat.js'
 import { runWriterOnce } from './writer.js'
@@ -13,11 +14,16 @@ export interface WorkerPoolDependencies {
   runOnce?: (db: Database, config: Config) => Promise<boolean>
   getConfig?: (db: Database, config: Config) => Promise<Config>
   createHeartbeat?: (db: Database, role: WorkerRole, getState: () => WorkerHeartbeatState) => WorkerHeartbeat
+  checkEncryption?: (db: Database, config: Config) => Promise<void>
 }
 
 export async function runWorkers(
   db: Database, config: Config, signal: AbortSignal, role: 'writer' | 'webhook', deps: WorkerPoolDependencies = {},
 ) {
+  if (signal.aborted) return
+  // Validate before publishing capacity or claiming a job. A wrong local key
+  // must not turn a healthy shared queue into permanent credential failures.
+  await (deps.checkEncryption ?? assertEncryptionContext)(db, config)
   if (signal.aborted) return
   const runOnce = deps.runOnce ?? (role === 'writer' ? runWriterOnce : runWebhookOnce)
   const getConfig = deps.getConfig ?? effectiveConfig

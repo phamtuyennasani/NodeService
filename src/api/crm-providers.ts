@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { isCompatibleProvider, providerKind, providers, type Config, type Provider } from '../config.js'
 import { collection, type Database } from '../db.js'
 import { seal, unseal } from '../security.js'
+import { serviceKeyState } from '../provider-key.js'
 import { modelIdSchema, providerIdSchema } from './catalog.js'
 import { ApiError, notFound } from './errors.js'
 import { validateWebhookUrl } from '../worker/webhook.js'
@@ -43,11 +44,13 @@ interface ModelRow {
 }
 
 function providerView(row: ProviderRow, config: Config) {
-  const keyConfigured = Boolean(config.serviceKeys[row._id]) || Boolean(row.encrypted_api_key)
+  const keyState = serviceKeyState(row._id, row.encrypted_api_key, config)
+  const keyConfigured = keyState === 'ready'
   return {
     provider: row._id, kind: providerKind(row._id), display_name: row.display_name, enabled: row.enabled,
     base_url: isCompatibleProvider(row._id) ? row.base_url ?? null : null,
     service_key_configured: keyConfigured, api_key_configured: keyConfigured,
+    api_key_status: keyState,
   }
 }
 
@@ -138,7 +141,7 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
     try {
       key = unseal(settings.encrypted_api_key, config.encryptionKey)
     } catch {
-      throw new ApiError(422, 'provider_key_unavailable', 'API key OpenAI Compatible không đọc được.')
+      throw new ApiError(422, 'provider_key_unavailable', 'Máy chủ không giải mã được API key đã lưu. Kiểm tra ENCRYPTION_KEY giữa API và worker hoặc lưu lại key tại Nhà cung cấp AI.')
     }
 
     let endpoint: URL
@@ -181,7 +184,7 @@ export function registerProviders(app: FastifyInstance, db: Database, config: Co
     try {
       key = unseal(settings.encrypted_api_key, config.encryptionKey)
     } catch {
-      throw new ApiError(422, 'provider_key_unavailable', 'API key OpenAI Compatible không đọc được.')
+      throw new ApiError(422, 'provider_key_unavailable', 'Máy chủ không giải mã được API key đã lưu. Kiểm tra ENCRYPTION_KEY giữa API và worker hoặc lưu lại key tại Nhà cung cấp AI.')
     }
 
     let endpoint: URL

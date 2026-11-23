@@ -9,7 +9,7 @@ import { installErrorHandler } from '../src/api/errors.js'
 import { digest } from '../src/security.js'
 import { evaluateSeo } from '../src/worker/seo.js'
 
-test('site job status exposes final CRM SEO metadata and preserves the article-result array contract', async t => {
+test('site job status exposes CRM writing stages and final SEO metadata while preserving the article-result array contract', async t => {
   const siteId = randomUUID()
   const otherSiteId = randomUUID()
   const jobId = randomUUID()
@@ -56,6 +56,23 @@ test('site job status exposes final CRM SEO metadata and preserves the article-r
   assert.equal(pending.json().length, 1500)
   assert.equal(pending.json().seo_report, null, 'do not publish an intermediate report')
   assert.equal(pending.json().seo_repair_status, null)
+  assert.equal(pending.json().writing_stage, null, 'legacy writing jobs have no known stage')
+
+  for (const stage of ['research', 'outline', 'draft', 'seo_check', 'seo_repair']) {
+    job.writing_stage = stage
+    const processing = await read()
+    assert.equal(processing.statusCode, 200, processing.body)
+    assert.equal(processing.json().writing_stage, stage, 'publish the current worker checkpoint for widget polling')
+    assert.equal(processing.json().seo_report, null, 'stage progress must not expose an unfinished article or report')
+    assert.equal('result' in processing.json(), false)
+    assert.doesNotMatch(processing.body, /must-not-be-exposed|private writing instructions/)
+  }
+
+  for (const state of ['queued', 'scheduled', 'failed', 'canceled']) {
+    job.status = state
+    const stopped = await read()
+    assert.equal(stopped.json().writing_stage, null, 'ignore stale checkpoints outside the writing state')
+  }
 
   job.status = 'ready'
   const ready = await read()
@@ -64,6 +81,7 @@ test('site job status exposes final CRM SEO metadata and preserves the article-r
   assert.equal(ready.json().length, 1500, 'retain the requested word budget for later form evaluation')
   assert.deepEqual(ready.json().seo_report, report)
   assert.equal(ready.json().seo_repair_status, 'kept_draft')
+  assert.equal(ready.json().writing_stage, null, 'completed jobs no longer have an active checkpoint')
   assert.equal('result' in ready.json(), false)
   assert.doesNotMatch(ready.body, /must-not-be-exposed|private writing instructions/)
   const result = await read('/result')

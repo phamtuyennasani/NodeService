@@ -10,6 +10,9 @@ const syntheticPassword = 'synthetic-dialog-password';
 const csrf = 'synthetic-dialog-csrf';
 const binding = 'b'.repeat(43);
 const actionToken = 't'.repeat(43);
+const providerId = 'openai-compatible-dialog-fixture';
+const modelId = 'synthetic-internal-model';
+const deleteTarget = `/api/crm/providers/${providerId}/models/${modelId}`;
 const values: RuntimeSettings = {
   usd_to_vnd: 25000, writer_concurrency: 5, delivery_concurrency: 5, worker_poll_ms: 500,
   ai_timeout_ms: 120000, outline_timeout_ms: 120000, seo_repair_timeout_ms: 90000,
@@ -24,14 +27,19 @@ type CapturedRequest = { raw: string; headers: Record<string, string> };
 type Authorization = CapturedRequest & { body: { current_password: string; method: string; target: string; body_hash: string } };
 const bodyHash = (raw: string) => createHash('sha256').update(raw).digest('base64url');
 
-async function fixture(browser: Browser, bundle: string, rejectPassword = false) {
+async function fixture(browser: Browser, bundle: string, css: string, options: {
+  rejectPassword?: boolean; page?: 'settings' | 'providers'; modelInUse?: boolean;
+} = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   const attempts: CapturedRequest[] = [];
+  const deleteAttempts: CapturedRequest[] = [];
   const authorizations: Authorization[] = [];
   let mutations = 0;
+  let deletions = 0;
+  let modelPresent = true;
   let revision = 3;
   let saved = structuredClone(values);
   let authorization: Authorization['body'] | undefined;
@@ -40,8 +48,9 @@ async function fixture(browser: Browser, bundle: string, rejectPassword = false)
     const request = route.request();
     const url = new URL(request.url());
     if (url.origin !== origin) return route.abort();
-    if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script src="/fixture.js"></script></body></html>' });
+    if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"></head><body><div id="root"></div><script src="/fixture.js"></script></body></html>' });
     if (url.pathname === '/fixture.js') return route.fulfill({ contentType: 'text/javascript', body: bundle });
+    if (url.pathname === '/fixture.css') return route.fulfill({ contentType: 'text/css', body: css });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
     if (url.pathname === '/api/crm/session/bootstrap' && request.method() === 'GET') {
       return route.fulfill({ json: { browser_binding: binding, server_time: Date.now() } });
@@ -53,14 +62,39 @@ async function fixture(browser: Browser, bundle: string, rejectPassword = false)
     if (url.pathname === '/api/crm/settings' && request.method() === 'GET') {
       return route.fulfill({ json: { values: saved, defaults: values, revision, updated_at: null } });
     }
+    if (url.pathname === '/api/crm/providers' && request.method() === 'GET') {
+      return route.fulfill({ json: { data: [{
+        provider: providerId, kind: 'openai-compatible', display_name: 'Synthetic gateway', enabled: true,
+        api_key_status: 'unreadable', api_key_configured: false, service_key_configured: false,
+        base_url: 'https://gateway.example.test/v1', models: modelPresent ? [{
+          model: modelId, upstream_model: 'synthetic/model', display_name: 'Synthetic model', enabled: true,
+        }] : [],
+      }] } });
+    }
     if (url.pathname === '/api/crm/session/authorize' && request.method() === 'POST') {
       const body = request.postDataJSON();
       authorizations.push({ body, raw: request.postData()!, headers: request.headers() });
-      if (rejectPassword || body.current_password !== syntheticPassword) {
+      if (options.rejectPassword || body.current_password !== syntheticPassword) {
         return route.fulfill({ status: 400, json: { error: { code: 'invalid_password', message: 'Mật khẩu hiện tại không đúng.' } } });
       }
       authorization = body;
       return route.fulfill({ json: { action_token: actionToken, expires_in: 60 } });
+    }
+    if (url.pathname === deleteTarget && request.method() === 'DELETE') {
+      const raw = request.postData() ?? '';
+      const headers = request.headers();
+      deleteAttempts.push({ raw, headers });
+      if (headers['x-crm-action-token'] !== actionToken || !authorization || authorization.method !== request.method()
+        || authorization.target !== url.pathname + url.search || authorization.body_hash !== bodyHash(raw)) {
+        return route.fulfill({ status: 403, json: { error: { code: 'reauthentication_required', message: 'Vui lòng xác nhận mật khẩu cho thao tác này.' } } });
+      }
+      authorization = undefined;
+      if (options.modelInUse) return route.fulfill({ status: 409, json: { error: {
+        code: 'model_in_use', message: 'Không thể xóa model đã được dùng trong gói khách hàng, yêu cầu viết hoặc bảng giá.',
+      } } });
+      modelPresent = false;
+      deletions++;
+      return route.fulfill({ status: 204 });
     }
     if (url.pathname === '/api/crm/settings' && request.method() === 'PUT') {
       const raw = request.postData()!;
@@ -79,25 +113,134 @@ async function fixture(browser: Browser, bundle: string, rejectPassword = false)
     errors.push(`Unexpected request: ${request.method()} ${url.pathname}`);
     return route.abort();
   });
-  await page.goto(`${origin}/#settings`);
-  await page.getByLabel('VND cho 1 USD', { exact: true }).waitFor();
+  await page.goto(`${origin}/#${options.page ?? 'settings'}`);
+  if (options.page === 'providers') {
+    await page.getByRole('navigation', { name: 'Chọn dạng kết nối AI', exact: true })
+      .getByRole('button', { name: /OpenAI Compatible/ }).click();
+    await page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).waitFor();
+  } else await page.getByLabel('VND cho 1 USD', { exact: true }).waitFor();
   const save = page.getByRole('button', { name: 'Lưu cài đặt', exact: true });
   const dialog = page.getByRole('dialog', { name: 'Xác nhận bảo mật', exact: true });
-  return { context, page, errors, attempts, authorizations, save, dialog, getMutations: () => mutations };
+  return { context, page, errors, attempts, deleteAttempts, authorizations, save, dialog,
+    getMutations: () => mutations, getDeletions: () => deletions };
 }
 
 test('real CRM entry prompts for one-use password authorization through its actual dialog', async t => {
   const { outputFiles } = await build({
     stdin: { contents: `import {prepareBrowserLogin} from './web/src/browser-proof';
       void prepareBrowserLogin().then(() => import('./web/src/main'));`, resolveDir: process.cwd(), loader: 'ts' },
-    bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', write: false,
-    loader: { '.css': 'empty', '.woff': 'empty', '.woff2': 'empty' },
-    define: { 'process.env.NODE_ENV': '"test"' },
+    bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', write: false, outfile: 'fixture.js',
+    loader: { '.woff': 'empty', '.woff2': 'empty' },
+    define: { 'process.env.NODE_ENV': '"production"' },
   });
+  const bundle = outputFiles.find(file => file.path.endsWith('.js'))!.text;
+  const css = outputFiles.find(file => file.path.endsWith('.css'))!.text;
   const browser = await chromium.launch();
   try {
+    await t.test('model deletion keeps its security dialog in front and editable, then deletes exactly once', async () => {
+      const f = await fixture(browser, bundle, css, { page: 'providers' });
+      try {
+        await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click();
+        const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Xóa model này?' });
+        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
+        await f.dialog.waitFor();
+        const password = f.dialog.getByLabel('Mật khẩu hiện tại', { exact: true });
+        await password.click({ trial: true, timeout: 1500 });
+        await password.fill(syntheticPassword);
+        for (let index = 0; index < 8; index++) {
+          await f.page.keyboard.press('Tab');
+          // Chromium may move focus to its address bar when tabbing past the last control.
+          assert.equal(await f.dialog.evaluate(dialog => (document.activeElement === document.body && !document.hasFocus())
+            || dialog.contains(document.activeElement)), true,
+            'tabbing must not focus controls in the underlying confirmation or CRM');
+        }
+        assert.equal(await f.dialog.evaluate(dialog => dialog.contains(document.activeElement)), true,
+          'tabbing back into the page must return to the security dialog');
+        await f.dialog.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
+        await f.page.getByText('Đã xóa model.', { exact: true }).waitFor();
+        await confirmation.waitFor({ state: 'hidden' });
+        await f.dialog.waitFor({ state: 'hidden' });
+        await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).waitFor({ state: 'hidden' });
+        assert.equal(f.getDeletions(), 1);
+        assert.equal(f.authorizations.length, 1);
+        assert.equal(f.deleteAttempts.length, 2);
+        assert.deepEqual(f.authorizations[0].body, {
+          current_password: syntheticPassword, method: 'DELETE', target: deleteTarget, body_hash: bodyHash(''),
+        });
+        assert.equal(f.deleteAttempts[0].headers['x-crm-action-token'], undefined);
+        assert.equal(f.deleteAttempts[1].headers['x-crm-action-token'], actionToken);
+        assert.notEqual(f.deleteAttempts[0].headers['x-crm-proof'], f.deleteAttempts[1].headers['x-crm-proof']);
+        assert.equal(f.deleteAttempts[1].raw, '');
+        assert.deepEqual(f.errors, []);
+      } finally { await f.context.close(); }
+    });
+
+    await t.test('canceling password confirmation leaves the model and lets the deletion dialog close', async () => {
+      const f = await fixture(browser, bundle, css, { page: 'providers' });
+      try {
+        await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click();
+        const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Xóa model này?' });
+        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
+        await f.dialog.getByRole('button', { name: 'Hủy', exact: true }).click();
+        await f.dialog.waitFor({ state: 'hidden' });
+        await f.page.getByText('Đã hủy thao tác.', { exact: true }).waitFor();
+        assert.equal(f.getDeletions(), 0);
+        assert.equal(f.authorizations.length, 0);
+        assert.equal(f.deleteAttempts.length, 1);
+        await confirmation.getByRole('button', { name: 'Hủy', exact: true }).click();
+        await confirmation.waitFor({ state: 'hidden' });
+        await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click({ trial: true });
+        assert.deepEqual(f.errors, []);
+      } finally { await f.context.close(); }
+    });
+
+    await t.test('in-use model error resets deletion loading without removing the model', async () => {
+      const f = await fixture(browser, bundle, css, { page: 'providers', modelInUse: true });
+      try {
+        await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click();
+        const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Xóa model này?' });
+        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
+        await f.dialog.getByLabel('Mật khẩu hiện tại', { exact: true }).fill(syntheticPassword);
+        await f.dialog.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
+        await f.page.getByText('Không thể xóa model đã được dùng trong gói khách hàng, yêu cầu viết hoặc bảng giá.', { exact: true }).waitFor();
+        assert.equal(f.getDeletions(), 0);
+        assert.equal(f.deleteAttempts.length, 2);
+        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click({ trial: true });
+        await confirmation.getByRole('button', { name: 'Hủy', exact: true }).click();
+        await confirmation.waitFor({ state: 'hidden' });
+        await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click({ trial: true });
+        assert.deepEqual(f.errors, []);
+      } finally { await f.context.close(); }
+    });
+
+    await t.test('wrong deletion password allows a fresh confirmation and successful retry', async () => {
+      const f = await fixture(browser, bundle, css, { page: 'providers' });
+      try {
+        await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click();
+        const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Xóa model này?' });
+        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
+        await f.dialog.getByLabel('Mật khẩu hiện tại', { exact: true }).fill('incorrect-synthetic-password');
+        await f.dialog.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
+        await f.page.getByText('Mật khẩu hiện tại không đúng.', { exact: true }).waitFor();
+        assert.equal(f.getDeletions(), 0);
+        assert.equal(f.deleteAttempts.length, 1);
+        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
+        const password = f.dialog.getByLabel('Mật khẩu hiện tại', { exact: true });
+        await password.click({ trial: true });
+        assert.equal(await password.inputValue(), '');
+        await password.fill(syntheticPassword);
+        await f.dialog.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
+        await f.page.getByText('Đã xóa model.', { exact: true }).waitFor();
+        await confirmation.waitFor({ state: 'hidden' });
+        assert.equal(f.getDeletions(), 1);
+        assert.equal(f.authorizations.length, 2);
+        assert.equal(f.deleteAttempts.length, 3);
+        assert.deepEqual(f.errors, []);
+      } finally { await f.context.close(); }
+    });
+
     await t.test('cancel dismisses the real dialog without authorizing or saving', async () => {
-      const f = await fixture(browser, outputFiles[0].text);
+      const f = await fixture(browser, bundle, css);
       try {
         await f.page.getByLabel('VND cho 1 USD', { exact: true }).fill('27000');
         await f.save.click();
@@ -118,7 +261,7 @@ test('real CRM entry prompts for one-use password authorization through its actu
     });
 
     await t.test('confirm requires a password and retries exactly the pending body once with scoped authorization', async () => {
-      const f = await fixture(browser, outputFiles[0].text);
+      const f = await fixture(browser, bundle, css);
       try {
         await f.page.getByLabel('VND cho 1 USD', { exact: true }).fill('27000');
         await f.save.click();
@@ -159,7 +302,7 @@ test('real CRM entry prompts for one-use password authorization through its actu
     });
 
     await t.test('wrong password reports the server error and never retries a mutation', async () => {
-      const f = await fixture(browser, outputFiles[0].text, true);
+      const f = await fixture(browser, bundle, css, { rejectPassword: true });
       try {
         await f.page.getByLabel('VND cho 1 USD', { exact: true }).fill('27000');
         await f.save.click();

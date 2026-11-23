@@ -1,6 +1,8 @@
 import createDOMPurify from 'dompurify';
 import { sanitizeArticleStyle } from '../src/article-styles';
 import type { SeoReport } from '../src/worker/seo';
+import { isWritingStage, writingStageLabel } from '../src/writing-stage';
+import { writingVisual } from './writing-visual';
 import styles from './styles.css';
 
 const articlePurifier = createDOMPurify(window);
@@ -39,6 +41,7 @@ interface Config {
 interface Preview {
   job_id: string;
   status: string;
+  writing_stage?: string | null;
   result?: unknown;
   keyword?: string;
   seo_report?: SeoReport | null;
@@ -205,7 +208,17 @@ function mount(config: Config) {
         <label class="research-option"><input name="use_research" type="checkbox" checked><span>Sử dụng dữ liệu tìm kiếm để hỗ trợ viết bài</span></label>
         <div class="form-actions"><small>Nội dung sẽ được xem trước trước khi điền vào form.</small><button type="submit" class="primary submit"><span>Viết ngay</span><span class="button-arrow" aria-hidden="true">→</span></button></div>
       </form>
-      <p class="status" role="status" aria-live="polite" hidden></p>
+      <section class="activity" aria-label="Tiến trình viết bài" tabindex="-1" hidden>
+        <div class="writing-only writing-visual" aria-hidden="true">
+          ${writingVisual}
+        </div>
+        <h3 class="writing-only writing-title">Đang tạo bài viết của bạn</h3>
+        <p class="writing-only writing-keyword"></p>
+        <div class="writing-only writing-track" role="progressbar" aria-label="Đang xử lý bài viết"></div>
+        <p class="status" role="status" aria-live="polite" hidden></p>
+        <p class="writing-only writing-hint">Vui lòng giữ cửa sổ này mở. Bạn có thể đóng khi có kết quả hoặc thông báo lỗi.</p>
+        <p class="writing-only writing-elapsed" aria-live="off"></p>
+      </section>
       <section class="preview" aria-label="Xem trước bài viết" hidden>
         <h3 class="title"></h3>
         <dl class="metadata"></dl>
@@ -213,7 +226,7 @@ function mount(config: Config) {
           <h4>Kiểm tra SEO từ CRM</h4>
           <p class="seo-summary"></p>
           <p class="seo-repair"></p>
-          <p>Điểm là checklist biên tập nội bộ, không bảo đảm thứ hạng tìm kiếm. Người biên tập cần kiểm tra nội dung trước khi xuất bản.</p>
+          <p>Điểm là checklist biên tập nội bộ, không bảo đảm thứ hạng tìm kiếm. Người biên tập cần kiểm tra nội dung trước khi xuất bản. Tiêu chí chưa áp dụng không tính vào điểm.</p>
           <details><summary class="seo-details-label"></summary><ul class="seo-findings"></ul></details>
         </section>
         <article class="body"></article>
@@ -227,8 +240,13 @@ function mount(config: Config) {
   const launch = select<HTMLButtonElement>('.launch');
   const form = select<HTMLFormElement>('form');
   const submit = select<HTMLButtonElement>('.submit');
+  const close = select<HTMLButtonElement>('.close');
+  const discard = select<HTMLButtonElement>('.discard');
   const accept = select<HTMLButtonElement>('.accept');
   const status = select<HTMLParagraphElement>('.status');
+  const activity = select<HTMLElement>('.activity');
+  const visual = select<HTMLElement>('.writing-visual');
+  const elapsed = select<HTMLElement>('.writing-elapsed');
   const preview = select<HTMLElement>('.preview');
   let model = select<HTMLInputElement | HTMLSelectElement>('[name="model"]');
   if (keyMode !== 'own' && (modelsEndpoint || config.models)) {
@@ -262,15 +280,49 @@ function mount(config: Config) {
   let result: Article | undefined;
   let resultKeyword = '';
   let applying = false;
+  let writingTimer: number | undefined;
 
   function setStatus(message = '', error = false) {
-    status.textContent = message;
+    if (status.textContent !== message) status.textContent = message;
     status.hidden = !message;
     status.classList.toggle('error', error);
+    activity.hidden = !message && !controller;
   }
 
   function updateSubmit() {
     submit.disabled = Boolean(controller || (model instanceof HTMLSelectElement && model.disabled));
+    close.disabled = discard.disabled = Boolean(controller || applying);
+    form.setAttribute('aria-busy', String(Boolean(controller)));
+  }
+
+  function clearWritingTimer() {
+    window.clearInterval(writingTimer);
+    writingTimer = undefined;
+  }
+
+  function setWriting(active: boolean, keyword = '') {
+    clearWritingTimer();
+    dialog.classList.toggle('is-writing', active);
+    form.hidden = active || !preview.hidden;
+    updateSubmit();
+    if (active) {
+      visual.dataset.stage = 'waiting';
+      select('.writing-keyword').textContent = keyword;
+      const startedAt = Date.now();
+      const updateElapsed = () => {
+        const seconds = Math.floor((Date.now() - startedAt) / 1000);
+        elapsed.textContent = `Đã chờ ${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+      };
+      updateElapsed();
+      writingTimer = window.setInterval(updateElapsed, 1000);
+      activity.hidden = false;
+      activity.focus({ preventScroll: true });
+      dialog.scrollTop = 0;
+    } else {
+      delete visual.dataset.stage;
+      activity.hidden = status.hidden;
+      if (status.classList.contains('error')) activity.focus();
+    }
   }
 
   async function refreshModels(url: URL, menu: HTMLSelectElement) {
@@ -321,7 +373,8 @@ function mount(config: Config) {
         : job.seo_repair_status === 'skipped'
           ? 'CRM đã lưu bài. Các tiêu chí còn thiếu cần được biên tập viên xem lại.'
           : 'Đây là kết quả kiểm tra của bài viết được lưu trong CRM.';
-    select('.seo-details-label').textContent = `Xem ${report.findings.length} tiêu chí SEO`;
+    const excluded = report.findings.filter(finding => !finding.applicable).length;
+    select('.seo-details-label').textContent = `Xem ${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng)`;
     const findings = select('.seo-findings');
     findings.replaceChildren();
     for (const finding of report.findings) {
@@ -369,15 +422,20 @@ function mount(config: Config) {
     pending = task;
     const running = new AbortController();
     controller = running;
-    submit.disabled = true;
     setStatus('Đang gửi yêu cầu viết bài…');
+    setWriting(true, JSON.parse(body).keyword);
     try {
       let job = task.jobId
         ? await request(jobUrl(endpoint, task.jobId), running.signal)
         : await request(endpoint, running.signal, task);
       task.jobId = job.job_id;
       while (['scheduled', 'queued', 'writing', 'retrying'].includes(job.status)) {
-        setStatus(job.status === 'writing' ? 'AI đang viết bài…' : 'Yêu cầu đang chờ xử lý…');
+        const stage = job.status === 'writing' && isWritingStage(job.writing_stage) ? job.writing_stage : 'waiting';
+        if (visual.dataset.stage !== stage) visual.dataset.stage = stage;
+        setStatus(job.status === 'writing' ? `${writingStageLabel(job.writing_stage, 'CRM đang xử lý bài viết')}…`
+          : job.status === 'retrying' ? 'CRM đang thử xử lý lại bài viết…'
+            : job.status === 'scheduled' ? 'Bài viết đã được lên lịch. Đang chờ CRM xử lý…'
+              : 'Yêu cầu đang chờ xử lý…');
         await new Promise<void>(resolve => window.setTimeout(resolve, 1_500));
         running.signal.throwIfAborted();
         job = await request(jobUrl(endpoint, task.jobId), running.signal);
@@ -395,7 +453,7 @@ function mount(config: Config) {
     } finally {
       if (controller === running) {
         controller = undefined;
-        updateSubmit();
+        setWriting(false);
       }
     }
   }
@@ -407,14 +465,16 @@ function mount(config: Config) {
     else updateSubmit();
     if (pending?.jobId) void run(pending.body);
   };
-  select<HTMLButtonElement>('.close').onclick = () => { if (!applying) dialog.close(); };
-  select<HTMLButtonElement>('.discard').onclick = () => { if (!applying) dialog.close(); };
-  dialog.addEventListener('cancel', event => { if (applying) event.preventDefault(); });
+  close.onclick = discard.onclick = () => { if (!controller && !applying) dialog.close(); };
+  dialog.addEventListener('cancel', event => { if (controller || applying) event.preventDefault(); });
   dialog.addEventListener('close', () => {
     controller?.abort();
     catalogRequest?.abort();
     catalogRequest = undefined;
     controller = undefined;
+    clearWritingTimer();
+    delete visual.dataset.stage;
+    dialog.classList.remove('is-writing');
     updateSubmit();
     result = undefined;
     resultKeyword = '';
@@ -454,6 +514,7 @@ function mount(config: Config) {
     if (!result || applying) return;
     applying = true;
     accept.disabled = true;
+    updateSubmit();
     try {
       const apply = prepareWrites(config, result, resultKeyword);
       for (const write of apply) await write();
@@ -463,9 +524,10 @@ function mount(config: Config) {
     } finally {
       applying = false;
       accept.disabled = false;
+      updateSubmit();
     }
   };
-  return { destroy() { controller?.abort(); catalogRequest?.abort(); host.remove(); } };
+  return { destroy() { controller?.abort(); catalogRequest?.abort(); clearWritingTimer(); host.remove(); } };
 }
 
 declare global {

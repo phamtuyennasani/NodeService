@@ -14,6 +14,7 @@ import { DatabaseJobEvents, jobEvents } from '../job-events.js'
 import { excludedContentIdsSchema } from '../site-content.js'
 import { digest } from '../security.js'
 import { crmSessionCookieName } from './crm-session.js'
+import { registerJobPdfRoute } from './crm-job-pdf.js'
 
 const keys = z.object({ customer_id: idSchema.optional(), website_id: idSchema.optional() })
 const listSchema = keys.extend({ from: periodSchema.optional(), to: periodSchema.optional(), limit: z.coerce.number().int().min(1).max(250).default(100), cursor: z.string().max(512).optional(), q: z.string().trim().max(160).optional() })
@@ -190,6 +191,7 @@ function runtimeJob(row: any) {
 }
 
 export function registerReports(app: FastifyInstance, db: Database, config: Config, getRuntimeConfig: () => Promise<Config> = async () => config) {
+  registerJobPdfRoute(app, db)
   const liveJobs = new DatabaseJobEvents(db, error => app.log.warn({ err: error }, 'CRM job event stream reconnecting'))
   const closeStreams = new Set<() => void>()
   const streamsBySession = new Map<string, number>()

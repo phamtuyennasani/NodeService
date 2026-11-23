@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, App, Button, Checkbox, DatePicker, Descriptions, Drawer, Form, Grid, Input, InputNumber, Modal, Popconfirm, Select, Skeleton, Space, Table, Tabs, Tag, Tooltip } from 'antd';
-import { ArrowRightOutlined, CalendarOutlined, CheckCircleOutlined, ControlOutlined, DeleteOutlined, MinusCircleOutlined, ReloadOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined, CalendarOutlined, CheckCircleOutlined, ControlOutlined, DeleteOutlined, FilePdfOutlined, MinusCircleOutlined, ReloadOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { Decimal } from 'decimal.js';
 import { mutate, useCatalog, useResource, useSearchValue, withQuery } from './api';
@@ -9,6 +9,7 @@ import { compactId, CursorPagination, datetime, EmptyState, go, jobId, JobStatus
 import type { Attempt, Collection, Delivery, Job, JobDetails } from './types';
 import { DateTimeField } from './DateTimeField';
 import { sanitizeArticleHtml } from './article-html';
+import { downloadJobPdf, hasJobPdfContent } from './job-pdf';
 import './records.css';
 
 const jobStatuses = [['scheduled', 'Chờ đến lịch'], ['queued', 'Chờ viết'], ['writing', 'Đang viết'], ['ready', 'Đã viết'], ['failed', 'Lỗi viết'], ['canceled', 'Đã hủy']];
@@ -238,15 +239,33 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
   const detail = useResource<JobDetails>(id ? `/jobs/${id}` : null);
   const [rewriteOpen, setRewriteOpen] = useState(startWithRewrite);
   const [rewriting, setRewriting] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const pdfRequest = useRef<AbortController | null>(null);
   const [form] = Form.useForm();
   const { message, modal } = App.useApp();
   const job = detail.data ? newestJob(detail.data, detail.requestedAt, liveJob) as JobDetails : liveJob?.job;
   const article = job?.result?.[0];
+  const canExportPdf = useMemo(() => hasJobPdfContent(article?.Content), [article?.Content]);
   const rewriteKeyMode = job?.rewrite_key_mode ?? job?.key_mode;
   const isFailed = job?.status === 'failed';
   const canRewrite = isFailed || Boolean(article && (job?.status === 'completed' || job?.status === 'ready'));
   const canDelete = Boolean(job && ['scheduled', 'queued', 'completed', 'ready', 'failed', 'canceled'].includes(job.status));
   useEffect(() => { if (id && revision) detail.reload(); }, [id, revision]);
+  useEffect(() => () => { pdfRequest.current?.abort(); }, [id]);
+  async function exportPdf() {
+    if (!job || !canExportPdf || pdfRequest.current) return;
+    const controller = new AbortController();
+    pdfRequest.current = controller;
+    setExportingPdf(true);
+    try {
+      await downloadJobPdf(jobId(job), article?.Slug, controller.signal);
+    } catch (error) {
+      if (!controller.signal.aborted) message.error((error as Error).message);
+    } finally {
+      if (pdfRequest.current === controller) pdfRequest.current = null;
+      if (!controller.signal.aborted) setExportingPdf(false);
+    }
+  }
   function closeRewrite() { if (rewriting) return; setRewriteOpen(false); form.resetFields(); }
   async function rewrite(values: { instructions?: string; keyAI?: string }) {
     if (!job) return;
@@ -274,8 +293,8 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
       async onOk() { try { await mutate(`/jobs/${jobId(job)}`, 'DELETE'); message.success(hasArticle ? 'Đã xóa bài viết.' : 'Đã xóa yêu cầu khỏi danh sách chờ.'); close(); onDeleted(); } catch (error) { message.error((error as Error).message); } },
     });
   }
-  return <Drawer title={job?.keyword ?? 'Chi tiết yêu cầu viết'} open={Boolean(id)} size={760} onClose={close}
-    extra={<Space><Tooltip title={canRewrite ? undefined : rewriteUnavailableReason(job)}><span><Button type="primary" icon={<ReloadOutlined />} disabled={!canRewrite} onClick={() => setRewriteOpen(true)}>Viết lại</Button></span></Tooltip>{canDelete && <Button danger icon={<DeleteOutlined />} onClick={removeJob}>{job?.result?.length ? 'Xóa bài' : 'Xóa khỏi hàng chờ'}</Button>}<Button icon={<ReloadOutlined />} loading={detail.loading} onClick={detail.reload}>Làm mới</Button></Space>}>
+  return <Drawer className="job-detail-drawer" title={job?.keyword ?? 'Chi tiết yêu cầu viết'} open={Boolean(id)} size={760} onClose={close}
+    extra={<Space wrap>{canExportPdf && <Button aria-label="Xuất PDF" icon={<FilePdfOutlined />} loading={exportingPdf} onClick={exportPdf}>Xuất PDF</Button>}<Tooltip title={canRewrite ? undefined : rewriteUnavailableReason(job)}><span><Button type="primary" icon={<ReloadOutlined />} disabled={!canRewrite} onClick={() => setRewriteOpen(true)}>Viết lại</Button></span></Tooltip>{canDelete && <Button danger icon={<DeleteOutlined />} onClick={removeJob}>{job?.result?.length ? 'Xóa bài' : 'Xóa khỏi hàng chờ'}</Button>}<Button icon={<ReloadOutlined />} loading={detail.loading} onClick={detail.reload}>Làm mới</Button></Space>}>
     <ResourceError error={detail.error} onRetry={detail.reload} />
     {detail.loading && !job && <Skeleton active />}
     {job && <>

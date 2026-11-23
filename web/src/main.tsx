@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Alert, App, Button, Checkbox, ConfigProvider, Drawer, Dropdown, Form, Input, Modal, Skeleton, Spin,
+  Alert, App, Button, Checkbox, ConfigProvider, Drawer, Dropdown, Form, Input, Modal, Skeleton, Spin, theme as antdTheme,
 } from 'antd';
 import viVN from 'antd/locale/vi_VN';
 import dayjs from 'dayjs';
@@ -384,6 +384,7 @@ function Root() {
 }
 
 function ReauthenticationDialog() {
+  const { token } = antdTheme.useToken();
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm<{ current_password: string }>();
   const pending = useRef<((password: string | null) => void) | undefined>(undefined);
@@ -410,7 +411,8 @@ function ReauthenticationDialog() {
       window.removeEventListener('crm-session-expired', cancel);
     };
   }, [form]);
-  return <Modal title="Xác nhận bảo mật" open={open} onCancel={() => finish(null)}
+  // Confirm dialogs use the popup base + 1000; security prompts must appear above them.
+  return <Modal title="Xác nhận bảo mật" open={open} zIndex={token.zIndexPopupBase + 1100} onCancel={() => finish(null)}
     onOk={() => form.submit()} okText="Xác nhận thao tác" cancelText="Hủy" destroyOnHidden>
     <p>Nhập lại mật khẩu để xác nhận thao tác quản trị nhạy cảm. Xác nhận chỉ có hiệu lực cho một thao tác này.</p>
     <Form form={form} layout="vertical" preserve={false} onFinish={values => finish(values.current_password)}>

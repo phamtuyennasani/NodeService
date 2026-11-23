@@ -1,6 +1,6 @@
 import sanitizeHtml from 'sanitize-html'
 import { z } from 'zod'
-import { articleStyleRules, sanitizeArticleStyle } from '../article-styles.js'
+import { sanitizeArticleContent } from '../article-html.js'
 import type { InternalLinkCandidate } from '../site-content.js'
 import { prepareInternalLinkCandidates } from './internal-links.js'
 import type { ResearchContext } from './research.js'
@@ -553,21 +553,7 @@ function outputText(provider: Provider, response: UnknownObject): string {
 
 export function cleanArticle(value: unknown): Article {
   const article = articleSchema.parse(normalizeArticleFields(value))
-  const content = sanitizeHtml(article.Content, {
-    allowedTags: ['p', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'strong', 'em', 'b', 'i', 'a', 'span', 'blockquote', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'br', 'hr', 'code', 'pre'],
-    allowedAttributes: { '*': ['style'], a: ['href'], th: ['scope', 'colspan', 'rowspan'], td: ['colspan', 'rowspan'] },
-    allowedStyles: { '*': articleStyleRules },
-    transformTags: { '*': (tagName, attribs) => {
-      if (attribs.style) {
-        const style = sanitizeArticleStyle(attribs.style)
-        if (style) attribs.style = style
-        else delete attribs.style
-      }
-      return { tagName, attribs }
-    } },
-    allowedSchemes: ['https', 'http', 'mailto'],
-    allowProtocolRelative: false,
-  })
+  const content = sanitizeArticleContent(article.Content)
   if (!sanitizeHtml(content, { allowedTags: [], allowedAttributes: {} }).replace(/&nbsp;/g, '').trim()) {
     throw new Error('Empty article content')
   }

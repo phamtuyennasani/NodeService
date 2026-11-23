@@ -1017,6 +1017,49 @@ test('provider keys for OpenAI Compatible are read from current CRM settings', a
   assertReady(f, seoArticle(), 'not_needed')
 })
 
+test('unreadable provider key preserves the accepted job and quota until configuration is fixed', async () => {
+  const f = fixture({ provider: 'openai-compatible', attempt_count: 2 })
+  const correctKey = Buffer.alloc(32, 9)
+  f.tables.ai_providers = [{ _id: 'openai-compatible', base_url: 'https://example.test/v1', encrypted_api_key: seal('working-provider-key', correctKey) }]
+  const before = Date.now()
+  const events: JobEvent[] = []
+  const unsubscribe = jobEvents.subscribe(event => events.push(event))
+  try {
+    assert.equal(await f.run({
+      async outline() { assert.fail('Do not call upstream before decrypting') },
+      async generate() { assert.fail('Do not call upstream before decrypting') },
+    }), true)
+    assert.equal(f.job.status, 'queued')
+    assert.equal(f.job.error_code, 'AI_KEY_UNREADABLE')
+    assert.equal(f.job.attempt_count, 2)
+    assert.equal(f.job.lease_token, null)
+    assert.ok(f.job.available_at.getTime() >= before + 60_000)
+    assert.equal(f.reservation.status, 'reserved')
+    assert.equal(f.tables.ai_attempts.length, 0)
+    assert.equal(f.tables.webhook_deliveries.length, 0)
+    assert.ok(events.some(event => event.status === 'queued' && event.error_code === 'AI_KEY_UNREADABLE'))
+    assert.equal(await f.run(), false, 'do not spin on a blocked configuration')
+    f.config.encryptionKey = correctKey
+    f.job.available_at = new Date(0)
+    await f.run({ async generate(input) {
+      assert.equal(input.key, 'working-provider-key')
+      return { article: seoArticle(), ...metadata }
+    } })
+    assertReady(f, seoArticle(), 'not_needed')
+  } finally { unsubscribe() }
+})
+
+test('unreadable personal key is retained for another compatible worker', async () => {
+  const encrypted = seal('personal-key', Buffer.alloc(32, 9))
+  const f = fixture({ key_mode: 'own', encrypted_key: encrypted })
+  await f.run({ async generate() { assert.fail('Do not call upstream with an unreadable key') } })
+  assert.equal(f.job.status, 'queued')
+  assert.equal(f.job.error_code, 'AI_KEY_UNREADABLE')
+  assert.equal(f.job.encrypted_key, encrypted)
+  assert.equal(f.job.attempt_count, 0)
+  assert.equal(f.tables.ai_attempts.length, 0)
+})
+
 test('compatible connections keep their keys, endpoints, catalog models and pricing isolated', async () => {
   const firstProvider = 'openai-compatible-10000000-0000-4000-8000-000000000001'
   const secondProvider = 'openai-compatible-10000000-0000-4000-8000-000000000002'

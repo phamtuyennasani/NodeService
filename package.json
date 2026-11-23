@@ -37,6 +37,7 @@
     "ipaddr.js": "^2.5.0",
     "mongodb": "^7.9.0",
     "nodemailer": "^10.6.1",
+    "playwright": "^1.65.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "recharts": "^3.11.0",
@@ -52,7 +53,6 @@
     "@vitejs/plugin-react": "^6.3.0",
     "esbuild": "^0.28.2",
     "nodemon": "^3.1.14",
-    "playwright": "^1.65.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { isCompatibleProvider, providers, type Config, type Provider } from '../config.js'
 import { collection, sessionOf, type MongoSource } from '../db.js'
 import { ApiError } from './errors.js'
+import { serviceKeyState } from '../provider-key.js'
 import type { Package } from './quota.js'
 
 export const modelIdSchema = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9._/-]+$/)
@@ -39,9 +40,9 @@ export async function listModelsForCustomer(db: MongoSource, config: Config, cus
   const models = await listAvailableModels(db, service ? customer.allowed_models ?? [] : undefined)
   const configured = await collection<{ _id: Provider, base_url?: string | null, encrypted_api_key?: string | null }>(db, 'ai_providers')
     .find({ enabled: true }, { session: sessionOf(db) }).toArray()
-  const ready = new Set(configured.filter(row => isCompatibleProvider(row._id)
-    ? Boolean(row.base_url) && (!service || Boolean(row.encrypted_api_key))
-    : !service || Boolean(row.encrypted_api_key || config.serviceKeys[row._id as keyof typeof config.serviceKeys])).map(row => row._id))
+  const ready = new Set(configured.filter(row =>
+    (!isCompatibleProvider(row._id) || Boolean(row.base_url))
+    && (!service || serviceKeyState(row._id, row.encrypted_api_key, config) === 'ready')).map(row => row._id))
   return models.filter(model => ready.has(model.provider))
 }
 

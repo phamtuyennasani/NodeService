@@ -11,8 +11,11 @@ function isCompatible(provider: CatalogProvider) {
 }
 
 function keyConfigured(provider?: CatalogProvider) {
+  if (provider?.api_key_status === 'unreadable') return false;
   return Boolean(provider?.api_key_configured || provider?.service_key_configured);
 }
+
+const unreadableKeyHelp = 'Khôi phục ENCRYPTION_KEY ban đầu và dùng cùng giá trị trên CRM/API và worker. Nếu cần nhập lại API key, hãy sửa xong cấu hình máy chủ trước.';
 
 const connectionTypes = [
   { provider: 'openai', display_name: 'OpenAI' },
@@ -43,7 +46,7 @@ export function Providers() {
   const [busy, setBusy] = useState<string>();
   const [form] = Form.useForm<CatalogModel>();
   const [providerForm] = Form.useForm<ProviderFormValues>();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const providers = catalog.data?.data ?? [];
   const compatibleProviders = providers.filter(isCompatible);
   const selected = connectionType === 'openai-compatible'
@@ -91,8 +94,8 @@ export function Providers() {
     }
   }
 
-  function removeModel(provider: CatalogProvider, model: CatalogModel) {
-    Modal.confirm({
+  async function removeModel(provider: CatalogProvider, model: CatalogModel) {
+    await modal.confirm({
       title: 'Xóa model này?',
       content: `Model ${model.upstream_model ?? model.model} sẽ bị xóa khỏi danh sách của ${provider.display_name}.`,
       okText: 'Xóa model',
@@ -213,9 +216,8 @@ export function Providers() {
           aria-label={'Cho phép cung cấp ' + selected.display_name} onChange={(value) => void setEnabled(selected, value)} />
       </label>}>
         <Space className="record-provider-key" size={8} wrap>
-          <span><KeyOutlined /> {isCompatible(selected) ? 'API key' : 'Key dịch vụ'} {isCompatible(selected)
-            ? (keyConfigured(selected) ? 'đã cấu hình' : 'chưa cấu hình')
-            : (selected.service_key_configured ? 'đã cấu hình' : 'chưa cấu hình')}</span>
+          <span><KeyOutlined /> {isCompatible(selected) ? 'API key' : 'Key dịch vụ'} {selected.api_key_status === 'unreadable'
+            ? 'không đọc được' : keyConfigured(selected) ? 'đã cấu hình' : 'chưa cấu hình'}</span>
           <Button size="small" onClick={() => editProvider(selected)} disabled={Boolean(busy) || catalog.loading}>
             {isCompatible(selected) ? 'Cấu hình kết nối' : 'Cấu hình key'}
           </Button>
@@ -225,6 +227,8 @@ export function Providers() {
         {isCompatible(selected) && <p className="record-provider-endpoint">
           Base URL <span className="mono">{selected.base_url || 'Chưa cấu hình'}</span>
         </p>}
+        {selected.api_key_status === 'unreadable' && <Alert className="record-provider-note" type="error" showIcon
+          title="Máy chủ không giải mã được API key đã lưu." description={unreadableKeyHelp} />}
         {!selected.enabled && <Alert className="record-provider-note" type="info" showIcon
           title="Bật nhà cung cấp để các model đã chọn xuất hiện trên website khách hàng." />}
         <div className="record-models-heading"><h3>Danh sách model <span>{selected.models.length}</span></h3>
@@ -269,6 +273,8 @@ export function Providers() {
       okText="Lưu cấu hình" cancelText="Hủy" onOk={() => providerForm.submit()} confirmLoading={busy === 'provider-editor'}
       onCancel={() => { if (busy !== 'provider-editor') setProviderEditor(undefined); }}>
       <Form name="provider-connection" form={providerForm} layout="vertical" onFinish={saveProvider} disabled={busy === 'provider-editor'}>
+        {providerEditor?.provider?.api_key_status === 'unreadable' && <Alert className="record-provider-note" type="error" showIcon
+          title="Máy chủ không giải mã được API key đã lưu." description={unreadableKeyHelp} />}
         {providerEditor && (!providerEditor.provider || isCompatible(providerEditor.provider)) && <>
         <Form.Item label="Tên provider" name="display_name" rules={[{ required: true, whitespace: true, message: 'Nhập tên provider.' }]}>
           <Input placeholder="Ví dụ: Gateway nội bộ" maxLength={160} autoComplete="off" />

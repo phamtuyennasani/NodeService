@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { isCompatibleProvider, providerKind, providers, type Config, type Provider } from '../config.js'
 import { collection, sessionOf, transaction, type Database, type MongoSource } from '../db.js'
 import { unseal } from '../security.js'
+import { resolveServiceKey } from '../provider-key.js'
 import { backoff, withLease } from './lease.js'
 import { priceUsage } from './pricing.js'
 import { monitorProviderSlot, providerHasCapacity, ProviderCapacityPending, reserveProviderRequest } from './provider-limits.js'
@@ -17,9 +18,9 @@ import { jobEvents } from '../job-events.js'
 import { foldSearchText, refreshInternalLinkCandidates, selectInternalLinkCandidates, type InternalLinkCandidate } from '../site-content.js'
 import { enforceInternalLinks, extractArticleLinks } from './internal-links.js'
 import { syncSiteContentCatalog, type CatalogSyncOptions } from '../site-content-pull.js'
+import type { WritingStage } from '../writing-stage.js'
 
 let nextProvider = 0
-type WritingStage = 'research' | 'outline' | 'draft' | 'seo_check' | 'seo_repair'
 type RepairStatus = 'not_needed' | 'applied' | 'kept_draft' | 'skipped'
 interface InternalLinkReport {
   status: 'checked' | 'no_candidates' | 'unavailable'
@@ -70,16 +71,16 @@ function failureOf(error: unknown): WorkerError {
 }
 
 function keyFor(job: Job, config: Config, providerKey?: string | null): string {
+  let key: string | null | undefined
   try {
-    const key = job.key_mode === 'service'
-      ? providerKey ? unseal(providerKey, config.encryptionKey)
-        : job.provider === providerKind(job.provider) ? config.serviceKeys[providerKind(job.provider)] : undefined
+    key = job.key_mode === 'service'
+      ? resolveServiceKey(job.provider, providerKey, config)
       : job.encrypted_key && unseal(job.encrypted_key, config.encryptionKey)
-    if (!key) throw new Error('Missing key')
-    return key
   } catch {
-    throw new WorkerError('AI_KEY_UNAVAILABLE', 'API key cho công việc này chưa được cấu hình hoặc không còn đọc được.', false)
+    throw new WorkerError('AI_KEY_UNREADABLE', 'Worker không giải mã được API key đã lưu. Kiểm tra ENCRYPTION_KEY của CRM/API và tất cả worker; yêu cầu được giữ lại để thử sau.', false)
   }
+  if (!key) throw new WorkerError('AI_KEY_UNAVAILABLE', 'Công việc chưa có API key cho nhà cung cấp đã chọn.', false)
+  return key
 }
 
 function owned(claim: Claim) {
@@ -557,6 +558,19 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
     report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
     await transition(db, config, job, draft, null, report, repairStatus, false, linkReport)
   } catch (failure) {
+    if (failure instanceof WorkerError && failure.code === 'AI_KEY_UNREADABLE') {
+      const now = new Date()
+      const deferred = await collection(db, 'jobs').updateOne(owned(claim), { $set: {
+        status: 'queued', available_at: new Date(now.getTime() + 60_000), updated_at: now,
+        error_code: failure.code, error_message: failure.message,
+        writing_stage: null, capacity_deferred: false, lease_token: null, lease_expires_at: null,
+      }, $inc: { attempt_count: -1 } })
+      if (deferred.matchedCount) jobEvents.publish({
+        type: 'job.updated', job_id: job._id, status: 'queued', writing_stage: null,
+        error_code: failure.code, error_message: failure.message, updated_at: now.toISOString(),
+      })
+      return
+    }
     if (failure instanceof ProviderCapacityPending) {
       const now = Date.now()
       const deferred = await collection(db, 'jobs').updateOne(owned(claim), { $set: {

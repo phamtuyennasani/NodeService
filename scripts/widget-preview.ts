@@ -7,6 +7,7 @@ import { listModelsForCustomer } from '../src/api/catalog.js'
 import { ApiError, idSchema, installErrorHandler, notFound } from '../src/api/errors.js'
 import { createJob, writingFields, type Site } from '../src/api/public.js'
 import { loadConfig } from '../src/config.js'
+import { assertEncryptionContext } from '../src/encryption-context.js'
 import { assertTransactionSupport, close, collection, connect } from '../src/db.js'
 import { normalizeArticleFields } from '../src/worker/provider.js'
 
@@ -127,6 +128,7 @@ async function selectSite() {
 
 async function start() {
   await db.client.connect()
+  await assertEncryptionContext(db, config)
   await assertTransactionSupport(db)
   try {
     await access(widgetPath)
