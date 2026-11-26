@@ -6,7 +6,7 @@ import { chromium, type Browser } from 'playwright';
 const origin = 'http://localhost:3223';
 const instructions = 'Thêm ví dụ thực tế và CSS inline cho bảng.';
 
-async function mockSchedule(browser: Browser, bundle: string, immediate = false) {
+async function mockSchedule(browser: Browser, bundle: string, immediate = false, ownKey = false) {
   const page = await browser.newPage({ viewport: { width: 390, height: 1000 }, timezoneId: 'Asia/Ho_Chi_Minh' });
   page.setDefaultTimeout(10000);
   const posts: { method: string; body: unknown; csrf: string | undefined }[] = [];
@@ -39,9 +39,9 @@ async function mockSchedule(browser: Browser, bundle: string, immediate = false)
     if (url.pathname === '/api/crm/session/bootstrap') return route.fulfill({ json: { browser_binding: 'b'.repeat(43), server_time: Date.now() } });
     if (url.pathname === '/api/crm/jobs' && request.method() === 'GET') return route.fulfill({ json: { data: [], next_cursor: null } });
     if (url.pathname === '/api/crm/jobs/events') return route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' });
-    if (url.pathname === '/api/crm/customers') return route.fulfill({ json: { data: [{ id: 'customer-test', name: 'Khách kiểm thử' }] } });
+    if (url.pathname === '/api/crm/customers') return route.fulfill({ json: { data: [{ id: 'customer-test', name: 'Khách kiểm thử', key_mode: ownKey ? 'own' : 'service' }] } });
     if (url.pathname === '/api/crm/websites') return route.fulfill({ json: { data: [{ id: 'website-test', name: 'Website kiểm thử' }] } });
-    if (url.pathname === '/api/crm/providers') return route.fulfill({ json: { data: [{ provider: 'openai-compatible', display_name: 'OpenAI Compatible', enabled: true, models: [{ model: 'model-test', display_name: 'Model kiểm thử', enabled: true }] }] } });
+    if (url.pathname === '/api/crm/providers') return route.fulfill({ json: { data: ownKey ? [] : [{ provider: 'openai-compatible', display_name: 'OpenAI Compatible', enabled: true, models: [{ model: 'model-test', display_name: 'Model kiểm thử', enabled: true }] }] } });
     if (url.pathname === (immediate ? '/api/crm/jobs' : '/api/crm/schedules') && request.method() === 'POST') {
       posts.push({ method: request.method(), body: request.postDataJSON(), csrf: request.headers()['x-csrf-token'] });
       return route.fulfill({ status: 202, json: { job_id: immediate ? 'instant-test' : 'scheduled-test', status: immediate ? 'queued' : 'scheduled' } });
@@ -59,7 +59,8 @@ async function mockSchedule(browser: Browser, bundle: string, immediate = false)
   }
   await select('Khách hàng', 'Khách kiểm thử');
   await select('Website nhận bài', 'Website kiểm thử');
-  await select('Model AI', 'Model kiểm thử · OpenAI Compatible');
+  if (ownKey) await modal.getByLabel('Model AI', { exact: true }).fill('tenant@website/private-model:free');
+  else await select('Model AI', 'Model kiểm thử · OpenAI Compatible');
   await modal.getByLabel('Từ khóa', { exact: true }).fill('dịch vụ thiết kế website');
   await select('Giọng văn', 'Chuyên nghiệp');
   await select('Phong cách', 'SEO');
@@ -142,6 +143,30 @@ test('CRM schedule accepts numeric word lengths and rejects invalid lengths', as
         }]);
         assert.deepEqual(unexpected, []);
         assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+    for (const immediate of [false, true]) await t.test(`own keys use a website endpoint and arbitrary model for ${immediate ? 'instant writing' : 'schedules'}`, async () => {
+      const { page, modal, posts, unexpected, pageErrors } = await mockSchedule(browser, outputFiles[0].text, immediate, true);
+      try {
+        await modal.getByText('Kết nối OpenAI Compatible', { exact: true }).waitFor();
+        assert.equal(await modal.getByLabel('Model AI', { exact: true }).getAttribute('role'), null, 'own model is a text input rather than a catalog select');
+        await modal.getByLabel('Độ dài (600–2500 từ)', { exact: true }).fill('1500');
+        await modal.getByRole('button', { name: immediate ? 'Viết bài ngay' : 'Tạo lịch viết', exact: true }).click();
+        await modal.getByText('Nhập Base URL của API.', { exact: true }).waitFor();
+        await modal.getByText('Nhập API key riêng.', { exact: true }).waitFor();
+        assert.equal(posts.length, 0);
+        await modal.getByLabel('Base URL', { exact: true }).fill('https://api.example.com/v1');
+        await modal.getByLabel('API key riêng', { exact: true }).fill('fixture-own-key');
+        const response = page.waitForResponse(response => response.url() === `${origin}/api/crm/${immediate ? 'jobs' : 'schedules'}` && response.request().method() === 'POST');
+        await modal.getByRole('button', { name: immediate ? 'Viết bài ngay' : 'Tạo lịch viết', exact: true }).click();
+        await response;
+        assert.deepEqual(posts, [{ method: 'POST', csrf: 'fixture-csrf', body: {
+          customer_id: 'customer-test', website_id: 'website-test', model: 'tenant@website/private-model:free',
+          base_url: 'https://api.example.com/v1', keyAI: 'fixture-own-key', keyword: 'dịch vụ thiết kế website',
+          length: 1500, tone: 'Chuyên nghiệp', style: 'SEO', instructions, use_research: true,
+          ...(!immediate ? { scheduled_at: '2030-01-01T05:00:00.000Z' } : {}),
+        } }]);
+        assert.deepEqual(unexpected, []); assert.deepEqual(pageErrors, []);
       } finally { await page.close(); }
     });
   } finally { await browser.close(); }

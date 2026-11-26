@@ -5,6 +5,7 @@ import { collection, transaction, type Database, type TransactionContext } from 
 import { normalizeInternalUrl, siteContentIdSchema, siteContentSearchTerms, type SiteContentDocument } from '../site-content.js'
 import { authenticateSite, type Site } from './public.js'
 import { ApiError } from './errors.js'
+import { admitSiteProof, siteSecurityFilter } from '../site-proof.js'
 
 const externalId = siteContentIdSchema
 const plain = (max: number, required = false) => z.string().trim().max(max)
@@ -21,11 +22,12 @@ const batchSchema = z.object({ items: z.array(itemSchema).min(1).max(100) }).str
 const listSchema = z.object({ cursor: externalId.optional(), limit: z.coerce.number().int().min(1).max(100).default(25) }).strict()
 
 async function lockSite(source: TransactionContext, site: Site) {
-  const filter = { _id: site.id, customer_id: site.customer_id, token_hash: site.token_hash }
+  const filter = { _id: site.id, customer_id: site.customer_id, token_hash: site.token_hash, ...siteSecurityFilter(site) }
   const result = await collection(source, 'sites').updateOne(filter, { $inc: { relation_version: 1 } }, { session: source.session })
   if (!result.matchedCount) throw new ApiError(401, 'invalid_site_token', 'Token hoặc chủ sở hữu website đã thay đổi. Vui lòng kết nối lại.')
   const current = await collection(source, 'sites').findOne(filter, { session: source.session })
   if (!current) throw new ApiError(401, 'invalid_site_token', 'Website không còn khả dụng.')
+  await admitSiteProof(source, site)
   return current
 }
 

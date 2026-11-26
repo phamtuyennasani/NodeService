@@ -300,7 +300,7 @@ test('public create, schedule edits and rewrites preserve explicit content exclu
   f.tables.sites[0]!.webhook_secret = 'fixture-secret'
   f.tables.ai_models = [{ _id: 'fixture-model', provider: 'openai', enabled: true }]
   f.tables.ai_providers = [{ _id: 'openai', enabled: true }]
-  const writing = { model: 'fixture-model', keyword: 'máy lọc nước', tone: 'Thân thiện', style: 'Hướng dẫn', length: 800, provider: 'openai', api_key: 'fixture-key', use_research: false }
+  const writing = { model: 'fixture-model', keyword: 'máy lọc nước', tone: 'Thân thiện', style: 'Hướng dẫn', length: 800, base_url: 'https://personal-ai.example.com/v1', api_key: 'fixture-key', use_research: false }
   const create = (body: Row) => f.app.inject({ method: 'POST', url: '/v1/article-jobs', headers: { ...f.headers, 'idempotency-key': randomUUID() }, payload: body })
   const scheduled = await create({ ...writing, scheduled_at: '2030-01-01T00:00:00Z', exclude_content_ids: ['post:1', 'post:1'] })
   assert.equal(scheduled.statusCode, 202, scheduled.body)
@@ -317,7 +317,7 @@ test('public create, schedule edits and rewrites preserve explicit content exclu
   const original = f.tables.jobs[1]!
   assert.deepEqual(original.exclude_content_ids, [])
   original.status = 'ready'; original.exclude_content_ids = ['post:self']
-  const rewrite = (body: Row) => f.app.inject({ method: 'POST', url: '/v1/articles/' + original._id + '/rewrites', headers: { ...f.headers, 'idempotency-key': randomUUID() }, payload: { provider: 'openai', api_key: 'fixture-key', ...body } })
+  const rewrite = (body: Row) => f.app.inject({ method: 'POST', url: '/v1/articles/' + original._id + '/rewrites', headers: { ...f.headers, 'idempotency-key': randomUUID() }, payload: { base_url: 'https://personal-ai.example.com/v1', api_key: 'fixture-key', ...body } })
   assert.equal((await rewrite({})).statusCode, 202)
   assert.deepEqual(f.tables.jobs[2]!.exclude_content_ids, ['post:self'])
   assert.equal((await rewrite({ exclude_content_ids: [] })).statusCode, 202)

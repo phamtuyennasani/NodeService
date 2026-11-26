@@ -1,8 +1,71 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { test } from 'node:test';
 import { evaluateSeo } from '../src/worker/seo';
+
+test('the Laravel upload example mounts the remote widget, signs its request and fills the article fields', async () => {
+  const { outputFiles } = await build({ entryPoints: ['widget/ai-writer.ts'], bundle: true, format: 'iife', loader: { '.css': 'text' }, write: false });
+  const guide = JSON.parse(await readFile('web/src/laravel-guide.json', 'utf8'));
+  const template = await readFile('integrations/laravel-upload/resources/views/admin/layouts/js.blade.php', 'utf8');
+  assert.equal(guide.widget, template, 'CRM instructions use the exact JS file included in the Laravel ZIP');
+  assert.doesNotMatch(template, /crm_ai_article_ref|crm_ai_source_job_id|crm_ai_source_locale|articleRef|sourceJobId/);
+  const aiConfig = template.split('<script>')[1].split('</script>')[0];
+  const origin = 'http://localhost:3251';
+  const crm = 'http://localhost:3252';
+  const site = '11111111-1111-4111-8111-111111111111';
+  const job = '22222222-2222-4222-8222-222222222222';
+  const article = { Title: 'Bài có chữ ký', Content: '<p>Nội dung</p>', Slug: 'bai', Desc: 'Mô tả', Description: 'SEO', Keywords: ['bài'] };
+  const browser = await chromium.launch();
+  const authorized: { body: string, id: string }[] = [];
+  let created = 0;
+  try {
+    const page = await browser.newPage();
+    await page.route('**/*', async route => {
+      const req = route.request();
+      const url = new URL(req.url());
+      if (url.href === origin + '/') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset="utf-8"><form id="news-main-form"><input name="_token" value="fixture-csrf" type="hidden"><input name="name[vi]"><textarea name="content[vi]"></textarea><span id="news-ai-writer"></span></form>
+        <script src="${crm}/widget/v1/ai-writer.js?site=${site}&expires=${Math.floor(Date.now() / 1000) + 3600}&signature=${'e'.repeat(64)}" data-authorize-url="/crm-ai-upload/authorize" data-credentials-url="/crm-ai-upload/credentials"></script>
+        <script src="/js/crm-ai-config.js"></script>` });
+      if (url.origin === origin && url.pathname === '/js/crm-ai-config.js') return route.fulfill({ contentType: 'text/javascript', body: aiConfig });
+      if (url.origin === origin && url.pathname === '/crm-ai-upload/credentials') {
+        return route.fulfill({ json: { base_url: null, api_key: null, model: null } });
+      }
+      if (url.origin === origin && url.pathname === '/crm-ai-upload/authorize') {
+        assert.equal(req.headers()['x-csrf-token'], 'fixture-csrf');
+        authorized.push(req.postDataJSON());
+        return route.fulfill({ json: { proof: 'fixture-per-request-proof' } });
+      }
+      const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'content-type,idempotency-key,x-widget-expires,x-widget-signature,x-widget-read-token,x-site-proof', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
+      if (req.method() === 'OPTIONS') return route.fulfill({ headers: cors, status: 204 });
+      if (url.pathname === '/widget/v1/ai-writer.js') return route.fulfill({ contentType: 'text/javascript', body: outputFiles[0].text });
+      if (url.pathname.endsWith('/models')) return route.fulfill({ headers: cors, json: { proof_required: true, key_mode: 'service', data: [{ model: 'test-model', display_name: 'Model thử' }] } });
+      if (req.method() === 'POST' && url.pathname.endsWith('/previews')) {
+        assert.equal(authorized.length, 1);
+        assert.equal(req.headers()['x-site-proof'], 'fixture-per-request-proof');
+        assert.equal(req.postData(), authorized[0].body);
+        assert.equal(req.headers()['idempotency-key'], authorized[0].id);
+        created++;
+        return route.fulfill({ headers: cors, status: 202, json: { job_id: job, status: 'queued', read_token: 'a'.repeat(64) } });
+      }
+      if (url.pathname.endsWith('/result')) return route.fulfill({ headers: cors, json: [article] });
+      if (url.pathname.endsWith('/' + job)) return route.fulfill({ headers: cors, json: { job_id: job, status: 'ready' } });
+      return route.fulfill({ status: 204 });
+    });
+    await page.goto(origin);
+    await page.getByRole('button', { name: 'Viết bài AI' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('combobox', { name: 'Model' }).getByText('Model thử').waitFor({ state: 'attached' });
+    await dialog.getByLabel('Từ khóa', { exact: true }).fill('nội dung');
+    await dialog.getByRole('button', { name: 'Viết ngay' }).click();
+    await dialog.getByRole('heading', { name: article.Title }).waitFor();
+    await dialog.getByRole('button', { name: 'Áp dụng' }).click();
+    assert.equal(created, 1);
+    assert.equal(await page.locator('[name="name[vi]"]').inputValue(), article.Title);
+    assert.equal(await page.locator('[name="content[vi]"]').inputValue(), article.Content);
+  } finally { await browser.close(); }
+});
 
 test('widget shows the saved CRM SEO report and applies the original focus keyword separately from related terms', async () => {
   const { outputFiles } = await build({
@@ -68,27 +131,29 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
     assert.equal(await warningRow.getAttribute('data-state'), 'warning');
     assert.equal(await seo.locator('img,script').count(), 0, 'CRM finding messages render as text');
     assert.ok(await seo.locator('li[data-state="excluded"]').count() > 0, 'nonapplicable findings stay excluded');
-    await dialog.getByRole('button', { name: 'Chấp nhận' }).click();
+    await dialog.getByRole('button', { name: 'Áp dụng' }).click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(await page.locator('[name=focus_keyword]').inputValue(), keyword);
     assert.equal(await page.locator('[name=keywords]').inputValue(), article.Keywords.join(', '));
 
     report = evaluateSeo(article, { keyword });
     await launch.click();
+    await dialog.getByLabel('Từ khóa', { exact: true }).fill(typedKeyword);
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     await seo.waitFor();
     assert.equal(report.applicable, 14, 'missing website context excludes the internal-link check too');
     if (await seo.locator('details').getAttribute('open') !== null) await seo.locator('summary').click();
     await assertSeoCounts();
-    await dialog.getByRole('button', { name: 'Chấp nhận' }).click();
+    await dialog.getByRole('button', { name: 'Áp dụng' }).click();
     await dialog.waitFor({ state: 'hidden' });
 
     includeMetadata = false;
     await launch.click();
+    await dialog.getByLabel('Từ khóa', { exact: true }).fill(typedKeyword);
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     await dialog.getByRole('heading', { name: article.Title }).waitFor();
     assert.equal(await seo.isVisible(), false, 'older adapters do not show a stale report');
-    await dialog.getByRole('button', { name: 'Chấp nhận' }).click();
+    await dialog.getByRole('button', { name: 'Áp dụng' }).click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(await page.locator('[name=focus_keyword]').inputValue(), typedKeyword, 'older adapters retain the submitted keyword');
   } finally {
@@ -240,7 +305,7 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     });
     const launch = page.getByRole('button', { name: 'Viết bài AI' });
     const dialog = page.getByRole('dialog');
-    const accept = dialog.getByRole('button', { name: 'Chấp nhận' });
+    const accept = dialog.getByRole('button', { name: 'Áp dụng' });
     const waitForPreview = () => dialog.getByRole('heading', { name: article.Title }).waitFor();
     await page.goto(origin);
     previewArticle = { ...article, Desction: 'Mô tả từ trường cũ', 'Từ khóa': ['từ khóa từ trường cũ'] };
@@ -404,7 +469,7 @@ test('Laravel widget preserves complete long articles and safe inline table CSS 
     assert.ok(sanitizedHtml.includes(sections), 'Preview must retain every section and paragraph');
     assert.ok(sanitizedHtml.endsWith(ending), 'Preview must retain the final FAQ and list');
     assert.equal(await preview.locator('h2').count(), 9);
-    await dialog.getByRole('button', { name: 'Chấp nhận' }).click();
+    await dialog.getByRole('button', { name: 'Áp dụng' }).click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(await page.locator('[name="body"]').getAttribute('data-html'), sanitizedHtml);
     assert.equal(await page.evaluate(() => '__unsafe' in window), false);
@@ -431,7 +496,7 @@ test('widget sends personal provider credentials only in own-key mode', async ()
         contentType: 'text/html',
         body: '<!doctype html><meta name="csrf-token" content="csrf-own"><form id="article"><input name="title"><div name="body"></div><div id="tools"></div></form>' +
           '<script src="/widget.js"></script><script>AIWriter.mount({' +
-          'mount:"#tools",form:"#article",endpoint:"/admin/ai/previews",keyMode:"own",provider:"openai",api_key:"sk-test-personal",model:"gpt-4.1-mini",fields:{Title:"[name=title]",Content:"[name=body]"}})</script>',
+          'mount:"#tools",form:"#article",endpoint:"/admin/ai/previews",keyMode:"own",base_url:"https://personal-ai.example.com/v1",api_key:"sk-test-personal",model:"gpt-4.1-mini",fields:{Title:"[name=title]",Content:"[name=body]"}})</script>',
       });
       if (path === '/widget.js') return route.fulfill({ contentType: 'text/javascript', body: outputFiles[0].text });
       if (path === '/admin/ai/previews' && request.method() === 'POST') {
@@ -450,14 +515,273 @@ test('widget sends personal provider credentials only in own-key mode', async ()
     await page.getByRole('button', { name: 'Viết bài AI' }).click();
     assert.equal(await dialog.locator('[name="model"]').inputValue(), 'gpt-4.1-mini');
     assert.equal(await dialog.locator('[name="model"]').getAttribute('readonly'), '');
+    assert.equal(await dialog.locator('.model-label').isVisible(), false, 'personal model is configured rather than selectable');
     await dialog.getByLabel('Từ khóa').fill('nội dung thử nghiệm');
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     await dialog.getByRole('heading', { name: 'Bài thử nghiệm' }).waitFor();
     assert.deepEqual(payload, {
-      provider: 'openai', api_key: 'sk-test-personal', model: 'gpt-4.1-mini', keyword: 'nội dung thử nghiệm',
+      provider: 'openai-compatible', base_url: 'https://personal-ai.example.com/v1', api_key: 'sk-test-personal', model: 'gpt-4.1-mini', keyword: 'nội dung thử nghiệm',
       tone: 'Thân thiện', style: 'Hướng dẫn', length: 800, use_research: true,
     });
   } finally {
+    await browser.close();
+  }
+});
+
+test('widget uses CRM key mode on every open and hides personal models and incomplete configuration', async () => {
+  const { outputFiles } = await build({
+    entryPoints: ['widget/ai-writer.ts'], bundle: true, format: 'iife', loader: { '.css': 'text' }, write: false,
+  });
+  const origin = 'http://localhost:3232';
+  let catalog: Record<string, unknown> = { key_mode: 'own', own_key_configured: false, model: null, data: [] };
+  let fail = false;
+  let release: (() => void) | undefined;
+  let gate: Promise<void> | undefined;
+  const posts: Record<string, unknown>[] = [];
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.route(origin + '/**', async route => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === '/') return route.fulfill({ contentType: 'text/html', body:
+        '<!doctype html><meta charset="utf-8"><meta name="csrf-token" content="fixture-csrf">' +
+        '<form id="article"><input name="title"><div id="tools"></div></form><script src="/widget.js"></script>' +
+        '<script>AIWriter.mount({mount:"#tools",form:"#article",endpoint:"/admin/ai/previews",' +
+        'modelsEndpoint:"/admin/ai/models",keyMode:"service",fields:{Title:"[name=title]"}});</script>',
+      });
+      if (path === '/widget.js') return route.fulfill({ contentType: 'text/javascript', body: outputFiles[0].text });
+      if (path === '/admin/ai/models') {
+        if (gate) await gate;
+        return route.fulfill(fail ? { status: 502, json: {} } : { json: catalog });
+      }
+      if (path === '/admin/ai/previews' && request.method() === 'POST') {
+        posts.push(request.postDataJSON());
+        return route.fulfill({ json: { job_id: 'mode-fixture', status: 'ready', result: [{
+          Title: 'Bài thử', Content: '<p>Nội dung</p>', Slug: 'bai-thu', Desc: 'Mô tả', Description: 'SEO', Keywords: ['thử'],
+        }] } });
+      }
+      return route.fulfill({ status: 204 });
+    });
+    await page.goto(origin);
+    const launch = page.getByRole('button', { name: 'Viết bài AI' });
+    const dialog = page.getByRole('dialog');
+    const label = dialog.locator('.model-label');
+    const menu = dialog.locator('[name=model]');
+    const write = dialog.getByRole('button', { name: 'Viết ngay' });
+    const reopen = async () => {
+      await dialog.getByRole('button', { name: 'Đóng', exact: true }).first().click();
+      await launch.click();
+    };
+    await launch.click();
+    await dialog.getByText('Website dùng key riêng. Quản trị viên cần cấu hình Base URL, API key và model ở backend Laravel.').waitFor();
+    assert.equal(await label.isVisible(), false);
+    assert.equal(await write.isDisabled(), true);
+    await dialog.getByLabel('Từ khóa', { exact: true }).fill('nội dung thử');
+    await dialog.locator('form').dispatchEvent('submit');
+    assert.equal(posts.length, 0, 'incomplete own-key websites cannot generate');
+
+    catalog = { key_mode: 'own', own_key_configured: true, model: 'backend-model', data: [] };
+    await reopen();
+    await page.waitForFunction(() => !(document.querySelector('#tools > span')!.shadowRoot!.querySelector('.submit') as HTMLButtonElement).disabled);
+    assert.equal(await label.isVisible(), false);
+    assert.equal(await menu.inputValue(), 'backend-model');
+    assert.equal(await dialog.locator('.form-intro small').innerText(), 'Mô tả nội dung cần triển khai.');
+    await write.click();
+    await dialog.getByRole('heading', { name: 'Bài thử', exact: true }).waitFor();
+    assert.equal(posts[0].model, 'backend-model');
+    assert.equal('api_key' in posts[0], false);
+    assert.equal('provider' in posts[0], false);
+    await dialog.getByRole('button', { name: 'Áp dụng' }).click();
+
+    catalog = { key_mode: 'service', data: [{ model: 'service-model', display_name: 'Model dịch vụ' }] };
+    gate = new Promise<void>(resolve => { release = resolve; });
+    await launch.click();
+    assert.equal(await label.isVisible(), false, 'stale model controls stay hidden during the current website lookup');
+    assert.equal(await write.isDisabled(), true);
+    release!();
+    gate = undefined;
+    release = undefined;
+    await menu.getByText('Model dịch vụ').waitFor({ state: 'attached' });
+    assert.equal(await label.isVisible(), true);
+    assert.equal(await write.isEnabled(), true);
+    assert.equal(await menu.inputValue(), 'service-model');
+    await dialog.getByLabel('Từ khóa', { exact: true }).fill('nội dung thử');
+    await write.click();
+    await dialog.getByRole('heading', { name: 'Bài thử', exact: true }).waitFor();
+    assert.equal(posts[1].model, 'service-model');
+    await dialog.getByRole('button', { name: 'Áp dụng' }).click();
+
+    fail = true;
+    await launch.click();
+    await dialog.getByText('Không tải được cấu hình website. Đóng rồi mở lại để thử.').waitFor();
+    assert.equal(await write.isDisabled(), true);
+    assert.equal(posts.length, 2);
+  } finally {
+    release?.();
+    await browser.close();
+  }
+});
+
+test('remote widget verifies the site before launch and sends only the selected AI configuration', async () => {
+  const { outputFiles } = await build({
+    entryPoints: ['widget/ai-writer.ts'], bundle: true, format: 'iife', loader: { '.css': 'text' }, write: false,
+  });
+  const siteOrigin = 'http://localhost:3240';
+  const crmOrigin = 'http://localhost:3241';
+  const wrongOrigin = 'http://localhost:3242';
+  const siteId = '8dc71282-429e-4854-ac32-12a9bc65caf0';
+  const jobId = '8d3d6a8f-6a2b-4e6f-a00a-8b6fc34b4a9e';
+  const expires = Math.floor(Date.now() / 1000) + 3600;
+  const signature = 'e'.repeat(64);
+  const readToken = 'a'.repeat(64);
+  const base = `${crmOrigin}/v1/widget/${siteId}`;
+  const browser = await chromium.launch();
+  const personal = { base_url: 'https://personal-ai.example.com/v1', api_key: 'sk-test-direct', model: 'vendor/model:free' };
+  const article = { Title: 'Bài từ CRM', Content: '<p>Nội dung</p>', Slug: 'bai-tu-crm', Desc: 'Mô tả', Description: 'SEO', Keywords: ['nội dung'] };
+  type ApiCall = { url: string; method: string; headers: Record<string, string>; body?: Record<string, unknown> };
+  const calls: ApiCall[] = [];
+  let keyMode: 'own' | 'service' = 'service';
+  let release: (() => void) | undefined;
+  const firstHandshake = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const page = await browser.newPage();
+    await page.route('**/*', async route => {
+      const req = route.request();
+      const url = new URL(req.url());
+      if (url.origin === siteOrigin || url.origin === wrongOrigin) {
+        if (url.pathname !== '/') return route.fulfill({ status: 204 });
+        const credentials = url.searchParams.has('own') ? personal : { base_url: null, api_key: null, model: null };
+        const script = `${crmOrigin}/widget/v1/ai-writer.js?site=${siteId}&amp;expires=${expires}&amp;signature=${url.searchParams.has('invalid') ? '0'.repeat(64) : signature}`;
+        const config = JSON.stringify({ mount: '#tools', form: '#article', ...credentials, fields: { Title: '[name=title]' } });
+        return route.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset="utf-8">
+          <form id="article"><input name="title"><div id="tools"></div></form>
+          <script src="${script}"></script><script>AIWriter.mount(${config});</script>` });
+      }
+      if (url.origin === crmOrigin && url.pathname === '/widget/v1/ai-writer.js') {
+        return route.fulfill({ contentType: 'text/javascript', body: outputFiles[0].text });
+      }
+      if (!req.url().startsWith(base)) return route.abort();
+      const headers = await req.allHeaders();
+      const cors = {
+        'Access-Control-Allow-Origin': siteOrigin,
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'content-type, idempotency-key, x-widget-expires, x-widget-signature, x-widget-read-token',
+      };
+      const method = req.method();
+      if (method === 'OPTIONS') return route.fulfill({ headers: cors, status: 204 });
+      calls.push({ url: req.url(), method, headers, body: method === 'POST' ? req.postDataJSON() : undefined });
+      if (headers.origin !== siteOrigin) return route.fulfill({ status: 403, json: { error: { code: 'invalid_widget_grant' } } });
+      if (req.url() === `${base}/models`) {
+        if (headers['x-widget-signature'] !== signature) return route.fulfill({ headers: cors, status: 401, json: { error: { code: 'invalid_widget_grant' } } });
+        if (calls.length === 1) await firstHandshake;
+        return route.fulfill({ headers: cors, json: {
+          key_mode: keyMode, grant_expires_at: expires,
+          data: keyMode === 'own' ? [] : [
+            { provider: 'openai', model: 'service-model', display_name: 'Model được cấp' },
+            { provider: 'openai', model: 'second-model', display_name: 'Model thứ hai' },
+          ],
+        } });
+      }
+      if (req.url() === `${base}/previews` && method === 'POST') {
+        return route.fulfill({ headers: cors, status: 202, json: { job_id: jobId, status: 'queued', read_token: readToken } });
+      }
+      if (req.url() === `${base}/previews/${jobId}`) {
+        return route.fulfill({ headers: cors, json: { job_id: jobId, status: 'ready', keyword: 'nội dung' } });
+      }
+      if (req.url() === `${base}/previews/${jobId}/result`) return route.fulfill({ headers: cors, json: [article] });
+      return route.abort();
+    });
+
+    const launch = page.getByRole('button', { name: 'Viết bài AI' });
+    const launchElement = page.locator('#tools .launch');
+    const dialog = page.getByRole('dialog');
+    const model = dialog.getByRole('combobox', { name: 'Model' });
+    const toggle = dialog.getByRole('checkbox', { name: 'Dùng key riêng' });
+    const write = dialog.getByRole('button', { name: 'Viết ngay' });
+    const waitForPreview = () => dialog.getByRole('heading', { name: article.Title }).waitFor();
+    const apply = () => dialog.getByRole('button', { name: 'Áp dụng' }).click();
+    const openModels = async () => {
+      await launch.click();
+      await model.getByText('Model được cấp').waitFor({ state: 'attached' });
+    };
+
+    await page.goto(siteOrigin);
+    await launchElement.waitFor({ state: 'attached' });
+    assert.equal(await launchElement.isVisible(), false);
+    release!();
+    await openModels();
+    assert.equal(await toggle.isVisible(), false);
+    await dialog.getByLabel('Từ khóa', { exact: true }).fill('nội dung');
+    await write.click();
+    await waitForPreview();
+    await apply();
+    assert.equal(await page.locator('[name=title]').inputValue(), article.Title);
+
+    await page.goto(siteOrigin + '/?own=1');
+    await openModels();
+    assert.equal(await toggle.isChecked(), false);
+    await model.selectOption('second-model');
+    await toggle.check();
+    assert.equal(await model.isVisible(), false);
+    await toggle.uncheck();
+    assert.equal(await model.inputValue(), 'second-model');
+    await toggle.check();
+    await dialog.getByLabel('Từ khóa', { exact: true }).fill('nội dung');
+    await write.click();
+    await dialog.getByText('Yêu cầu đang chờ xử lý…').waitFor();
+    await page.clock.setFixedTime(new Date((expires + 10) * 1000));
+    await waitForPreview();
+    await apply();
+    await launch.click();
+    await dialog.getByText('Phiên viết bài đã hết hạn. Tải lại trang để tiếp tục.').waitFor();
+    assert.equal(await write.isDisabled(), true);
+    await page.clock.setFixedTime(new Date());
+
+    keyMode = 'own';
+    await page.goto(siteOrigin + '/?own=1');
+    await launch.click();
+    await dialog.getByText('Mô tả nội dung cần triển khai.').waitFor();
+    assert.equal(await toggle.isVisible(), false);
+    assert.equal(await model.isVisible(), false);
+    await dialog.getByLabel('Từ khóa', { exact: true }).fill('nội dung');
+    await write.click();
+    await waitForPreview();
+
+    for (const deniedUrl of [siteOrigin + '/?invalid=1', wrongOrigin]) {
+      await Promise.all([
+        page.waitForResponse(res => res.url() === `${base}/models` && !res.ok()),
+        page.goto(deniedUrl),
+      ]);
+      assert.equal(await launchElement.isVisible(), false);
+    }
+
+    const posts = calls.filter(call => call.method === 'POST');
+    assert.deepEqual(posts.map(call => call.body), [
+      { model: 'service-model', keyword: 'nội dung', tone: 'Thân thiện', style: 'Hướng dẫn', length: 800, key_mode: 'service', use_research: true },
+      ...Array.from({ length: 2 }, () => ({
+        ...personal, provider: 'openai-compatible', keyword: 'nội dung', tone: 'Thân thiện', style: 'Hướng dẫn', length: 800, key_mode: 'own', use_research: true,
+      })),
+    ]);
+    assert.equal(new Set(posts.map(call => call.headers['idempotency-key'])).size, 3);
+    for (const call of posts) {
+      assert.ok(call.headers['idempotency-key']);
+      assert.equal(call.headers['x-widget-expires'], String(expires));
+      assert.equal(call.headers['x-widget-signature'], signature);
+      assert.equal(call.headers['x-csrf-token'], undefined);
+    }
+    const reads = calls.filter(call => call.url.includes(jobId));
+    assert.equal(reads.length, 6);
+    for (const call of reads) {
+      assert.equal(call.headers['x-widget-read-token'], readToken);
+      assert.equal(call.headers['x-widget-signature'], undefined);
+    }
+    for (const call of calls) {
+      assert.equal(new URL(call.url).search, '');
+      assert.equal(call.headers.cookie, undefined);
+    }
+  } finally {
+    release?.();
     await browser.close();
   }
 });

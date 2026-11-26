@@ -7,7 +7,9 @@
     "node": "^22.12 || ^24 || >=26"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.server.json && vite build && npm run build:widget && npm run build:seo",
+    "build": "npm run build:integrations && npm run build:laravel-guide && tsc -p tsconfig.server.json && vite build && npm run build:widget && npm run build:seo",
+    "build:integrations": "python scripts/build-integration-packages.py",
+    "build:laravel-guide": "tsx scripts/generate-laravel-guide.ts",
     "build:widget": "esbuild widget/ai-writer.ts --bundle --format=iife --target=es2022 --loader:.css=text --minify --outfile=dist/widget/v1/ai-writer.js",
     "build:seo": "esbuild widget/seo-score.ts --bundle --platform=browser --format=iife --target=es2022 --minify --outfile=dist/widget/v1/seo-score.js",
     "typecheck": "tsc --noEmit",
@@ -15,7 +17,7 @@
     "dev": "tsx --env-file-if-exists=.env src/main.ts",
     "dev:widget": "tsx --env-file-if-exists=.env scripts/widget-preview.ts",
     "dev:watch": "nodemon --watch src --watch web --watch widget --watch migrations --watch vite.config.ts --watch tsconfig.json --watch tsconfig.server.json --ext ts,tsx,css,html,json --exec \"npm run build && npm start\"",
-    "dev:web": "vite",
+    "dev:web": "npm run build:laravel-guide && vite",
     "migrate": "tsx --env-file-if-exists=.env src/migrate.ts",
     "admin": "tsx --env-file-if-exists=.env scripts/create-admin.ts",
     "admin:email": "tsx --env-file-if-exists=.env scripts/set-admin-email.ts",

@@ -4,32 +4,12 @@ import { CopyOutlined, DeleteOutlined, EditOutlined, GlobalOutlined, KeyOutlined
 import { mutate, useCatalog, useResource, useSearchValue, withQuery } from './api';
 import { CursorPagination, datetime, EmptyState, go, PageHeading, Panel, ResourceError } from './shared';
 import type { Collection, Website } from './types';
+import { IntegrationGuide, laravelConnectionConfig } from './IntegrationGuide';
 import './records.css';
 
 type WebsiteDraft = Pick<Website, 'name' | 'customer_id' | 'domain' | 'webhook_url' | 'content_catalog_url'>;
-type Secret = { title: string; value: string };
+type Secret = { title: string; value: string; laravelConfig?: string };
 type CatalogCheck = { status: 'synced' | 'cached' | 'not_configured' | 'busy'; count: number; synced_at: string | null };
-
-const widgetSnippet = (keyMode: 'own' | 'service' = 'service') => `<div id="ai-tools"></div>
-<script src="${window.location.origin}/widget/v1/ai-writer.js"></script>
-<script>
-  const config = {
-    mount: '#ai-tools',
-    form: '#article-form',
-    endpoint: '/admin/ai/previews',
-    modelsEndpoint: '/admin/ai/models',
-    keyMode: '${keyMode}',
-    fields: {
-      Title: '[name="title"]',
-      Content: '[name="body"]',
-      Slug: '[name="slug"]',
-      Desc: '[name="summary"]',
-      Description: '[name="seo_description"]',
-      Keywords: '[name="keywords"]'
-    }
-  };
-  AIWriter.mount(config);
-</script>`;
 
 export function Websites({ query }: { query: URLSearchParams }) {
   const screens = Grid.useBreakpoint();
@@ -40,6 +20,10 @@ export function Websites({ query }: { query: URLSearchParams }) {
   const [selectedId, setSelectedId] = useState(query.get('website'));
   const [editing, setEditing] = useState<Website | 'new' | null>(null);
   const [secret, setSecret] = useState<Secret | null>(null);
+  const laravelConfig = secret?.laravelConfig;
+  const [signingSite, setSigningSite] = useState<Website | null>(null);
+  const [publicKey, setPublicKey] = useState('');
+  const [savingKey, setSavingKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [checkingCatalogId, setCheckingCatalogId] = useState<string | null>(null);
   const [form] = Form.useForm<WebsiteDraft>();
@@ -91,6 +75,23 @@ export function Websites({ query }: { query: URLSearchParams }) {
     }
   }
 
+  async function saveSigningKey() {
+    if (!signingSite || !publicKey.trim()) return;
+    setSavingKey(true);
+    try {
+      await mutate(`/websites/${signingSite.id}/signing-key`, 'PUT', {
+        public_key: publicKey.trim(), expected_fingerprint: signingSite.signing_key_fingerprint ?? null,
+      });
+      sites.reload();
+      details.reload();
+      setSigningSite(null);
+      setPublicKey('');
+      message.success('Đã bật xác thực bằng khóa ký máy chủ.');
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally { setSavingKey(false); }
+  }
+
   async function checkCatalog(site: Website) {
     if (!site.content_catalog_url || checkingCatalogId) return;
     setCheckingCatalogId(site.id);
@@ -139,7 +140,7 @@ export function Websites({ query }: { query: URLSearchParams }) {
             message.success('Đã thu hồi token.');
           } else if (action === 'token') {
             const result = await mutate<{ token: string }>(`/websites/${site.id}/token`, 'POST');
-            setSecret({ title: 'Token website', value: result.token });
+            setSecret({ title: 'Token website', value: result.token, laravelConfig: laravelConnectionConfig(site.id, result.token) });
           } else {
             const result = await mutate<{ secret: string }>(`/websites/${site.id}/webhook-secret`, 'POST');
             setSecret({ title: 'Khóa ký webhook', value: result.secret });
@@ -154,7 +155,7 @@ export function Websites({ query }: { query: URLSearchParams }) {
   }
 
   return <>
-    <PageHeading title="Website" description="Thiết lập kết nối Laravel, token truy cập và webhook nhận bài." action={<Button type="primary" icon={<PlusOutlined />} onClick={() => open('new')}>Thêm website</Button>} />
+    <PageHeading title="Website" description="Thiết lập kết nối website, token truy cập và webhook nhận bài." action={<Button type="primary" icon={<PlusOutlined />} onClick={() => open('new')}>Thêm website</Button>} />
     <ResourceError error={sites.error} onRetry={sites.reload} />
     <Panel className="table-panel record-panel">
       <div className="table-toolbar">
@@ -193,6 +194,8 @@ export function Websites({ query }: { query: URLSearchParams }) {
               { key: 'catalog-count', label: 'Trang trong danh mục', children: selected.content_catalog_count ?? 0 },
             ] : []),
             { key: 'token', label: 'Token', children: selected.token_hint || 'Chưa cấp' },
+            { key: 'signing', label: 'Xác thực máy chủ', children: selected.signing_key_fingerprint ? 'Đã đăng ký khóa ký' : selected.proof_required ? 'Cần đăng ký khóa ký trước khi dùng API' : 'Đang dùng kết nối cũ' },
+            ...(selected.signing_key_fingerprint ? [{ key: 'fingerprint', label: 'Vân tay khóa ký', children: <code style={{ overflowWrap: 'anywhere' }}>{selected.signing_key_fingerprint}</code> }] : []),
             { key: 'seen', label: 'API dùng gần nhất', children: datetime(selected.last_seen_at) },
             { key: 'articles', label: 'Bài đã viết', children: selected.article_count },
           ]} />
@@ -202,17 +205,21 @@ export function Websites({ query }: { query: URLSearchParams }) {
             <Button icon={<KeyOutlined />} onClick={() => manageSecret(selected, 'token')}>{selected.token_hint ? 'Đổi token' : 'Cấp token'}</Button>
             {selected.token_hint && <Button danger onClick={() => manageSecret(selected, 'revoke')}>Thu hồi token</Button>}
             <Button onClick={() => manageSecret(selected, 'webhook')}>Cấp khóa webhook</Button>
+            <Button onClick={() => { setSigningSite(selected); setPublicKey(''); }}>{selected.signing_key_fingerprint ? 'Thay khóa ký' : 'Đăng ký khóa ký'}</Button>
           </Space></div>
           <Button type="link" onClick={() => go('jobs', { website_id: selected.id })}>Xem yêu cầu viết của website</Button>
         </> },
-        { key: 'widget', label: 'Widget JavaScript', children: <>
-          <p>Đặt đoạn nhúng cạnh form biên tập và thay selector theo các trường của website. Laravel nhận yêu cầu qua <code>POST /admin/ai/previews</code> và trả kết quả qua <code>GET /admin/ai/previews/&#123;job_id&#125;</code>.</p>
-          <p>Thêm <code>GET /admin/ai/models</code> trên Laravel cho người có quyền biên tập. Route này dùng token website ở backend để gọi <code>GET /v1/models</code> và trả nguyên danh sách cho widget.</p>
-          <pre className="code-block">{widgetSnippet(selected.key_mode ?? 'service')}</pre>
-          <Button icon={<CopyOutlined />} onClick={() => void copy(widgetSnippet(selected.key_mode ?? 'service'))}>Sao chép đoạn nhúng</Button>
+        { key: 'widget', label: 'Hướng dẫn tích hợp', children: <>
+          {!selected.token_hint && <Alert type="warning" showIcon title="Cấp token ở tab Kết nối API trước khi gắn widget." />}
+          <IntegrationGuide website={selected} copy={copy} />
         </> },
       ]} />}
     </Drawer>
+    <Modal title="Đăng ký khóa ký máy chủ" open={Boolean(signingSite)} onCancel={() => setSigningSite(null)}
+      confirmLoading={savingKey} onOk={() => void saveSigningKey()} okText="Xác nhận khóa ký" okButtonProps={{ disabled: !publicKey.trim() }}>
+      <p>Với Laravel, mở <code>route('crm-ai.settings')</code> và bấm <strong>Tạo khóa máy chủ</strong>; BaseCodeAW dùng <code>/admin/crm-ai/settings</code>. Với PHP thuần, chạy lệnh <code>install</code> trong hướng dẫn PHP. Dán khóa công khai P-256 bên dưới.</p>
+      <Input.TextArea aria-label="Khóa công khai máy chủ" value={publicKey} onChange={event => setPublicKey(event.target.value)} rows={6} maxLength={1024} placeholder="-----BEGIN PUBLIC KEY-----" />
+    </Modal>
     <Modal title={editing === 'new' ? 'Thêm website' : 'Chỉnh sửa website'} open={Boolean(editing)} onCancel={() => setEditing(null)}
       onOk={() => form.submit()} okText="Lưu website" confirmLoading={saving} zIndex={1100} forceRender>
       <Form form={form} layout="vertical" onFinish={save}>
@@ -230,7 +237,12 @@ export function Websites({ query }: { query: URLSearchParams }) {
     </Modal>
     <Modal title={secret?.title} open={Boolean(secret)} onCancel={() => setSecret(null)} footer={<Button type="primary" onClick={() => setSecret(null)}>Đóng</Button>}>
       {secret && <>
-        <Alert type="info" showIcon title="Sao chép giá trị này vào Laravel. CRM chỉ hiển thị đầy đủ khi cấp mới." />
+        <Alert type="info" showIcon title="CRM chỉ hiển thị đầy đủ giá trị này khi cấp mới." />
+        {laravelConfig && <>
+          <p>Dán dòng này vào <code>config/crm-ai.php</code> của website Laravel.</p>
+          <Space.Compact block className="secret-value"><Input aria-label="Cấu hình connection Laravel" value={laravelConfig} readOnly onFocus={(event) => event.target.select()} /><Button icon={<CopyOutlined />} onClick={() => void copy(laravelConfig)}>Sao chép connection</Button></Space.Compact>
+          <p>Token gốc dùng cho API.</p>
+        </>}
         <Space.Compact block className="secret-value"><Input value={secret.value} readOnly onFocus={(event) => event.target.select()} /><Button icon={<CopyOutlined />} onClick={() => void copy(secret.value)}>Sao chép</Button></Space.Compact>
       </>}
     </Modal>

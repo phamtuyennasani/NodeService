@@ -9,6 +9,7 @@ import { registerPrices } from '../src/api/crm-prices.js'
 import { registerReports } from '../src/api/crm-reports.js'
 import { installErrorHandler } from '../src/api/errors.js'
 import { digest, seal, unseal } from '../src/security.js'
+import { decodeOwnConnection } from '../src/own-connection.js'
 
 type Row = Record<string, any>
 type Tables = Record<string, Row[]>
@@ -217,36 +218,32 @@ test('personal key jobs do not depend on the readability of a provider service c
   const catalog = await f.catalog()
   assert.equal(catalog.statusCode, 200)
   assert.equal(catalog.json<Row>().data.length, 2)
-  const response = await f.create(0, { provider: f.providers[0]._id, api_key: 'own-fixture-key' })
+  const response = await f.create(0, { base_url: 'https://personal-ai.example.com/v1', api_key: 'own-fixture-key' })
   assert.equal(response.statusCode, 202, response.body)
-  assert.equal(unseal(f.tables.jobs[0].encrypted_key, f.config.encryptionKey), 'own-fixture-key')
+  assert.deepEqual(decodeOwnConnection(f.tables.jobs[0].encrypted_key, f.config.encryptionKey), { apiKey: 'own-fixture-key', baseUrl: 'https://personal-ai.example.com/v1' })
   assert.equal(f.tables.quota_reservations.length, 0)
 })
 
-test('personal keys require the selected custom model and route identity without changing its endpoint', async t => {
+test('personal keys use the supplied endpoint and literal model independently of service connections', async t => {
   const f = await fixture(t)
   f.tables.customers[0].key_mode = 'own'
-  const response = await f.create(0, { provider: f.providers[1]._id, model: f.models[1]._id, api_key: 'own-fixture-key' })
+  const beforeProviders = structuredClone(f.tables.ai_providers)
+  const response = await f.create(0, { provider: f.providers[1]._id, base_url: 'https://personal-ai.example.com/v1', model: 'personal-model', api_key: 'own-fixture-key' })
   assert.equal(response.statusCode, 202, response.body)
   const saved = f.tables.jobs[0]
-  assert.equal(saved.provider, f.providers[1]._id)
-  assert.equal(saved.model, f.models[1]._id)
+  assert.equal(saved.provider, 'openai-compatible')
+  assert.equal(saved.model, 'personal-model')
   assert.equal(saved.key_mode, 'own')
   assert.notEqual(saved.encrypted_key, 'own-fixture-key')
-  assert.equal(unseal(saved.encrypted_key, f.config.encryptionKey), 'own-fixture-key')
-  assert.equal(f.tables.ai_providers.find(row => row._id === saved.provider)!.base_url, f.providers[1].base_url)
+  assert.deepEqual(decodeOwnConnection(saved.encrypted_key, f.config.encryptionKey), { apiKey: 'own-fixture-key', baseUrl: 'https://personal-ai.example.com/v1' })
+  assert.deepEqual(f.tables.ai_providers, beforeProviders)
   assert.equal(f.tables.quota_reservations.length, 0)
-  const mismatched = await f.create(0, { provider: f.providers[0]._id, model: f.models[1]._id, api_key: 'own-fixture-key' })
-  assert.equal(mismatched.statusCode, 400)
-  assert.equal(mismatched.json<Row>().error.code, 'provider_model_mismatch')
-  const unknown = await f.create(0, { provider: 'openai-compatible-' + randomUUID(), model: 'unknown-custom-model', api_key: 'own-fixture-key' })
-  assert.equal(unknown.statusCode, 400)
-  assert.equal(unknown.json<Row>().error.code, 'model_unavailable')
+  const unknown = await f.create(0, { base_url: 'https://personal-ai.example.com/v1', model: 'unknown-custom-model', api_key: 'own-fixture-key' })
+  assert.equal(unknown.statusCode, 202, unknown.body)
   f.tables.ai_providers[1].enabled = false
-  const disabled = await f.create(0, { provider: f.providers[1]._id, model: f.models[1]._id, api_key: 'own-fixture-key' })
-  assert.equal(disabled.statusCode, 400)
-  assert.equal(disabled.json<Row>().error.code, 'provider_unavailable')
-  assert.equal(f.tables.jobs.length, 1)
+  const disabled = await f.create(0, { provider: f.providers[1]._id, base_url: 'https://another-ai.example.com/v1', model: 'direct/upstream-model', api_key: 'own-fixture-key' })
+  assert.equal(disabled.statusCode, 202, disabled.body)
+  assert.equal(f.tables.jobs.length, 3)
 })
 
 test('custom providers are accepted by job filters and retain independent runtime counters', async t => {

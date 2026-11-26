@@ -7,11 +7,12 @@ import type { Config } from '../src/config.js'
 import type { Database } from '../src/db.js'
 import { migrate } from '../src/migrate.js'
 import { digest } from '../src/security.js'
+import { generateKeyPairSync } from 'node:crypto'
 
 test('MongoDB migration replaces the legacy sparse index and only scrubs the plaintext job field', async () => {
   const legacy = { name: 'token_hash_1', key: { token_hash: 1 }, unique: true, sparse: true }
   const indexes = new Map<string, object>([[legacy.name, legacy]])
-  const sites: { token_hash?: string | null }[] = [{ token_hash: 'active-hash' }, { token_hash: null }, {}]
+  const sites: { token_hash?: string | null, proof_required?: boolean }[] = [{ token_hash: 'active-hash' }, { token_hash: null }, {}]
   const job: { keyAI?: string, encrypted_key: string, status: string } = {
     keyAI: 'fake-legacy-key', encrypted_key: 'encrypted-value', status: 'scheduled',
   }
@@ -31,6 +32,12 @@ test('MongoDB migration replaces the legacy sparse index and only scrubs the pla
         drops++
       },
       async updateMany(filter: object, update: object) {
+        if ('proof_required' in filter) {
+          assert.deepEqual(filter, { proof_required: { $exists: false } })
+          assert.deepEqual(update, { $set: { proof_required: true } })
+          for (const site of sites) site.proof_required ??= true
+          return
+        }
         assert.deepEqual(filter, { token_hash: { $type: 'null' } })
         assert.deepEqual(update, { $unset: { token_hash: '' } })
         for (const site of sites) if (site.token_hash === null) delete site.token_hash
@@ -65,7 +72,7 @@ test('MongoDB migration replaces the legacy sparse index and only scrubs the pla
     key: { token_hash: 1 }, name: 'unique_site_token_hash', unique: true,
     partialFilterExpression: { token_hash: { $type: 'string' } },
   }])
-  assert.deepEqual(sites, [{ token_hash: 'active-hash' }, {}, {}])
+  assert.deepEqual(sites, [{ token_hash: 'active-hash', proof_required: true }, { proof_required: true }, { proof_required: true }])
   assert.deepEqual(job, { encrypted_key: 'encrypted-value', status: 'scheduled' })
   const marker = markers.get('mongodb-remove-plaintext-job-keys')
   assert.ok(marker)
@@ -77,7 +84,7 @@ test('MongoDB migration replaces the legacy sparse index and only scrubs the pla
 })
 
 test('CRM creates and revokes multiple website tokens without writing null token hashes', async t => {
-  type Site = { _id: string, token_hash?: string, token_prefix?: string }
+  type Site = { _id: string, token_hash?: string, token_prefix?: string, signing_public_key?: string, proof_required?: boolean }
   const sites = new Map<string, Site>()
   const customerId = 'aa9a15c2-61f0-4cb4-9956-f96dcf560ee0'
   const session = {
@@ -93,6 +100,7 @@ test('CRM creates and revokes multiple website tokens without writing null token
         return { matchedCount: Number(_id === customerId) }
       },
     } : ({
+      async findOne({ _id }: { _id: string }) { return sites.get(_id) ?? null },
       async insertOne(site: Site, options: { session?: unknown }) {
         assert.equal(options.session, session)
         sites.set(site._id, site)
@@ -119,9 +127,22 @@ test('CRM creates and revokes multiple website tokens without writing null token
     assert.equal(Object.hasOwn(sites.get(response.json().id)!, 'token_hash'), false)
   }
   for (const [id, site] of sites) {
+    assert.equal(site.proof_required, true)
+    const keys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+    const key = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
+    const endpoint = `/websites/${id}/signing-key`
+    const invalid = await app.inject({ method: 'PUT', url: endpoint, payload: { public_key: keys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(), expected_fingerprint: null } })
+    assert.equal(invalid.statusCode, 400)
+    const enrolled = await app.inject({ method: 'PUT', url: endpoint, payload: { public_key: key, expected_fingerprint: null } })
+    assert.equal(enrolled.statusCode, 200, enrolled.body)
+    assert.equal(site.signing_public_key, key)
+    assert.equal(enrolled.json().signing_key_fingerprint, digest(key))
+    const stale = await app.inject({ method: 'PUT', url: endpoint, payload: { public_key: key, expected_fingerprint: null } })
+    assert.equal(stale.statusCode, 409)
     const issued = await app.inject({ method: 'POST', url: `/websites/${id}/token` })
     assert.equal(issued.statusCode, 200, issued.body)
     assert.equal(site.token_hash, digest(issued.json().token))
+    assert.equal(site.signing_public_key, key)
   }
   for (const [id, site] of sites) {
     const revoked = await app.inject({ method: 'DELETE', url: `/websites/${id}/token` })

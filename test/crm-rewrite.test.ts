@@ -7,7 +7,8 @@ import type { Database } from '../src/db.js'
 import { registerReports } from '../src/api/crm-reports.js'
 import { registerPublic } from '../src/api/public.js'
 import { installErrorHandler } from '../src/api/errors.js'
-import { digest, unseal } from '../src/security.js'
+import { digest } from '../src/security.js'
+import { decodeOwnConnection } from '../src/own-connection.js'
 import { evaluateSeo } from '../src/worker/seo.js'
 
 type Row = Record<string, any>
@@ -21,6 +22,7 @@ function memoryDatabase(tables: Tables, hooks: DatabaseHooks): Database {
     if (field === '$or') return expected.some((branch: Row) => matches(row, branch))
     const actual = row[field]
     if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
+      if ('$exists' in expected) return Object.hasOwn(row, field) === expected.$exists
       if ('$in' in expected) return expected.$in.includes(actual)
       if ('$ne' in expected) return actual !== expected.$ne
     }
@@ -158,6 +160,47 @@ async function fixture(t: test.TestContext, options: DatabaseHooks | number = {}
   t.after(() => app.close())
   return { app, tables, article, sourceId, customerId, siteId, config }
 }
+
+test('CRM groups source and translations across interleaved websites before pagination and omits private content', async t => {
+  const f = await fixture(t)
+  const root = f.sourceId
+  Object.assign(f.article, { article_group_id: root, article_ref: 'news:7', original_job_id: root, original_locale: 'en', locale: 'en', languages: { source: 'en', targets: ['ja', 'vi'] }, created_at: new Date('2026-11-20T01:00:00Z'), encrypted_key: 'private-group-marker' })
+  const otherSite = randomUUID()
+  const otherRoot = randomUUID()
+  f.tables.sites.push({ ...f.tables.sites[0], _id: otherSite, name: 'Website B' })
+  const second = { ...structuredClone(f.article), _id: otherRoot, site_id: otherSite, article_group_id: otherRoot, original_job_id: otherRoot, created_at: new Date('2026-11-20T02:00:00Z') }
+  const translated = (locale: string, hour: string) => ({ ...structuredClone(f.article), _id: randomUUID(), locale,
+    translation_of_job_id: root, translation_source: { Title: 'Approved English title', Content: 'source-private-html-marker' },
+    result: [{ ...f.article.result[0], Title: locale === 'ja' ? '日本語の翻訳' : 'Bản dịch Việt' }], created_at: new Date(`2026-11-20T${hour}:00:00Z`) })
+  const ja = translated('ja', '03')
+  const vi = translated('vi', '04')
+  f.tables.jobs = [ja, second, vi, f.article]
+  const first = await f.app.inject({ url: '/article-groups?limit=1' })
+  assert.equal(first.statusCode, 200, first.body)
+  assert.equal(first.json().data.length, 1)
+  assert.equal(first.json().data[0].website_id, otherSite)
+  assert.ok(first.json().next_cursor)
+  const next = await f.app.inject({ url: '/article-groups?limit=1&cursor=' + first.json().next_cursor })
+  assert.equal(next.statusCode, 200, next.body)
+  const group = next.json().data[0]
+  assert.equal(group.article_group_id, root)
+  assert.equal(group.original_job_id, root)
+  assert.equal(group.original_title, 'Approved English title')
+  assert.equal(group.versions, 3)
+  assert.deepEqual(group.locales.map((row: Row) => row.locale), ['en', 'ja', 'vi'])
+  assert.equal(group.jobs[0].job_id, root)
+  assert.equal(group.jobs[1].translation_of_job_id, root)
+  assert.doesNotMatch(next.body, /source-private-html-marker|private-group-marker/)
+  const filtered = await f.app.inject({ url: '/article-groups?website_id=' + f.siteId + '&q=' + encodeURIComponent('日本語') })
+  assert.equal(filtered.json().data.length, 1)
+  assert.equal(filtered.json().data[0].versions, 3, 'matching a translation still returns the complete group')
+  const history = await f.app.inject({ url: '/jobs?article_group_id=' + root })
+  assert.equal(history.json().data.length, 3)
+  const blocked = await f.app.inject({ method: 'DELETE', url: '/jobs/' + root })
+  assert.equal(blocked.statusCode, 409, blocked.body)
+  assert.equal(blocked.json().error.code, 'article_has_translations')
+  assert.ok(f.tables.jobs.some(row => row._id === root))
+})
 
 test('CRM job detail carries the same precise priced cost used for targeted row updates', async t => {
   const { app, tables, sourceId } = await fixture(t, 27_123)
@@ -556,12 +599,13 @@ test('CRM rewrite uses the current customer key mode and requires a fresh own ke
   assert.equal(noKey.json().error.code, 'key_required')
   assert.equal(tables.jobs.length, 1)
 
-  const withKey = await app.inject({ method: 'POST', url: `/jobs/${sourceId}/rewrite`, payload: { keyAI: 'fake-customer-key' } })
+  const withKey = await app.inject({ method: 'POST', url: `/jobs/${sourceId}/rewrite`, payload: { base_url: 'https://api.example.com/v1', keyAI: 'fake-customer-key' } })
   assert.equal(withKey.statusCode, 202, withKey.body)
   const rewritten = tables.jobs.find(job => job._id === withKey.json().job_id)!
   assert.equal(rewritten.key_mode, 'own')
   assert.notEqual(rewritten.encrypted_key, 'fake-customer-key')
-  assert.equal(unseal(rewritten.encrypted_key, config.encryptionKey), 'fake-customer-key')
+  assert.deepEqual(decodeOwnConnection(rewritten.encrypted_key, config.encryptionKey), { baseUrl: 'https://api.example.com/v1', apiKey: 'fake-customer-key' })
+  assert.equal(rewritten.provider, 'openai-compatible')
   assert.equal(tables.quota_reservations.length, 0)
 })
 
@@ -574,15 +618,31 @@ test('CRM failed retry requires a fresh key for the current own-key mode', async
   assert.equal(noKey.statusCode, 400, noKey.body)
   assert.equal(noKey.json().error.code, 'key_required')
   assert.equal(tables.jobs.length, 1)
-  const withKey = await app.inject({ method: 'POST', url: `/jobs/${sourceId}/rewrite`, payload: { keyAI: 'fake-new-customer-key' } })
+  const withKey = await app.inject({ method: 'POST', url: `/jobs/${sourceId}/rewrite`, payload: { base_url: 'https://api.example.com/v1', keyAI: 'fake-new-customer-key' } })
   assert.equal(withKey.statusCode, 202, withKey.body)
   const rewritten = tables.jobs.find(job => job._id === withKey.json().job_id)!
   assert.equal(rewritten.key_mode, 'own')
   assert.equal(rewritten.source_article_id, null)
   assert.equal(rewritten.retry_of_job_id, sourceId)
   assert.notEqual(rewritten.encrypted_key, before.encrypted_key)
-  assert.equal(unseal(rewritten.encrypted_key, config.encryptionKey), 'fake-new-customer-key')
+  assert.deepEqual(decodeOwnConnection(rewritten.encrypted_key, config.encryptionKey), { baseUrl: 'https://api.example.com/v1', apiKey: 'fake-new-customer-key' })
   assert.deepEqual(tables.jobs.find(job => job._id === sourceId), before)
+  assert.equal(tables.quota_reservations.length, 0)
+})
+
+test('CRM rewrites a personal widget article without charging its service package', async t => {
+  const { app, tables, article, sourceId } = await fixture(t)
+  Object.assign(article, { key_mode: 'own', model: 'private/customer-model' })
+  const detail = await app.inject({ method: 'GET', url: `/jobs/${sourceId}` })
+  assert.equal(detail.statusCode, 200, detail.body)
+  assert.equal(detail.json().rewrite_key_mode, 'own')
+
+  const response = await app.inject({ method: 'POST', url: `/jobs/${sourceId}/rewrite`,
+    payload: { base_url: 'https://api.example.com/v1', keyAI: 'fake-customer-key' } })
+  assert.equal(response.statusCode, 202, response.body)
+  const rewritten = tables.jobs.find(job => job._id === response.json().job_id)!
+  assert.equal(rewritten.key_mode, 'own')
+  assert.equal(rewritten.model, article.model)
   assert.equal(tables.quota_reservations.length, 0)
 })
 
@@ -848,31 +908,31 @@ test('moving a schedule into a full day preserves its time, version and existing
 test('updating a scheduled own-key job stores the replacement only in encrypted form', async t => {
   const { create, change, config, tables } = await scheduleFixture(t)
   tables.customers[0].key_mode = 'own'
-  const response = await create('own-key-schedule', { keyAI: 'fixture-original-key' })
+  const response = await create('own-key-schedule', { base_url: 'https://api.example.com/v1', keyAI: 'fixture-original-key' })
   assert.equal(response.statusCode, 202, response.body)
   const id = response.json().job_id
 
   const updated = await change(id, 1, { keyAI: 'fixture-replacement-key' })
   assert.equal(updated.statusCode, 200, updated.body)
   const job = tables.jobs.find(row => row._id === id)!
-  assert.equal(unseal(job.encrypted_key, config.encryptionKey), 'fixture-replacement-key')
+  assert.deepEqual(decodeOwnConnection(job.encrypted_key, config.encryptionKey), { baseUrl: 'https://api.example.com/v1', apiKey: 'fixture-replacement-key' })
   assert.equal('keyAI' in job, false)
   assert.equal('keyAI' in updated.json(), false)
 })
 
-test('personal-key widget requests preserve provider, model and research settings without persisting raw credentials', async t => {
+test('personal-key widget requests force compatible transport with the supplied endpoint and model', async t => {
   const { create, change, config, tables } = await scheduleFixture(t)
   tables.customers[0].key_mode = 'own'
   const response = await create('own-key-provider-schedule', {
-    provider: 'openai', api_key: 'fixture-personal-api-key', model: 'private-model', use_research: false,
+    provider: 'openai', base_url: 'https://api.example.com/v1', api_key: 'fixture-personal-api-key', model: 'private-model', use_research: false,
   })
   assert.equal(response.statusCode, 202, response.body)
   const id = response.json().job_id
   const job = tables.jobs.find(row => row._id === id)!
-  assert.equal(job.provider, 'openai')
+  assert.equal(job.provider, 'openai-compatible')
   assert.equal(job.model, 'private-model')
   assert.equal(job.use_research, false)
-  assert.equal(unseal(job.encrypted_key, config.encryptionKey), 'fixture-personal-api-key')
+  assert.deepEqual(decodeOwnConnection(job.encrypted_key, config.encryptionKey), { baseUrl: 'https://api.example.com/v1', apiKey: 'fixture-personal-api-key' })
   assert.equal('api_key' in job, false)
   assert.equal('keyAI' in job, false)
   assert.equal(tables.quota_reservations.length, 0)
@@ -880,7 +940,7 @@ test('personal-key widget requests preserve provider, model and research setting
   const updated = await change(id, 1, { api_key: 'fixture-replacement-api-key' })
   assert.equal(updated.statusCode, 200, updated.body)
   const saved = tables.jobs.find(row => row._id === id)!
-  assert.equal(unseal(saved.encrypted_key, config.encryptionKey), 'fixture-replacement-api-key')
+  assert.deepEqual(decodeOwnConnection(saved.encrypted_key, config.encryptionKey), { baseUrl: 'https://api.example.com/v1', apiKey: 'fixture-replacement-api-key' })
   assert.equal(saved.use_research, false)
   assert.equal(updated.json().use_research, false)
   assert.equal('api_key' in saved, false)
@@ -888,18 +948,18 @@ test('personal-key widget requests preserve provider, model and research setting
   assert.equal('api_key' in updated.json(), false)
 })
 
-test('widget credential validation rejects provider omissions, known model mismatches and personal keys for service customers', async t => {
+test('widget credentials require a website endpoint and reject personal settings for service customers', async t => {
   const { create, tables } = await scheduleFixture(t)
   const service = await create('service-with-personal-key', { provider: 'openai', api_key: 'fixture-private-key' })
   assert.equal(service.statusCode, 400, service.body)
   assert.equal(service.json().error.code, 'personal_key_not_allowed')
   tables.customers[0].key_mode = 'own'
-  const missingProvider = await create('missing-own-key-provider', { api_key: 'fixture-private-key' })
-  assert.equal(missingProvider.statusCode, 400, missingProvider.body)
-  assert.equal(missingProvider.json().error.code, 'provider_required')
-  const mismatch = await create('mismatched-own-key-provider', { provider: 'xai', api_key: 'fixture-private-key' })
-  assert.equal(mismatch.statusCode, 400, mismatch.body)
-  assert.equal(mismatch.json().error.code, 'provider_model_mismatch')
-  assert.equal(tables.jobs.length, 1)
+  const missingEndpoint = await create('missing-own-key-endpoint', { api_key: 'fixture-private-key' })
+  assert.equal(missingEndpoint.statusCode, 400, missingEndpoint.body)
+  assert.equal(missingEndpoint.json().error.code, 'base_url_required')
+  const supplied = await create('own-key-no-catalog', { provider: 'xai', base_url: 'https://api.example.com/v1', api_key: 'fixture-private-key' })
+  assert.equal(supplied.statusCode, 202, supplied.body)
+  assert.equal(tables.jobs.find(job => job._id === supplied.json().job_id)!.provider, 'openai-compatible')
+  assert.equal(tables.jobs.length, 2)
   assert.equal(tables.quota_reservations.length, 0)
 })

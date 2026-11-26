@@ -9,9 +9,11 @@ import { registerCalendar } from './crm-calendar.js'
 import { registerSessions } from './crm-session.js'
 import { registerSettings } from './crm-settings.js'
 import { effectiveConfig } from '../runtime-settings.js'
+import { registerIntegrations } from './crm-integrations.js'
 
 export function registerCrm(app: FastifyInstance, db: Database, config: Config) {
   registerSessions(app, db, config)
+  registerIntegrations(app)
   registerCustomers(app, db, config)
   registerReports(app, db, config, () => effectiveConfig(db, config))
   registerCalendar(app, db)

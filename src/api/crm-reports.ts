@@ -5,7 +5,10 @@ import { z } from 'zod'
 import type { Config } from '../config.js'
 import { isCompatibleProvider, providers } from '../config.js'
 import { collection, sessionOf, transaction, type Database } from '../db.js'
-import { createJob, type Site } from './public.js'
+import { createJob, writingFields, type Site } from './public.js'
+import { languageMetadata } from '../article-language.js'
+import { articleIdentity, articleIdentityFields } from '../article-group.js'
+import { articleGroupRows, groupArticleRows } from './article-groups.js'
 import { modelIdSchema, providerIdSchema } from './catalog.js'
 import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { pageOf, readCursor } from './public.js'
@@ -22,12 +25,12 @@ const reportFilters = listSchema.pick({ customer_id: true, website_id: true, fro
   ({ from, to }) => !from || !to || from <= to,
   'Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.',
 )
-const jobsSchema = listSchema.extend({ status: z.enum(['scheduled', 'queued', 'writing', 'ready', 'completed', 'failed', 'canceled']).optional(), source: z.enum(['scheduled', 'schedule', 'preview', 'immediate', 'widget', 'rewrite']).optional(), provider: providerIdSchema.optional(), key_mode: z.enum(['own', 'service']).optional(), date_basis: z.literal('cost').optional(), issue: z.enum(['queue', 'overdue', 'future', 'stale', 'unpriced']).optional() })
+const jobsSchema = listSchema.extend({ article_group_id: idSchema.optional(), status: z.enum(['scheduled', 'queued', 'writing', 'ready', 'completed', 'failed', 'canceled']).optional(), source: z.enum(['scheduled', 'schedule', 'preview', 'immediate', 'widget', 'rewrite']).optional(), provider: providerIdSchema.optional(), key_mode: z.enum(['own', 'service']).optional(), date_basis: z.literal('cost').optional(), issue: z.enum(['queue', 'overdue', 'future', 'stale', 'unpriced']).optional() })
 const deliveriesSchema = listSchema.extend({ status: z.enum(['pending', 'sending', 'delivered', 'failed']).optional(), event: z.enum(['article.ready', 'article.failed']).optional(), issue: z.enum(['queue', 'stale']).optional() })
 const idParams = z.object({ id: idSchema })
-const scheduleFields = z.object({ customer_id: idSchema.optional(), website_id: idSchema, model: modelIdSchema, keyword: z.string().trim().min(1).max(500), tone: z.string().trim().min(1).max(240), style: z.string().trim().min(1).max(500), length: articleLengthSchema, instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(), use_research: z.boolean().default(true), scheduled_at: timestampSchema }).strict()
+const scheduleFields = z.object({ customer_id: idSchema.optional(), website_id: idSchema, model: writingFields.shape.model, keyword: z.string().trim().min(1).max(500), tone: z.string().trim().min(1).max(240), style: z.string().trim().min(1).max(500), length: articleLengthSchema, instructions: z.string().trim().max(4000).optional(), base_url: writingFields.shape.base_url, keyAI: writingFields.shape.keyAI, key_mode: writingFields.shape.key_mode, ...articleIdentityFields, languages: writingFields.shape.languages, locale: writingFields.shape.locale, translation_source: writingFields.shape.translation_source, use_research: z.boolean().default(true), scheduled_at: timestampSchema }).strict()
 const immediateFields = scheduleFields.omit({ scheduled_at: true }).extend({ exclude_content_ids: excludedContentIdsSchema.optional() })
-const rewriteFields = z.object({ instructions: z.string().trim().max(4000).optional(), keyAI: z.string().trim().min(1).max(2048).optional(), exclude_content_ids: excludedContentIdsSchema.optional() }).strict()
+const rewriteFields = z.object({ instructions: z.string().trim().max(4000).optional(), base_url: writingFields.shape.base_url, keyAI: writingFields.shape.keyAI, key_mode: writingFields.shape.key_mode, exclude_content_ids: excludedContentIdsSchema.optional() }).strict()
 const DAY = 86_400_000
 const VIETNAM_OFFSET = 7 * 60 * 60 * 1000
 const ReportDecimal = Decimal.clone({ precision: 40 })
@@ -64,6 +67,9 @@ async function joinedJobs(db: Database, filters: z.infer<typeof keys>) {
 }
 function reportJob(row: any) {
   return {
+    ...articleIdentity(row),
+    is_translation: Boolean(row.translation_source || row.translation_of_job_id),
+    article_title: row.result?.[0]?.Title ?? null,
     id: row._id, job_id: row._id, customer_id: row.customer_id, customer_name: row.customer?.name ?? '',
     website_id: row.site_id, website_name: row.site?.name ?? '', mode: row.mode, source: row.mode === 'preview' ? 'immediate' : row.mode,
     status: row.status === 'ready' ? 'completed' : row.status,
@@ -73,6 +79,7 @@ function reportJob(row: any) {
     ...(row.provider_display_name ? { provider_display_name: row.provider_display_name } : {}),
     ...(row.upstream_model ? { upstream_model: row.upstream_model } : {}),
     tone: row.tone, style: row.style, length: row.length,
+    ...(row.languages ? { languages: row.languages, locale: row.locale ?? row.languages.source } : {}),
     use_research: row.use_research ?? true,
     key_mode: row.key_mode, created_at: row.created_at, updated_at: row.updated_at, scheduled_at: row.scheduled_at, started_at: row.started_at, completed_at: row.completed_at,
     source_article_id: row.source_article_id, retry_of_job_id: row.retry_of_job_id ?? null, idempotency_key: row.client_request_id,
@@ -284,16 +291,22 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       id: site._id,
       customer_id: site.customer_id,
       token_hash: site.token_hash ?? null,
+      proof_required: site.proof_required,
+      signing_public_key: site.signing_public_key,
       webhook_url: site.webhook_url ?? null,
       webhook_secret: site.webhook_secret ?? null,
     } satisfies Site, clientId, {
       model: fields.model,
+      ...languageMetadata(fields),
+      article_ref: fields.article_ref, translation_of_job_id: fields.translation_of_job_id,
       keyword: fields.keyword,
       tone: fields.tone,
       style: fields.style,
       length: fields.length,
       instructions: fields.instructions,
       keyAI: fields.keyAI,
+      base_url: fields.base_url,
+      key_mode: fields.key_mode,
       use_research: fields.use_research,
       exclude_content_ids: fields.exclude_content_ids,
     }, 'preview', undefined)
@@ -312,16 +325,22 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       id: site._id,
       customer_id: site.customer_id,
       token_hash: site.token_hash ?? null,
+      proof_required: site.proof_required,
+      signing_public_key: site.signing_public_key,
       webhook_url: site.webhook_url ?? null,
       webhook_secret: site.webhook_secret ?? null,
     } satisfies Site, clientId, {
       model: fields.model,
+      ...languageMetadata(fields),
+      article_ref: fields.article_ref, translation_of_job_id: fields.translation_of_job_id,
       keyword: fields.keyword,
       tone: fields.tone,
       style: fields.style,
       length: fields.length,
       instructions: fields.instructions,
       keyAI: fields.keyAI,
+      base_url: fields.base_url,
+      key_mode: fields.key_mode,
       use_research: fields.use_research,
       exclude_content_ids: fields.exclude_content_ids,
     }, 'scheduled', fields.scheduled_at)
@@ -349,16 +368,21 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       id: site._id,
       customer_id: site.customer_id,
       token_hash: site.token_hash ?? null,
+      proof_required: site.proof_required,
+      signing_public_key: site.signing_public_key,
       webhook_url: site.webhook_url ?? null,
       webhook_secret: site.webhook_secret ?? null,
     } satisfies Site, clientId, {
       model: article.model,
+      ...languageMetadata({ languages: article.languages, locale: article.locale, ...(retryFailed ? { translation_source: article.translation_source } : {}) }),
       keyword: article.keyword,
       tone: article.tone,
       style: article.style,
       length: article.length,
       instructions: instructions || undefined,
       keyAI: additions.keyAI,
+      base_url: additions.base_url,
+      key_mode: additions.key_mode ?? (article.key_mode === 'own' ? 'own' : undefined),
       use_research: article.use_research ?? true,
       exclude_content_ids: additions.exclude_content_ids ?? article.exclude_content_ids ?? [],
     }, 'rewrite', undefined, sourceId, retryFailed ? id : undefined)
@@ -572,6 +596,23 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
     }
   })
 
+  app.get('/article-groups', async request => {
+    const filters = listSchema.extend({ article_group_id: idSchema.optional(), status: z.enum(['scheduled', 'queued', 'writing', 'ready', 'completed', 'failed', 'canceled']).optional() }).parse(request.query)
+    reportFilters.parse(filters)
+    const all = await articleGroupRows(db, filters)
+    const search = filters.q?.toLowerCase()
+    const matching = new Set(all.filter(row =>
+      (!search || `${row.article_group_id ?? row._id} ${row.article_ref ?? ''} ${row.result?.[0]?.Title ?? ''} ${row.translation_source?.Title ?? ''} ${row.keyword} ${row.site?.name ?? ''} ${row.customer?.name ?? ''}`.toLowerCase().includes(search))
+      && (!filters.status || row.status === (filters.status === 'completed' ? 'ready' : filters.status))
+      && inRange(row.created_at, filters.from ? dateStart(filters.from) : undefined, filters.to ? dateEnd(filters.to) : undefined)
+    ).map(row => `${row.customer_id}:${row.site_id}:${row.article_group_id ?? row._id}`))
+    const groups = groupArticleRows(all, reportJob).filter(group => matching.has(group.group_key) && (!filters.article_group_id || group.article_group_id === filters.article_group_id))
+    const [cursorAt, cursorId] = readCursor(filters.cursor)
+    const page = groups.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.article_group_id.localeCompare(a.article_group_id))
+      .filter(row => !cursorAt || row.created_at < cursorAt || row.created_at === cursorAt && row.article_group_id < cursorId!)
+      .slice(0, filters.limit + 1)
+    return pageOf(page, filters.limit)
+  })
   app.get('/jobs', async request => {
     const costVnd = convertVnd((await getRuntimeConfig()).usdToVnd)
     const filters = jobsSchema.parse(request.query)
@@ -590,7 +631,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       return row.created_at
     }
     let rows = (await joinedJobs(db, filters)).filter(row =>
-      (byCost || inRange(jobDate(row), from, to)) && (!status || row.status === status)
+      (byCost || inRange(jobDate(row), from, to)) && (!status || row.status === status) && (!filters.article_group_id || (row.article_group_id ?? row._id) === filters.article_group_id)
       && (!source || row.mode === source) && (!filters.provider || row.provider === filters.provider)
       && (!filters.key_mode || row.key_mode === filters.key_mode)
       && (!byCost || row.key_mode === 'service')
@@ -643,6 +684,8 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       await collection(client, 'sites').updateOne({ _id: job.site_id }, { $inc: { relation_version: 1 } }, { session })
       if (job.status === 'writing') throw new ApiError(409, 'job_in_progress', 'Không thể xóa yêu cầu đang được xử lý. Hãy chờ tiến trình kết thúc rồi thử lại.')
       if (await collection(client, 'jobs').findOne({ source_article_id: id, status: 'writing' }, { projection: { _id: 1 }, session })) throw new ApiError(409, 'job_in_progress', 'Bài viết đang được dùng làm nguồn cho một yêu cầu viết lại. Hãy chờ tiến trình kết thúc rồi thử lại.')
+      if (await collection(client, 'jobs').findOne({ translation_of_job_id: id }, { projection: { _id: 1 }, session })) throw new ApiError(409, 'article_has_translations', 'Bài này đang là nguồn của các bản dịch. Hãy xử lý các bản dịch trước khi xóa bản gốc.')
+      if (await collection(client, 'jobs').findOne({ original_job_id: id, translation_source: { $exists: true } }, { projection: { _id: 1 }, session })) throw new ApiError(409, 'article_has_translations', 'Bài gốc đang được các bản dịch tham chiếu. Hãy xử lý các bản dịch trước khi xóa bản gốc.')
       const deliveries = await collection<any>(client, 'webhook_deliveries').find({ job_id: id }, { projection: { _id: 1, status: 1 }, session }).toArray()
       if (deliveries.some(delivery => delivery.status === 'sending')) throw new ApiError(409, 'job_in_progress', 'Bài viết đang được gửi đến website. Hãy chờ tiến trình kết thúc rồi thử lại.')
       const deliveryIds = deliveries.map(delivery => delivery._id)
@@ -679,13 +722,14 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       ...reportJob(labelConnection({ ...row, customer, site })),
       cost_usd: cost == null ? null : costValue(cost),
       cost_vnd: costVnd(cost),
-      rewrite_key_mode: customer?.key_mode ?? row.key_mode,
+      rewrite_key_mode: row.key_mode === 'own' ? 'own' : customer?.key_mode ?? row.key_mode,
       outline: ready ? row.outline ?? null : null,
       result: ready && Array.isArray(row.result) ? row.result.map(normalizeArticleFields) : ready ? row.result : null,
       seo_report: ready ? row.seo_report ?? null : null,
       seo_repair_status: ready ? row.seo_repair_status ?? null : null,
       internal_link_report: ready ? row.internal_link_report ?? null : null,
       instructions: row.instructions,
+      translation_source: row.translation_source ?? null,
       attempts: attempts.map(attempt => ({
         id: attempt._id, provider: attempt.provider, model: attempt.model,
         ...(labelConnection(attempt).upstream_model ? { upstream_model: labelConnection(attempt).upstream_model } : {}),

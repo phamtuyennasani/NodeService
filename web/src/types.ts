@@ -101,6 +101,8 @@ export interface Website {
   content_catalog_error?: string | null;
   content_catalog_count?: number;
   token_hint: string | null;
+  proof_required?: boolean;
+  signing_key_fingerprint?: string | null;
   webhook_secret_configured?: boolean;
   last_seen_at: string | null;
   article_count: number;
@@ -128,6 +130,15 @@ export interface Usage {
 }
 
 export interface Job {
+  article_group_id?: string;
+  article_ref?: string | null;
+  original_locale?: string;
+  original_job_id?: string | null;
+  translation_of_job_id?: string | null;
+  locale?: string;
+  languages?: { source: string; targets: string[] };
+  is_translation?: boolean;
+  article_title?: string | null;
   id: string;
   job_id?: string;
   customer_id: string;
@@ -163,6 +174,27 @@ export interface Job {
   instructions?: string | null;
   error_code?: string | null;
   error_message?: string | null;
+}
+
+export interface ArticleGroup {
+  group_key: string;
+  article_group_id: string;
+  article_ref: string | null;
+  website_id: string;
+  website_name: string;
+  website_domain: string;
+  customer_id: string;
+  customer_name: string;
+  original_locale: string;
+  original_job_id: string | null;
+  original_title: string;
+  source_kind: 'crm' | 'website';
+  legacy: boolean;
+  versions: number;
+  locales: { locale: string; job_id: string; status: string }[];
+  jobs: Job[];
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Article {
@@ -216,6 +248,7 @@ export interface Delivery {
 }
 
 export type JobDetails = Job & {
+  translation_source?: { Title: string; Content: string; Desc?: string; Description?: string; Keywords?: string[] } | null;
   rewrite_key_mode?: 'own' | 'service';
   outline?: ArticleOutline | null;
   result?: Article[] | null;

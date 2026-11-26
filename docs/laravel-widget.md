@@ -1,4 +1,51 @@
-# Widget Laravel dùng cùng luồng viết với CRM
+# Tích hợp widget viết bài vào Laravel
+
+## Chép file vào website
+
+Bộ [Laravel CRM AI dạng chép file](../integrations/laravel-upload/README.md) có sẵn
+service, controller, middleware, config, route, Blade và mẫu AIConfig theo cây thư
+mục Laravel 10–13. Tạo ZIP bằng `python scripts/build-laravel-upload.py` tại dự án CRM.
+
+## Package Composer
+
+Package dùng chung nằm tại [packages/laravel-crm-ai](../packages/laravel-crm-ai/README.md).
+Từ bản 1.1.0, xem [cấu hình đa ngôn ngữ](multilingual.md) để khai báo ngôn ngữ gốc, ngôn ngữ đích và mapping theo locale.
+Đặt ZIP phát hành trong thư mục `packages` của website, rồi chạy trong thư mục chứa `artisan`.
+
+```bash
+composer config repositories.crm-ai artifact ./packages
+composer require nodeservice/laravel-crm-ai:^1.3
+```
+
+Trong **CRM → Website → Kết nối API**, cấp token rồi bấm **Sao chép .env**. Dán dòng
+`CRM_SITE_TOKEN="https://crm.example.com|<website-id>|<site-token>"` vào `.env` của website.
+Chạy `php artisan crm-ai:public-key` và đăng ký khóa công khai trong CRM trước lần viết đầu tiên.
+
+Gắn các Gate `crm-ai.write` và `crm-ai.manage` với quyền hiện có của website.
+Thêm `<x-crm-ai::settings />` vào trang cấu hình admin, ngoài các form khác. Component
+hiển thị ba ô `base_url`, `api_key`, `model` và dùng route của package để lưu key đã mã hóa.
+Thêm `<x-crm-ai::writer>` với `form` và `fields` vào form bài viết có `@csrf`.
+Xem [hướng dẫn cài đặt và mẫu phân quyền](../packages/laravel-crm-ai/README.md#cài-vào-website-mới).
+
+Package mặc định lưu cấu hình AI mã hóa vào file riêng và có HTTP client tự ký
+yêu cầu cho API viết ngay, lên lịch, viết lại và lấy kết quả. Chữ ký từng yêu cầu
+có hạn 60 giây. CRM ghi nonce dùng một lần cùng giao dịch tạo job và giữ hạn mức.
+Gửi lại cùng `Idempotency-Key` và nội dung trả cùng job.
+
+BaseCodeAW hiện dùng bộ chép file ở phần đầu tài liệu. Kết nối đặt trong
+`config/crm-ai.php`; trang cấu hình là `/admin/crm-ai/settings`. Dịch vụ nằm trong
+`app/CrmAi`, khóa và key mã hóa nằm trong `storage/app/private/crm-ai/`.
+AIConfig và ngôn ngữ đặt trong `resources/views/admin/layouts/js.blade.php`;
+không cần input ẩn hoặc lưu mã bài, mã job CRM vào dữ liệu bài viết.
+
+Site token và khóa ký ở backend. Theo cấu hình mount trực tiếp, key AI riêng
+được đưa vào JavaScript của trang biên tập có xác thực. Widget tải script từ CRM,
+gọi backend PHP để cấp chữ ký rồi gửi yêu cầu viết trực tiếp tới CRM. Nút
+**Áp dụng** điền bản gốc và các bản dịch vào form để biên tập viên lưu theo quy trình của website. Khi đã áp dụng, lượt viết tiếp theo bắt đầu một bài mới.
+
+## Adapter Laravel hiện hữu
+
+Phần dưới là tài liệu cho website đã tích hợp widget qua các route Laravel cùng origin.
 
 Widget chỉ là giao diện nhúng trong trang biên tập của website khách hàng. Backend Laravel nhận dữ liệu từ widget, xác định website đang được phép thao tác và dùng site token của website đó để tạo job trong CRM. API công khai và chức năng **Viết ngay** của CRM dùng chung `createJob` và worker: nghiên cứu nếu bật, lập dàn ý, viết bản nháp, kiểm tra SEO và chỉnh khi cần. Không triển khai một prompt viết ngắn riêng ở Laravel hoặc trình duyệt.
 
@@ -9,7 +56,7 @@ Luồng dữ liệu:
 3. Laravel lưu quyền sở hữu yêu cầu theo người dùng/website, rồi gọi `POST /v1/article-jobs` với `mode: "preview"`.
 4. Worker CRM xử lý job thật. Laravel trả ngay `job_id` và trạng thái; không chờ toàn bộ lượt AI trong một request HTTP.
 5. Widget thăm dò route Laravel. Khi job `ready`, Laravel lấy `GET /v1/article-jobs/{job_id}/result` và gắn **nguyên mảng kết quả** vào `result`.
-6. Widget hiển thị bài; nút **Chấp nhận** điền các trường vào form. Thao tác lưu hiện có của website lưu bản nháp để biên tập viên duyệt.
+6. Widget hiển thị bản gốc để chọn **Áp dụng** hoặc dịch các ngôn ngữ đích. Sau khi dịch xong chỉ còn nút **Áp dụng** để điền các phiên bản vào form. Thao tác lưu hiện có của website lưu bản nháp để biên tập viên duyệt.
 
 ## Cấu hình backend và quyền truy cập
 
@@ -52,6 +99,11 @@ Schema::create('ai_preview_requests', function (Blueprint $table) {
 
 ## Controller proxy
 
+Nạp hàm `crmRequestProof` theo [hợp đồng ký PHP](security.md#khóa-ký-máy-chủ-website).
+Ví dụ dùng `crm_site_id` và `crm_signing_key_path` từ cấu hình backend tin cậy của website,
+cùng `crm_token`. Đăng ký khóa công khai trong CRM trước khi gọi API. Callback ký đúng
+byte JSON do Laravel HTTP client tạo cho từng lượt gửi, kể cả GET hoặc retry.
+
 Ví dụ sử dụng Laravel HTTP client và query builder. Cấu hình HTTP timeout chỉ bao phủ thao tác tạo/đọc job; worker AI chạy độc lập. Khi CRM trả lỗi, giữ mã HTTP và thông báo JSON để widget hiển thị, không đổi thành kết quả thành công có bài mẫu.
 
 ```php
@@ -77,7 +129,19 @@ class AiPreviewController extends Controller
     {
         return Http::baseUrl(rtrim(config('services.crm.url'), '/'))
             ->withToken($website->crm_token)
-            ->acceptJson()->asJson()->connectTimeout(5)->timeout(20);
+            ->acceptJson()->asJson()->connectTimeout(5)->timeout(20)
+            ->beforeSending(function (\Illuminate\Http\Client\Request $request) use ($website) {
+                $uri = $request->toPsrRequest()->getUri();
+                $target = $uri->getPath().($uri->getQuery() !== '' ? '?'.$uri->getQuery() : '');
+                $proof = crmRequestProof(
+                    $website->crm_site_id, $website->crm_token,
+                    file_get_contents($website->crm_signing_key_path),
+                    $request->method(), $target, $request->body(), '',
+                    $request->header('Idempotency-Key')[0] ?? '',
+                    $request->header('If-Match')[0] ?? '',
+                );
+                return $request->toPsrRequest()->withHeader('X-Site-Proof', $proof);
+            });
     }
 
     private function proxy($response)
@@ -185,11 +249,17 @@ Thêm giới hạn tần suất theo người dùng/website phù hợp với ứ
 
 ## Cấu hình widget và kết quả
 
-Gắn widget theo [mẫu trong README](../README.md#gắn-widget-vào-trang-biên-tập), gồm meta `csrf-token`, `endpoint: '/admin/ai/previews'` và `modelsEndpoint: '/admin/ai/models'`. Các endpoint phải cùng origin với trang biên tập để dùng session/CSRF. Script có thể được phục vụ từ CRM nhưng trình duyệt không gọi API CRM bằng site token.
+Adapter dùng meta `csrf-token` và thêm `endpoint: '/admin/ai/previews'`, `modelsEndpoint: '/admin/ai/models'` trong `AIWriter.mount`. Hai URL dùng cùng origin với trang biên tập để xác thực bằng session và CSRF. Tải JavaScript từ `/widget/v1/ai-writer.js` của CRM.
 
 Giao diện widget nằm trong Shadow DOM và có lớp reset riêng cho font, căn chữ, hướng viết, màu giao diện và biến CSS. Cỡ chữ của modal không phụ thuộc `font-size` trên `html` của website; quy tắc toàn cục như `button`, `input`, `dialog` hay `.primary`, kể cả `!important`, không ghi đè các phần tử bên trong. Bản xem trước quy đổi đơn vị `rem` trong CSS bài viết theo mốc 16px; HTML gốc đã lọc vẫn được giữ khi chấp nhận điền vào form. Không chèn stylesheet hay sửa `html`/`body` của trang khách hàng. Đây là cô lập CSS, không ngăn JavaScript trên trang chủ động truy cập widget hoặc việc website ẩn vùng gắn widget.
 
 Chuyển nguyên danh sách model CRM trả về. Giá trị chọn là mã `model` nội bộ, kể cả mã của kết nối OpenAI Compatible riêng; tên hiển thị/provider chỉ là nhãn. Không lấy danh sách model toàn cục hoặc thay mã bằng tên hiển thị/mã upstream, vì khách hàng chỉ được dùng model được cấp và đã cấu hình.
+
+API `/v1/models` trả thêm `key_mode: "own" | "service"` lấy từ khách hàng sở hữu site token. Laravel cần giữ trường này; không gán cứng loại key trong Blade. Widget kiểm tra lại mỗi lần mở: `service` hiện select model; `own` ẩn toàn bộ nhãn và ô Model. Trong lúc tải hoặc khi tải lỗi, nút viết bị khóa để không dùng cấu hình cũ.
+
+Ví dụ controller ở trên dành cho key dịch vụ. Với key riêng, tạo mục **Cấu hình AI** trong quản trị Laravel gồm **Base URL, API key, Model** và lưu mã hóa trong database. Người dùng không chọn provider: backend luôn gắn `provider: "openai-compatible"` và gửi `base_url`, `api_key`, `model` sang CRM. Base URL tối đa 500 ký tự, dùng HTTPS công khai, không chứa tài khoản, query hoặc fragment, ví dụ `https://api.example.com/v1` (không thêm `/chat/completions`). CRM dùng đúng endpoint và mã model website cung cấp, không yêu cầu tạo provider/model trong danh mục CRM. API key tối đa 2.048 ký tự; model tối đa 160 ký tự, không chứa khoảng trắng hoặc ký tự điều khiển, hỗ trợ mã như `team/model:free@latest`.
+
+Route models bổ sung `own_key_configured` (boolean) và `model` (mã cố định hoặc null), tuyệt đối không trả API key hoặc Base URL. Khi POST, kiểm tra lại `key_mode` từ CRM; nếu `own`, gắn bộ thông tin đã lưu và ghi đè model do client gửi. Không cho browser ghi đè `base_url`, provider hoặc key. Nếu thiếu cấu hình thì trả lỗi trước khi tạo job; nếu `service`, không gửi key hoặc Base URL riêng. Widget sẽ hiện thông báo cấu hình thiếu và khóa nút viết. Khi sửa lịch qua API, bỏ qua connection để giữ nguyên; nếu đổi Base URL phải gửi lại API key. CRM mã hóa endpoint và key cùng nhau trong job, xóa khi job kết thúc hoặc bị hủy; kết nối HTTPS kiểm tra DNS công khai, ghim IP đã kiểm tra và không theo redirect.
 
 Widget có ô **Hướng dẫn thêm** như CRM, tối đa 4.000 ký tự sau khi bỏ khoảng trắng đầu/cuối. Đặt `defaults.instructions` nếu website có hướng dẫn mặc định; người biên tập có thể sửa trước khi gửi. Ví dụ: `defaults: { length: 1500, instructions: 'Phân tích chi phí và thêm bảng so sánh trước phần câu hỏi thường gặp.' }`. Giá trị không trống được chuyển tiếp nguyên nội dung qua `instructions` của CRM; ô để trống không gửi trường này.
 
@@ -222,4 +292,4 @@ JSON trên chỉ minh họa **cấu trúc phản hồi**, không phải nội du
 
 ## Chạy thử cục bộ
 
-Chạy CRM/API và worker từ `.env` hiện tại bằng `npm start`, rồi chạy `npm run dev:widget` trong terminal khác. Mở `http://127.0.0.1:3220`; đặt `WIDGET_SITE_ID=<website_id>` trước lệnh để chọn website CRM cụ thể. Preview dùng cùng hàm tạo job, danh sách model theo khách hàng và worker đang chạy; nó tạo dữ liệu thật, gọi AI thật và dùng hạn mức thực. Không khởi chạy thêm worker riêng cho preview. Server chỉ lắng nghe loopback và dành cho phát triển; khi triển khai, dùng các route Laravel đã xác thực như trên.
+Chạy CRM/API và worker từ `.env` hiện tại bằng `npm start`, rồi chạy `npm run dev:widget` trong terminal khác. Mở `http://127.0.0.1:3220` và đặt `WIDGET_SITE_ID` theo ID của một website dùng hạn mức dịch vụ. Trang này dùng adapter cục bộ để tạo job thật, gọi AI và sử dụng hạn mức của website. CRM xử lý job bằng worker đang chạy. Để kiểm tra chữ ký của trang biên tập hoặc website chỉ dùng key riêng, dùng [luồng trực tiếp trên BaseCodeAW](#kiểm-tra-luồng-trực-tiếp-trên-basecodeaw).

@@ -2,11 +2,47 @@
 
 Các lớp bảo vệ trong ứng dụng giảm khả năng làm cạn tài nguyên, dò mật khẩu, giả mạo yêu cầu và thực thi HTML độc hại. Chúng không bảo đảm ngăn mọi cuộc tấn công hoặc hấp thụ được DDoS làm đầy đường truyền. Bản cấu hình reverse proxy ở `deploy/nginx.conf.example` là mẫu cần chỉnh và kiểm tra trên máy triển khai; dự án không tự áp dụng firewall, chứng chỉ, CDN hay WAF.
 
+## Khóa ký máy chủ website
+
+Mỗi website dùng site token cùng một cặp khóa EC P-256 độc lập. Backend PHP giữ khóa riêng ngoài public root và Git. CRM lưu khóa công khai. Khi nâng cấp, migration bật yêu cầu chữ ký cho các website hiện có. Website mới cũng yêu cầu khóa ký. Lịch đã được CRM tiếp nhận tiếp tục chạy bằng worker.
+
+Với BaseCodeAW, mở `/admin/crm-ai/settings` và bấm **Tạo khóa máy chủ**, rồi sao chép khóa công khai tại cùng trang. Trong CRM, mở **Website → Kết nối API → Đăng ký khóa ký** và dán khóa công khai. Thay khóa yêu cầu phiên CRM hợp lệ và xác nhận mật khẩu như các thao tác nhạy cảm khác. Đổi token giữ khóa ký đã đăng ký. Giữ bản sao an toàn của khóa riêng khi chuyển server hoặc đăng ký khóa công khai mới sau khi đổi khóa.
+
+API quản trị `PUT /api/crm/websites/{id}/signing-key` nhận `{ public_key, expected_fingerprint }`. Lần đầu gửi `expected_fingerprint: null`. Khi thay khóa, gửi vân tay đang hiển thị trên CRM để tránh ghi đè thay đổi đồng thời. API dùng site token không có quyền đăng ký hoặc thay khóa.
+
+Các API `/v1` dùng Bearer token yêu cầu thêm `X-Site-Proof` khi website bật bảo vệ. Chữ ký ràng buộc method, nguyên path/query, origin, hash SHA-256 của đúng byte body, `Idempotency-Key`, `If-Match`, thời gian và nonce. Thời gian chấp nhận là 60 giây, dung sai đồng hồ tương lai 10 giây. Header có dạng `created.nonce.signature`, nonce là 16 byte ngẫu nhiên dạng hex, signature là ECDSA SHA-256 dạng DER, mã hóa base64url bỏ padding.
+
+Ví dụ PHP dùng chung cho các framework, với token và khóa riêng lấy từ kho cấu hình backend.
+
+```php
+function crmRequestProof(string $siteId, string $token, string $privateKeyPem,
+    string $method, string $target, string $body = '', string $origin = '',
+    string $idempotencyKey = '', string $ifMatch = ''): string
+{
+    $created = (string) time();
+    $nonce = bin2hex(random_bytes(16));
+    $message = implode("\n", [
+        'site-request-v1', $siteId, hash('sha256', $token), $method, $target,
+        $origin, hash('sha256', $body), $idempotencyKey, $ifMatch, $created, $nonce,
+    ]);
+    if (!openssl_sign($message, $signature, $privateKeyPem, OPENSSL_ALGO_SHA256)) {
+        throw new RuntimeException('Cannot sign CRM request');
+    }
+    return $created.'.'.$nonce.'.'.rtrim(strtr(base64_encode($signature), '+/', '-_'), '=');
+}
+```
+
+Gửi đúng chuỗi `$body` đã ký, cùng các header tương ứng. Lượt gọi server-to-server thường dùng origin rỗng. Khi lấy quyền cho widget, backend ký origin trang biên tập và path `/v1/widget/{site_id}/previews`. Chỉ cấp quyền sau khi xác thực đăng nhập, quyền biên tập và CSRF. Script nhúng đặt `data-authorize-url` trỏ tới endpoint PHP cùng origin. BaseCodeAW dùng `POST /admin/crm-ai/authorize`, nhận `{ body, id }` và trả `{ proof }`. Widget gửi nguyên body và mã yêu cầu tới CRM cùng chữ ký vừa cấp.
+
+Chữ ký script có hạn một giờ phục vụ tải danh mục model. Với website đã bật bảo vệ, tạo bài cần chữ ký riêng cho từng yêu cầu. Nonce được lưu trong MongoDB dùng chung giữa các replica. Với thao tác ghi, ghi nonce và cập nhật dữ liệu/hạn mức nằm trong cùng transaction. Gửi lại cùng yêu cầu tạo bài cùng `Idempotency-Key` trả cùng job, giữ một lượt. Khi thử lại sau lỗi mạng, giữ nguyên body và mã yêu cầu, lấy chữ ký mới nếu chữ ký trước đã hết hạn. Nonce đã dùng cho yêu cầu khác trả `409 site_proof_replayed`. Kho chống replay lỗi trả `503`, thiếu/sai/hết hạn chữ ký trả `401`, website chưa đăng ký khóa trả `403`.
+
+Nếu cả token và khóa riêng bị lấy, thu hồi token rồi thay token và cặp khóa. Khóa riêng luôn ở backend. API key AI riêng của luồng mount trực tiếp vẫn xuất hiện trong trang biên tập có xác thực theo cấu hình tích hợp.
+
 ## Đường vào dịch vụ
 
 Đặt CDN/WAF có bảo vệ DDoS trước reverse proxy HTTPS. Chỉ cho phép lưu lượng từ các mạng CDN đã xác minh tới origin nếu dùng CDN; chặn truy cập thẳng origin bằng firewall của hạ tầng. Không mở cổng Node.js hoặc MongoDB công khai. Với Nginx cùng máy, giữ `HOST=127.0.0.1` và cho Nginx chuyển tiếp tới cổng 3210. Nếu khác máy/container, chỉ mở mạng nội bộ cần thiết và dùng kết nối được bảo vệ phù hợp.
 
-Đặt `NODE_ENV=production`, `APP_ORIGIN=https://crm.ten-mien-cua-ban` đúng với origin trình duyệt đang mở, không chứa thông tin đăng nhập. Production yêu cầu HTTPS. Origin khác sẽ bị từ chối ở API quản trị; ngay cả subdomain cùng miền cũng không được tự gửi thao tác ghi. Vite proxy khi phát triển cũng cần `APP_ORIGIN` khớp origin giao diện. Widget trên website khách hàng tiếp tục gửi yêu cầu qua backend Laravel tới `/v1`; không dùng cookie quản trị để gọi CRM trực tiếp từ trình duyệt khách.
+Đặt `NODE_ENV=production`, `APP_ORIGIN=https://crm.ten-mien-cua-ban` đúng với origin trình duyệt đang mở, không chứa thông tin đăng nhập. Production yêu cầu HTTPS. Origin khác sẽ bị từ chối ở API quản trị; ngay cả subdomain cùng miền cũng không được tự gửi thao tác ghi. Vite proxy khi phát triển cũng cần `APP_ORIGIN` khớp origin giao diện. Widget tải từ CRM, lấy chữ ký từng yêu cầu qua backend PHP đã xác thực, rồi gửi trực tiếp tới nhóm API widget của CRM. API server-to-server dùng site token cùng chữ ký máy chủ. Phiên quản trị CRM phục vụ giao diện quản trị.
 
 `TRUSTED_PROXIES` mặc định rỗng: không tin header chuyển tiếp do client gửi. Chỉ khai báo IP/CIDR của reverse proxy thực sự, ví dụ `127.0.0.1,::1` khi Nginx cùng máy. Không dùng `true`, số hop, wildcard hoặc CIDR toàn Internet. Mẫu Nginx ghi đè `X-Forwarded-For` bằng địa chỉ kết nối tới Nginx. Nếu thêm CDN, trước tiên cấu hình Real IP của Nginx chỉ tin dải IP chính thức của CDN và kiểm tra không thể giả mạo IP; không chuyển tiếp mù quáng header client tự đặt. Nếu chưa làm bước này, mọi khách có thể bị tính chung vào IP proxy/CDN.
 

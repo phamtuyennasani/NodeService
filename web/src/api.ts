@@ -201,7 +201,7 @@ export function useSearchValue(value: string, delay = 250) {
 export function useCatalog(path: '/customers' | '/websites', selected?: string | null, customerId?: string) {
   const [search, setSearch] = useState('');
   const q = useSearchValue(search);
-  type CatalogEntry = { id: string; name: string; customer_id?: string };
+  type CatalogEntry = { id: string; name: string; customer_id?: string; key_mode?: 'own' | 'service' };
   const list = useResource<{ data: CatalogEntry[] }>(withQuery(path, { q, limit: 50, customer_id: customerId }));
   const current = list.data?.data ?? [];
   const needSelected = selected && !current.some((item) => item.id === selected);

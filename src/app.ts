@@ -10,7 +10,7 @@ import { installRequestSecurity, securityOptions } from './request-security.js';
 export async function buildApp(db: Database, config: Config, logger = true) {
   const security = securityOptions(config);
   const app = Fastify({
-    logger: logger ? { redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]'] } : false,
+    logger: logger ? { redact: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-site-proof"]', 'res.headers["set-cookie"]'] } : false,
     // Flood rejections must not amplify into two access-log writes per request.
     // Explicit authentication/security and application error logs remain enabled.
     logController: new LogController({ disableRequestLogging: true }),

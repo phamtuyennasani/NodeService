@@ -104,8 +104,8 @@ export function normalize(value: string, locale = 'vi'): string {
 }
 
 export function slugify(value: string): string {
-  return value.normalize('NFD').toLowerCase().replace(/\p{Mark}/gu, '').replace(/đ/g, 'd')
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return value.normalize('NFD').toLowerCase().replace(/(\p{Script=Latin})\p{Mark}+/gu, '$1').replace(/đ/g, 'd')
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, '-').replace(/(^|-)\p{Mark}+/gu, '$1').replace(/^-+|-+$/g, '').normalize('NFC')
 }
 
 const blockTags = new Set([
@@ -163,7 +163,15 @@ export function visibleText(html: string): string {
   return inspectHtml(html).text
 }
 
-const words = (text: string) => text.matchAll(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu)
+function* words(text: string, locale = 'vi'): Generator<{ index: number }> {
+  if (/^(ja|zh|th|lo|km|my)(-|$)/i.test(locale)) {
+    for (const item of new Intl.Segmenter(locale, { granularity: 'word' }).segment(text)) {
+      if (item.isWordLike) yield { index: item.index }
+    }
+  } else {
+    for (const match of text.matchAll(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu)) yield { index: match.index }
+  }
+}
 const size = (text: string) => Array.from(text.trim().normalize('NFC')).length
 const inRange = (value: number, bounds: { min: number; max: number }) => value >= bounds.min && value <= bounds.max
 
@@ -216,7 +224,7 @@ export function evaluateSeoFields(input: SeoInput): SeoReport {
   const matches = (value: string) => pattern ? Array.from(value.matchAll(pattern)) : []
   const html = inspectHtml(input.contentHtml)
   const content = normalize(html.text, locale)
-  const contentTokens = Array.from(words(content))
+  const contentTokens = Array.from(words(content, locale))
   const openingEnd = contentTokens[Math.ceil(contentTokens.length * openingFraction)]?.index ?? content.length
   const contentMatches = matches(content)
   const normalizedTitle = normalize(title, locale)
@@ -229,7 +237,7 @@ export function evaluateSeoFields(input: SeoInput): SeoReport {
   const keywordSlug = slugify(keyword)
   const site = siteAddress(input.siteUrl)
   const hasInternalLink = html.links.some(href => isInternalLink(href, site))
-  const paragraphWords = html.paragraphs.map(text => Array.from(words(text)).length).filter(Boolean)
+  const paragraphWords = html.paragraphs.map(text => Array.from(words(text, locale)).length).filter(Boolean)
   const metrics = {
     words: contentTokens.length,
     titleCharacters: size(title),

@@ -6,7 +6,7 @@ import { Decimal } from 'decimal.js';
 import { mutate, useCatalog, useResource, useSearchValue, withQuery } from './api';
 import { useLiveJobs } from './job-events';
 import { compactId, CursorPagination, datetime, EmptyState, go, jobId, JobStatus, PageHeading, Panel, ResourceError, Status, submitVietnamTime, vnd } from './shared';
-import type { Attempt, Collection, Delivery, Job, JobDetails } from './types';
+import type { ArticleGroup, Attempt, Collection, Delivery, Job, JobDetails } from './types';
 import { DateTimeField } from './DateTimeField';
 import { sanitizeArticleHtml } from './article-html';
 import { downloadJobPdf, hasJobPdfContent } from './job-pdf';
@@ -22,6 +22,10 @@ const attemptStageLabels = { outline: 'Lập dàn ý', draft: 'Viết nội dung
 
 type LiveJob = { job: JobDetails; requestedAt: number };
 
+function navigationScope(filters: { customer_id?: string; website_id?: string }): Record<string, string> {
+  return { ...(filters.customer_id ? { customer_id: filters.customer_id } : {}), ...(filters.website_id ? { website_id: filters.website_id } : {}) };
+}
+
 function newestJob(saved: Job, requestedAt: number | undefined, live?: LiveJob): Job {
   if (!live || (requestedAt !== undefined && requestedAt > live.requestedAt)) return saved;
   return live.job;
@@ -33,10 +37,11 @@ function dateMatches(value: string | null, filters: { from?: string; to?: string
     (!filters.to || new Date(value).getTime() < new Date(`${filters.to}T00:00:00+07:00`).getTime() + 86_400_000);
 }
 
-function jobMatches(job: Job, filters: { customer_id?: string; website_id?: string; status?: string; from?: string; to?: string; cursor?: string }, search?: string, mode?: string, keyMode?: string, costDates = false) {
+function jobMatches(job: Job, filters: { customer_id?: string; website_id?: string; article_group_id?: string; status?: string; from?: string; to?: string; cursor?: string }, search?: string, mode?: string, keyMode?: string, costDates = false) {
   const status = (value: string) => value === 'ready' ? 'completed' : value;
   if (filters.customer_id && job.customer_id !== filters.customer_id) return false;
   if (filters.website_id && job.website_id !== filters.website_id) return false;
+  if (filters.article_group_id && (job.article_group_id ?? jobId(job)) !== filters.article_group_id) return false;
   if (filters.status && status(job.status) !== status(filters.status)) return false;
   const source = (value: string) => value === 'widget' ? 'preview' : value === 'schedule' ? 'scheduled' : value;
   if (mode && source(job.mode) !== source(mode)) return false;
@@ -142,6 +147,7 @@ function ScheduleModal({ open, onClose, onCreated, immediate = false }: { open: 
   const [customerId, setCustomerId] = useState<string>();
   const [saving, setSaving] = useState(false);
   const customers = useCatalog('/customers', customerId);
+  const ownKey = customers.selected?.key_mode === 'own';
   const websites = useCatalog('/websites', undefined, customerId);
   const providers = useResource<{ data: { provider: string; display_name: string; enabled: boolean; models: { model: string; display_name: string; enabled: boolean }[] }[] }>('/providers');
   const models = (providers.data?.data ?? []).flatMap(provider => provider.enabled ? provider.models.filter(model => model.enabled).map(model => ({ value: model.model, label: `${model.display_name} · ${provider.display_name}` })) : []);
@@ -151,6 +157,7 @@ function ScheduleModal({ open, onClose, onCreated, immediate = false }: { open: 
     setSaving(true);
     try {
       const payload = { ...values, length: Number(values.length) };
+      if (!ownKey) { delete payload.base_url; delete payload.keyAI; }
       await mutate(immediate ? '/jobs' : '/schedules', 'POST', immediate ? payload : { ...payload, scheduled_at: submitVietnamTime(values.scheduled_at) });
       message.success(immediate ? 'Đã đưa bài viết vào hàng đợi.' : 'Đã tạo lịch viết bài cho website.');
       close();
@@ -161,14 +168,18 @@ function ScheduleModal({ open, onClose, onCreated, immediate = false }: { open: 
   }
   return <Modal className="schedule-modal" title={immediate ? 'Viết bài ngay' : 'Lên lịch viết bài'} open={open} onCancel={close} onOk={() => form.submit()} okText={immediate ? 'Viết bài ngay' : 'Tạo lịch viết'} cancelText="Hủy" confirmLoading={saving} destroyOnHidden>
     <Form form={form} layout="vertical" initialValues={{ use_research: true }} onFinish={submit}>
-      <Form.Item name="customer_id" label="Khách hàng" rules={[{ required: true, message: 'Chọn khách hàng.' }]}><Select showSearch {...customers.searchConfig} loading={customers.loading} options={customers.options} placeholder="Chọn khách hàng" onChange={value => { setCustomerId(value); form.setFieldValue('website_id', undefined); }} /></Form.Item>
+      <Form.Item name="customer_id" label="Khách hàng" rules={[{ required: true, message: 'Chọn khách hàng.' }]}><Select showSearch {...customers.searchConfig} loading={customers.loading} options={customers.options} placeholder="Chọn khách hàng" onChange={value => { setCustomerId(value); form.setFieldsValue({ website_id: undefined, model: undefined, base_url: undefined, keyAI: undefined }); }} /></Form.Item>
       <Form.Item name="website_id" label="Website nhận bài" rules={[{ required: true, message: 'Chọn website.' }]}><Select showSearch {...websites.searchConfig} loading={websites.loading} options={websites.options} disabled={!customerId} placeholder="Chọn website" /></Form.Item>
-      <Form.Item name="model" label="Model AI" rules={[{ required: true, message: 'Chọn model AI.' }]}><Select showSearch optionFilterProp="label" loading={providers.loading} options={models} placeholder="Chọn model" /></Form.Item>
+      {ownKey && <>
+        <Alert type="info" showIcon title="Kết nối OpenAI Compatible" description="Nhập Base URL, API key và mã model của website. Không cần thêm nhà cung cấp hoặc model vào danh mục CRM." />
+        <Form.Item name="base_url" label="Base URL" preserve={false} rules={[{ required: true, whitespace: true, message: 'Nhập Base URL của API.' }, { type: 'url', message: 'Nhập URL hợp lệ.' }, { pattern: /^https:\/\//i, message: 'Base URL phải dùng HTTPS.' }]} extra="URL gốc của API, ví dụ https://api.example.com/v1; không nhập /chat/completions."><Input type="url" maxLength={500} autoComplete="off" placeholder="https://api.example.com/v1" /></Form.Item>
+        <Form.Item name="keyAI" label="API key riêng" preserve={false} rules={[{ required: true, whitespace: true, message: 'Nhập API key riêng.' }]}><Input.Password maxLength={2048} autoComplete="new-password" placeholder="Nhập API key của website" /></Form.Item>
+      </>}
+      <Form.Item name="model" label="Model AI" rules={ownKey ? [{ required: true, whitespace: true, message: 'Nhập mã model AI.' }, { pattern: /^[^\s\x00-\x1f\x7f]+$/, max: 160, transform: (value: string) => value?.trim(), message: 'Mã model tối đa 160 ký tự, không chứa khoảng trắng hoặc ký tự điều khiển.' }] : [{ required: true, message: 'Chọn model AI.' }]}>{ownKey ? <Input maxLength={160} autoComplete="off" placeholder="Mã model API của website" /> : <Select showSearch optionFilterProp="label" loading={providers.loading} options={models} placeholder="Chọn model" />}</Form.Item>
       <div className="schedule-form-grid"><Form.Item name="keyword" label="Từ khóa" rules={[{ required: true, message: 'Nhập từ khóa.' }]}><Input placeholder="Ví dụ: dịch vụ thiết kế website" /></Form.Item><Form.Item name="length" label="Độ dài (600–2500 từ)" rules={[{ required: true, message: 'Nhập từ 600 đến 2500 từ.' }, { type: 'integer', min: 600, max: 2500, message: 'Độ dài phải là số nguyên từ 600 đến 2500 từ.' }]}><InputNumber step={1} changeOnBlur={false} style={{ width: '100%' }} /></Form.Item><Form.Item name="tone" label="Giọng văn" rules={[{ required: true, message: 'Chọn giọng văn.' }]}><Select options={toneOptions} placeholder="Chọn giọng văn" /></Form.Item><Form.Item name="style" label="Phong cách" rules={[{ required: true, message: 'Chọn phong cách.' }]}><Select options={styleOptions} placeholder="Chọn phong cách" /></Form.Item></div>
       {!immediate && <Form.Item name="scheduled_at" label="Thời gian viết (giờ Việt Nam)" rules={[{ required: true, message: 'Chọn thời gian viết.' }]}><DateTimeField seconds /></Form.Item>}
       <Form.Item name="use_research" valuePropName="checked"><Checkbox>Sử dụng dữ liệu tìm kiếm để hỗ trợ viết bài</Checkbox></Form.Item>
       <Form.Item name="instructions" label="Hướng dẫn thêm"><Input.TextArea rows={4} maxLength={4000} showCount placeholder="Yêu cầu bổ sung cho bài viết" /></Form.Item>
-      <Form.Item name="keyAI" label="API key riêng"><Input.Password autoComplete="new-password" placeholder="Để trống nếu dùng key dịch vụ" /></Form.Item>
     </Form>
   </Modal>;
 }
@@ -202,6 +213,7 @@ function useFilters(query: URLSearchParams, compact: boolean) {
     parameters: {
       customer_id: customerId,
       website_id: websiteId,
+      article_group_id: query.get('article_group_id') ?? undefined,
       status,
       from: fromDate,
       to: toDate,
@@ -267,13 +279,14 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
     }
   }
   function closeRewrite() { if (rewriting) return; setRewriteOpen(false); form.resetFields(); }
-  async function rewrite(values: { instructions?: string; keyAI?: string }) {
+  async function rewrite(values: { instructions?: string; base_url?: string; keyAI?: string }) {
     if (!job) return;
     setRewriting(true);
     try {
       const result = await mutate<{ job_id: string }>(`/jobs/${jobId(job)}/rewrite`, 'POST', {
         ...(values.instructions?.trim() ? { instructions: values.instructions.trim() } : {}),
-        ...(values.keyAI?.trim() ? { keyAI: values.keyAI.trim() } : {}),
+        ...(rewriteKeyMode === 'own' && values.base_url?.trim() ? { base_url: values.base_url.trim() } : {}),
+        ...(rewriteKeyMode === 'own' && values.keyAI?.trim() ? { keyAI: values.keyAI.trim() } : {}),
       });
       setRewriteOpen(false); form.resetFields();
       message.success('Đã tạo yêu cầu viết lại. Bạn có thể theo dõi bản mới tại đây.');
@@ -303,6 +316,8 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
         { key: 'model', label: 'Model', children: <span className="mono">{job.upstream_model ?? job.model}{job.provider_display_name ? ` · ${job.provider_display_name}` : ''}</span> },
         { key: 'client', label: 'Khách hàng', children: job.customer_name },
         { key: 'website', label: 'Website', children: job.website_name },
+        ...(job.article_ref ? [{ key: 'article-ref', label: 'Mã bài website', children: job.article_ref }] : []),
+        ...(job.locale ? [{ key: 'locale', label: 'Ngôn ngữ', children: `${job.locale}${job.locale === job.original_locale ? ' · bản gốc' : ' · bản dịch'}` }] : []),
         { key: 'mode', label: 'Nguồn', children: modeLabels[job.mode] ?? job.mode },
         { key: 'key', label: 'Nguồn key', children: job.key_mode === 'service' ? 'Key dịch vụ' : 'Key riêng' },
         { key: 'sent', label: 'Giờ nhận', children: datetime(job.created_at) },
@@ -315,6 +330,9 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
         { key: 'input', label: 'Yêu cầu', children: <Descriptions column={1} size="small" items={[
           { key: 'id', label: 'Mã yêu cầu', children: <span className="mono">{jobId(job)}</span> },
           { key: 'client', label: 'Mã yêu cầu Laravel', children: job.idempotency_key ?? '—' },
+          ...(job.article_group_id ? [{ key: 'group', label: 'Nhóm bài', children: <a href={`#jobs?view=articles&article_group_id=${job.article_group_id}&website_id=${job.website_id}`}>{job.article_ref ?? job.article_group_id}</a> }] : []),
+          ...(job.original_job_id && job.original_job_id !== jobId(job) ? [{ key: 'original', label: 'Bài gốc CRM', children: <a href={`#jobs?job=${job.original_job_id}`}>{job.original_job_id}</a> }] : []),
+          ...(job.translation_of_job_id ? [{ key: 'translation-parent', label: 'Dịch từ lần viết', children: <a href={`#jobs?job=${job.translation_of_job_id}`}>{job.translation_of_job_id}</a> }] : []),
           { key: 'source', label: 'Phiên bản nguồn', children: job.source_article_id ? <a href={`#jobs?job=${job.source_article_id}`}>{job.source_article_id}</a> : '—' },
           ...(job.retry_of_job_id ? [{ key: 'retry', label: 'Yêu cầu lỗi gốc', children: <a href={`#jobs?job=${job.retry_of_job_id}`}>{job.retry_of_job_id}</a> }] : []),
           { key: 'keyword', label: 'Từ khóa', children: job.keyword },
@@ -325,6 +343,10 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
           { key: 'instructions', label: 'Hướng dẫn thêm', children: job.instructions ?? '—' },
         ]} /> },
         { key: 'outline', label: 'Dàn ý', children: <OutlineReview job={job} /> },
+        ...(job.translation_source ? [{ key: 'translation-source', label: 'Bản gốc dùng để dịch', children: <>
+          <Alert type="info" showIcon title="Bản gốc đã duyệt trên website" description="Đây là nội dung được gửi khi tạo bản dịch, gồm cả các chỉnh sửa trên website sau lần viết AI gốc." />
+          <article className="article-preview"><h2>{job.translation_source.Title}</h2><div dangerouslySetInnerHTML={{ __html: sanitizeArticleHtml(job.translation_source.Content) }} /></article>
+        </> }] : []),
         { key: 'result', label: 'Bài viết', children: article ? <>
           <Alert className="editorial-review-notice" type="info" showIcon title="Kiểm tra trước khi xuất bản" description="Bài viết được tạo với hỗ trợ AI. Người biên tập cần đối chiếu dữ kiện và nguồn, kiểm tra tiêu đề, mô tả, liên kết và giá trị riêng cho người đọc. Trạng thái đã viết hoặc đã giao chưa xác nhận nội dung đã được con người kiểm duyệt." />
           <article className="article-preview">
@@ -368,7 +390,11 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
       <Alert type="info" showIcon title={isFailed ? 'Viết lại từ yêu cầu bị lỗi' : 'Tạo một phiên bản bài viết mới'} description={isFailed ? 'Dùng lại từ khóa, model, giọng văn, phong cách, độ dài và hướng dẫn cũ để tạo lượt viết mới. Yêu cầu bị lỗi và lịch sử lỗi vẫn được giữ để đối chiếu.' : 'Giữ từ khóa, model, giọng văn và phong cách hiện tại. Bản viết lại được đưa vào hàng đợi và lưu thành yêu cầu mới để theo dõi trên CRM.'} />
       <Form form={form} layout="vertical" onFinish={rewrite} className="drawer-actions">
         <Form.Item name="instructions" label="Hướng dẫn viết lại"><Input.TextArea rows={5} maxLength={4000} showCount placeholder="Ví dụ: làm rõ phần lợi ích, cập nhật dữ liệu, viết ngắn gọn hơn…" /></Form.Item>
-        <Form.Item name="keyAI" label="API key riêng" rules={rewriteKeyMode === 'own' ? [{ required: true, whitespace: true, message: 'Nhập API key riêng để viết lại bài.' }] : []} extra={rewriteKeyMode === 'own' ? 'Khách hàng hiện dùng key riêng. Vui lòng nhập API key để tạo bản viết lại.' : 'Khách hàng hiện dùng key dịch vụ. Để trống để sử dụng key dịch vụ.'}><Input.Password autoComplete="new-password" placeholder={rewriteKeyMode === 'own' ? 'Nhập API key riêng' : 'Để trống nếu dùng key dịch vụ'} /></Form.Item>
+        {rewriteKeyMode === 'own' && <>
+          <p>Kết nối OpenAI Compatible, dùng lại model <strong>{job?.model}</strong>.</p>
+          <Form.Item name="base_url" label="Base URL" preserve={false} rules={[{ required: true, whitespace: true, message: 'Nhập Base URL để viết lại bài.' }, { type: 'url', message: 'Nhập URL hợp lệ.' }, { pattern: /^https:\/\//i, message: 'Base URL phải dùng HTTPS.' }]} extra="Nhập URL gốc của API tương thích OpenAI, ví dụ https://api.example.com/v1."><Input type="url" maxLength={500} autoComplete="off" placeholder="https://api.example.com/v1" /></Form.Item>
+          <Form.Item name="keyAI" label="API key riêng" preserve={false} rules={[{ required: true, whitespace: true, message: 'Nhập API key riêng để viết lại bài.' }]}><Input.Password maxLength={2048} autoComplete="new-password" placeholder="Nhập API key riêng" /></Form.Item>
+        </>}
       </Form>
     </Modal>
   </Drawer>;
@@ -394,7 +420,7 @@ function AttemptList({ attempts, keyMode }: { attempts: Attempt[]; keyMode?: str
   </Panel>)}</div>;
 }
 
-export function Jobs({ query }: { query: URLSearchParams }) {
+function JobRequests({ query }: { query: URLSearchParams }) {
   const screens = Grid.useBreakpoint();
   const [search, setSearch] = useState(query.get('q') ?? '');
   const searchValue = useSearchValue(search);
@@ -478,7 +504,8 @@ export function Jobs({ query }: { query: URLSearchParams }) {
     });
   }
   return <>
-    <PageHeading title="Yêu cầu viết" description={query.get('date_basis') === 'cost' ? 'Chi phí các lần gọi AI dùng hạn mức được cấp trong khoảng thời gian đã chọn.' : 'Xem lịch viết, bản xem trước và các phiên bản viết lại.'} action={<Space><Button type="primary" onClick={() => setInstantOpen(true)}>Viết bài ngay</Button><Button icon={<CalendarOutlined />} onClick={() => setScheduleOpen(true)}>Lên lịch viết</Button><Button icon={<ReloadOutlined />} loading={jobs.loading} onClick={jobs.reload}>Làm mới</Button></Space>} />
+    <PageHeading title="Yêu cầu viết" description={query.get('date_basis') === 'cost' ? 'Chi phí các lần gọi AI dùng hạn mức được cấp trong khoảng thời gian đã chọn.' : 'Xem lịch viết, bản xem trước và các phiên bản viết lại.'} action={<Space wrap><Button onClick={() => go('jobs', { view: 'articles', ...navigationScope(filters.parameters) })}>Nhóm theo bài gốc</Button><Button type="primary" onClick={() => setInstantOpen(true)}>Viết bài ngay</Button><Button icon={<CalendarOutlined />} onClick={() => setScheduleOpen(true)}>Lên lịch viết</Button><Button icon={<ReloadOutlined />} loading={jobs.loading} onClick={jobs.reload}>Làm mới</Button></Space>} />
+    {filters.parameters.article_group_id && <Alert type="info" title="Đang xem tất cả lần viết trong một nhóm bài" action={<Button onClick={() => go('jobs', navigationScope(filters.parameters))}>Bỏ lọc nhóm</Button>} />}
     <ResourceError error={jobs.error} onRetry={jobs.reload} />
     <ResourceError error={liveError} onRetry={jobs.reload} />
     {issue && <Alert className="resource-error" type="info" showIcon title={`Đang lọc: ${{ queue: 'Chờ viết và lịch đã đến giờ', overdue: 'Lịch đã quá giờ', future: 'Lịch chưa đến giờ', stale: 'Yêu cầu viết chờ phục hồi', unpriced: 'Lần gọi AI dịch vụ chưa có dữ liệu chi phí' }[issue] ?? issue}`}
@@ -523,6 +550,68 @@ export function Jobs({ query }: { query: URLSearchParams }) {
     <ScheduleModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} onCreated={jobs.reload} />
     <ScheduleModal open={instantOpen} onClose={() => setInstantOpen(false)} onCreated={jobs.reload} immediate />
   </>;
+}
+
+function ArticleGroups({ query }: { query: URLSearchParams }) {
+  const screens = Grid.useBreakpoint();
+  const filters = useFilters(query, !screens.sm);
+  const [search, setSearch] = useState(query.get('q') ?? '');
+  const searchValue = useSearchValue(search);
+  const groups = useResource<Collection<ArticleGroup>>(withQuery('/article-groups', { ...filters.parameters, q: searchValue }));
+  const [selected, setSelected] = useState<string | null>(query.get('job'));
+  const [liveError, setLiveError] = useState<Error>();
+  const refreshTimer = useRef<number | undefined>(undefined);
+  function refreshSoon() {
+    if (refreshTimer.current !== undefined) return;
+    refreshTimer.current = window.setTimeout(() => { refreshTimer.current = undefined; groups.reload(); }, 500);
+  }
+  useEffect(() => () => window.clearTimeout(refreshTimer.current), []);
+  useLiveJobs({ changed: refreshSoon, deleted: refreshSoon, reconcile: refreshSoon, failed: setLiveError });
+  function showAll(group: ArticleGroup) {
+    go('jobs', { article_group_id: group.article_group_id, website_id: group.website_id, customer_id: group.customer_id });
+  }
+  return <>
+    <PageHeading title="Nhóm bài viết" description="Mỗi bài gốc và các ngôn ngữ được liên kết theo website và mã bài, độc lập với thứ tự gọi API."
+      action={<Space wrap><Button onClick={() => go('jobs', navigationScope(filters.parameters))}>Danh sách từng lần viết</Button><Button icon={<ReloadOutlined />} loading={groups.loading} onClick={groups.reload}>Làm mới</Button></Space>} />
+    <ResourceError error={groups.error} onRetry={groups.reload} />
+    <ResourceError error={liveError} onRetry={() => { setLiveError(undefined); groups.reload(); }} />
+    <Panel className="table-panel record-panel">
+      <div className="table-toolbar record-toolbar">
+        <Input prefix={<SearchOutlined />} placeholder="Tìm tiêu đề, mã bài hoặc website" aria-label="Tìm nhóm bài" allowClear value={search} onChange={event => { setSearch(event.target.value); filters.setCursor([]); }} />
+        {filters.statusInput(jobStatuses)}
+        {filters.toggle()}
+      </div>
+      {filters.expanded && <div id="more-record-filters" className="table-toolbar record-more-filters">{filters.inputs()}</div>}
+      <Table<ArticleGroup> rowKey="group_key" dataSource={groups.data?.data ?? []} loading={groups.loading} pagination={false} scroll={{ x: 760 }}
+        locale={{ emptyText: <EmptyState description="Chưa có nhóm bài phù hợp" /> }}
+        expandable={{
+          expandIcon: ({ expanded, onExpand, record }) => <Button type="text" size="small" aria-label={`${expanded ? 'Thu gọn' : 'Xem các bản của'} ${record.original_title}`} icon={<ArrowRightOutlined rotate={expanded ? 90 : 0} />} onClick={event => onExpand(record, event)} />,
+          expandedRowRender: group => <>
+            <p>{group.original_job_id ? <Button type="link" onClick={() => setSelected(group.original_job_id)}>Mở bài gốc CRM ({group.original_locale})</Button> : `Bản gốc ${group.original_locale} được nhập từ website.`} · {group.versions} lần viết. <Button type="link" onClick={() => showAll(group)}>Xem toàn bộ lịch sử</Button></p>
+            <Table<Job> rowKey={jobId} dataSource={group.jobs} pagination={false} size="small" scroll={{ x: 600 }} columns={[
+              { title: 'Ngôn ngữ', key: 'locale', render: (_, row) => <Space><Tag>{row.locale ?? row.original_locale ?? group.original_locale}</Tag><span>{jobId(row) === group.original_job_id ? 'Bản gốc' : row.is_translation ? 'Bản dịch' : row.mode === 'rewrite' ? 'Viết lại' : 'Bản gốc · phiên bản khác'}</span></Space> },
+              { title: 'Yêu cầu', key: 'article', render: (_, row) => <Button type="link" onClick={() => setSelected(jobId(row))}>{row.article_title ?? row.keyword}</Button> },
+              { title: 'Trạng thái', key: 'status', render: (_, row) => <JobStatus job={row} /> },
+              { title: 'Giờ nhận', dataIndex: 'created_at', render: datetime },
+              { title: 'Lần viết nguồn', key: 'parent', render: (_, row) => row.translation_of_job_id ? <Button type="link" onClick={() => setSelected(row.translation_of_job_id!)}>{compactId(row.translation_of_job_id)}</Button> : '—' },
+            ]} />
+            {group.versions > group.jobs.length && <p>Đang hiển thị {group.jobs.length} lần viết. Mở toàn bộ lịch sử để xem các phiên bản còn lại.</p>}
+          </>,
+        }} columns={[
+          { title: 'Bài gốc / nhóm bài', key: 'original', render: (_, group) => <div className="table-identity"><strong>{group.original_title}</strong><small>{group.article_ref ?? group.article_group_id}{group.legacy && ' · Dữ liệu cũ, chưa liên kết đa ngôn ngữ'}</small></div> },
+          { title: 'Website', key: 'website', render: (_, group) => <div className="table-identity"><strong>{group.website_name || group.website_domain}</strong><small>{group.customer_name}</small></div> },
+          { title: 'Các ngôn ngữ', key: 'languages', render: (_, group) => <Space wrap size={4}>{group.locales.map(locale => <Button key={locale.locale} size="small" onClick={() => setSelected(locale.job_id)}>{locale.locale}{locale.locale === group.original_locale ? ' · gốc' : ''} · {jobStatuses.find(([value]) => value === (locale.status === 'completed' ? 'ready' : locale.status))?.[1] ?? locale.status}</Button>)}</Space> },
+          { title: 'Số lần viết', dataIndex: 'versions', align: 'right', width: 110 },
+          { title: 'Cập nhật', dataIndex: 'updated_at', render: datetime },
+        ]} />
+      <CursorPagination cursor={filters.cursor} setCursor={filters.setCursor} next={groups.data?.next_cursor} />
+    </Panel>
+    <JobDrawer key={selected} id={selected} revision={0} close={() => setSelected(null)} onRewritten={id => { setSelected(id); groups.reload(); }} onDeleted={groups.reload} />
+  </>;
+}
+
+export function Jobs({ query }: { query: URLSearchParams }) {
+  return query.get('view') === 'articles' ? <ArticleGroups query={query} /> : <JobRequests query={query} />;
 }
 
 export function Deliveries({ query }: { query: URLSearchParams }) {

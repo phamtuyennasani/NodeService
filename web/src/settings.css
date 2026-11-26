@@ -1,4 +1,3 @@
-.settings-page { max-width: 1180px; }
 .settings-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
 .settings-apply-note { margin-bottom: 10px; }
 .settings-page .ant-tabs-nav { margin-bottom: 20px; }

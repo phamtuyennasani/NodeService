@@ -15,6 +15,24 @@ export const writingVisual = `
       <circle class="scene-accent scene-motion scene-dot" cx="88" cy="117" r="3"/>
       <circle class="scene-accent scene-motion scene-dot" cx="102" cy="117" r="3"/>
     </g>
+    <g data-scene="translation">
+      <rect class="scene-shadow" x="25" y="36" width="66" height="92" rx="10"/>
+      <rect class="scene-shadow" x="91" y="51" width="66" height="92" rx="10"/>
+      <g class="scene-motion scene-translate-source">
+        <rect class="scene-card" x="19" y="29" width="66" height="92" rx="10"/>
+        <path class="scene-ink" d="m38 76 13-30 13 30m-21-9h16"/>
+        <path class="scene-line" d="M33 94h38m-38 11h25"/>
+      </g>
+      <g class="scene-motion scene-translate-target">
+        <rect class="scene-card" x="85" y="44" width="66" height="92" rx="10"/>
+        <path class="scene-ink" d="M118 61v8m-16 1h32m-26 0c2 12 11 22 24 28m-5-28c-2 12-11 22-24 28"/>
+        <path class="scene-line" d="M100 112h36m-36 11h24"/>
+      </g>
+      <path class="scene-edge" d="M63 19h43a12 12 0 0 1 12 12v5m-5-5 5 5 5-5M109 147H66a12 12 0 0 1-12-12v-6m-5 5 5-5 5 5"/>
+      <circle class="scene-accent scene-motion scene-dot" cx="75" cy="19" r="2.5"/>
+      <circle class="scene-accent scene-motion scene-dot" cx="88" cy="19" r="2.5"/>
+      <circle class="scene-accent scene-motion scene-dot" cx="101" cy="19" r="2.5"/>
+    </g>
     <g data-scene="research">
       <rect class="scene-shadow" x="43" y="24" width="92" height="122" rx="10"/>
       <rect class="scene-soft" x="29" y="15" width="92" height="122" rx="10"/>

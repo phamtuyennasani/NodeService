@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { isCompatibleProvider, providerKind, providers, type Config, type Provider } from '../config.js'
 import { collection, sessionOf, transaction, type Database, type MongoSource } from '../db.js'
-import { unseal } from '../security.js'
+import { decodeOwnConnection } from '../own-connection.js'
 import { resolveServiceKey } from '../provider-key.js'
 import { backoff, withLease } from './lease.js'
 import { priceUsage } from './pricing.js'
@@ -19,6 +19,7 @@ import { foldSearchText, refreshInternalLinkCandidates, selectInternalLinkCandid
 import { enforceInternalLinks, extractArticleLinks } from './internal-links.js'
 import { syncSiteContentCatalog, type CatalogSyncOptions } from '../site-content-pull.js'
 import type { WritingStage } from '../writing-stage.js'
+import { articleLocale, type LanguageWriting } from '../article-language.js'
 
 let nextProvider = 0
 type RepairStatus = 'not_needed' | 'applied' | 'kept_draft' | 'skipped'
@@ -30,7 +31,7 @@ interface InternalLinkReport {
   checked_at: string
 }
 type Input = Omit<GenerateInput, 'signal' | 'onChunk'>
-interface Job {
+interface Job extends LanguageWriting {
   _id: string
   site_id: string
   customer_id: string
@@ -70,17 +71,20 @@ function failureOf(error: unknown): WorkerError {
     : new WorkerError('AI_CONNECTION', 'Kết nối AI gián đoạn hoặc hết thời gian chờ.', true)
 }
 
-function keyFor(job: Job, config: Config, providerKey?: string | null): string {
-  let key: string | null | undefined
+function connectionFor(job: Job, config: Config, providerKey?: string | null): { apiKey: string; baseUrl?: string } {
+  let connection: { apiKey: string; baseUrl?: string } | null | undefined
   try {
-    key = job.key_mode === 'service'
-      ? resolveServiceKey(job.provider, providerKey, config)
-      : job.encrypted_key && unseal(job.encrypted_key, config.encryptionKey)
+    if (job.key_mode === 'own') {
+      connection = job.encrypted_key ? decodeOwnConnection(job.encrypted_key, config.encryptionKey) : null
+    } else {
+      const apiKey = resolveServiceKey(job.provider, providerKey, config)
+      connection = apiKey ? { apiKey } : null
+    }
   } catch {
     throw new WorkerError('AI_KEY_UNREADABLE', 'Worker không giải mã được API key đã lưu. Kiểm tra ENCRYPTION_KEY của CRM/API và tất cả worker; yêu cầu được giữ lại để thử sau.', false)
   }
-  if (!key) throw new WorkerError('AI_KEY_UNAVAILABLE', 'Công việc chưa có API key cho nhà cung cấp đã chọn.', false)
-  return key
+  if (!connection?.apiKey) throw new WorkerError('AI_KEY_UNAVAILABLE', 'Công việc chưa có API key cho nhà cung cấp đã chọn.', false)
+  return connection
 }
 
 function owned(claim: Claim) {
@@ -172,7 +176,7 @@ async function recoverExpired(db: Database, config: Config, job: Job, deps: Writ
     let linkReport: InternalLinkReport | null = null
     if (site?.content_catalog_url || site?.site_content_synced_at || job.internal_link_report) {
       let candidates: InternalLinkCandidate[] = []
-      let preservedLinks: string[] = []
+      let preservedLinks: string[] = job.translation_source ? extractArticleLinks(job.translation_source.Content) : []
       let unavailable = false
       if (job.source_article_id) {
         try {
@@ -204,7 +208,7 @@ async function recoverExpired(db: Database, config: Config, job: Job, deps: Writ
         removed: (job.internal_link_report?.removed ?? 0) + checked.removed, checked_at: new Date().toISOString(),
       }
     }
-    const report = evaluateSeo(article, { keyword: job.keyword, siteUrl: site?.domain, targetWords: job.length })
+    const report = evaluateSeo(article, { keyword: job.keyword, locale: articleLocale(job), siteUrl: site?.domain, targetWords: job.length })
     await transition(db, config, job, article, null, report,
       job.seo_repair_status ?? (repairable(report).length ? 'kept_draft' : 'not_needed'), true, linkReport)
   } else {
@@ -398,10 +402,14 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
     }, { projection: { _id: 1 } })) {
       throw new WorkerError('QUOTA_RESERVATION_MISSING', 'Yêu cầu chưa được giữ lượt viết. Hãy gửi lại yêu cầu.', false)
     }
-    const settings = await collection(db, 'ai_providers').findOne({ _id: job.provider })
-    const key = keyFor(job, config, settings?.encrypted_api_key)
-    const model = await collection(db, 'ai_models').findOne({ _id: job.model, provider: job.provider }, { projection: { upstream_model: 1 } })
-    if (job.provider !== providerKind(job.provider) && !model?.upstream_model) {
+    const personal = job.key_mode === 'own' ? connectionFor(job, config) : null
+    // Website-supplied connections are self-contained. Never apply a service
+    // endpoint/key/model alias just because its catalog ID happens to match.
+    const ownEndpoint = personal?.baseUrl !== undefined
+    const settings = ownEndpoint ? null : await collection(db, 'ai_providers').findOne({ _id: job.provider })
+    const connection = personal ?? connectionFor(job, config, settings?.encrypted_api_key)
+    const model = ownEndpoint ? null : await collection(db, 'ai_models').findOne({ _id: job.model, provider: job.provider }, { projection: { upstream_model: 1 } })
+    if (!ownEndpoint && job.provider !== providerKind(job.provider) && !model?.upstream_model) {
       throw new WorkerError('AI_MODEL_UNAVAILABLE', 'Model của kết nối này không còn trong danh mục.', false)
     }
     const site = await collection(db, 'sites').findOne({ _id: job.site_id })
@@ -414,12 +422,12 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
       try { source = cleanArticle(normalizeArticleFields(original?.result?.[0])) }
       catch { throw new WorkerError('AI_SOURCE_INVALID', 'Không đọc được bài viết nguồn.', false) }
     }
-    preservedLinks = source ? extractArticleLinks(source.Content) : []
+    preservedLinks = job.translation_source ? extractArticleLinks(job.translation_source.Content) : source ? extractArticleLinks(source.Content) : []
     const researchConfig = config.research ?? { enabled: false, timeoutMs: 8_000, maxResults: 5, provider: 'duckduckgo' }
     let research: ResearchContext | null = null
     // Jobs created before this option existed have no field and retain the
     // previous behavior of researching whenever the provider is enabled.
-    if (job.use_research !== false && researchConfig.enabled) {
+    if (!job.translation_source && job.use_research !== false && researchConfig.enabled) {
       try {
         research = await withLease(db, config, 'jobs', job._id, claim.lease, researchConfig.timeoutMs + 1_000,
           signal => bounded(signal, researchConfig.timeoutMs,
@@ -428,9 +436,10 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
       } catch { /* Search outages do not fail scheduled articles. */ }
     }
     const input: Input = {
-      provider: providerKind(job.provider), key, model: model?.upstream_model ?? job.model, keyword: job.keyword, tone: job.tone, style: job.style,
+      provider: ownEndpoint ? 'openai-compatible' : providerKind(job.provider), key: connection.apiKey, model: model?.upstream_model ?? job.model, keyword: job.keyword, tone: job.tone, style: job.style,
       length: job.length, instructions: job.instructions, source, research, siteDomain,
-      baseUrl: settings?.base_url ?? undefined,
+      languages: job.languages, locale: articleLocale(job), translationSource: job.translation_source,
+      baseUrl: connection.baseUrl ?? settings?.base_url ?? undefined,
     }
     // Manual retry creates a new job. Reuse only its verified predecessor's matching connection/model.
     const historyIds = [job._id]
@@ -472,7 +481,8 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
       throw new WorkerError('AI_TOKEN_CAPACITY', 'Yêu cầu vượt giới hạn token/phút đã cấu hình cho nhà cung cấp.', false)
     }
 
-    if (job.capacity_deferred) input.outline = job.outline ?? null
+    if (job.translation_source) input.outline = null
+    else if (job.capacity_deferred) input.outline = job.outline ?? null
     else try {
       const planned = await callAi(db, config, claim, 'outline', estimateGenerationTokens(input, 'outline'),
         config.outlineTimeoutMs ?? Math.min(300_000, config.aiTimeoutMs),
@@ -484,7 +494,8 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
       input.outline = null
     }
 
-    try {
+    if (job.translation_source) input.internalLinks = []
+    else try {
       if (catalogUrl) {
         const synced = await withLease(db, config, 'jobs', job._id, claim.lease, Math.max(config.aiTimeoutMs, 20_000),
           signal => (deps.syncCatalog ?? syncSiteContentCatalog)(db, job.site_id, {
@@ -517,18 +528,18 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
         const result = await (deps.generate ?? generateArticle)({ ...input, signal, onChunk, beforeCompatibilityRetry })
         signal.throwIfAborted()
         draft = await checkLinks(cleanArticle(result.article))
-        report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
+        report = evaluateSeo(draft, { keyword: job.keyword, locale: articleLocale(job), siteUrl: siteDomain, targetWords: job.length })
         // Save before usage settlement as well: an accounting outage must not lose the article.
         await checkpoint(db, claim, 'seo_check', { result: [draft], seo_report: report, internal_link_report: linkReport })
         return { ...result, article: draft }
       })
     draft = written.article
     observeUsage(written)
-    report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
-    repairStatus = 'not_needed'
+    report = evaluateSeo(draft, { keyword: job.keyword, locale: articleLocale(job), siteUrl: siteDomain, targetWords: job.length })
+    repairStatus = job.translation_source ? 'skipped' : 'not_needed'
     // A second pass is useful only after the first patch made measurable progress.
     // Keep this bounded: unchanged, regressing or failed patches never trigger retries.
-    for (let pass = 0; pass < 2; pass += 1) {
+    for (let pass = 0; !job.translation_source && pass < 2; pass += 1) {
       const issues = repairable(report)
       if (!issues.length) break
       const repairInput: Omit<RepairInput, 'signal' | 'onChunk'> = { ...input, draft, issues }
@@ -541,7 +552,7 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
             return { ...result, article: await checkLinks(cleanArticle(result.article)) }
           })
         observeUsage(revised)
-        const revisedReport = evaluateSeo(revised.article, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
+        const revisedReport = evaluateSeo(revised.article, { keyword: job.keyword, locale: articleLocale(job), siteUrl: siteDomain, targetWords: job.length })
         if (!improvesSeo(report, revisedReport)) break
         draft = revised.article
         report = revisedReport
@@ -555,7 +566,7 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
       }
     }
     draft = await checkLinks(draft)
-    report = evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length })
+    report = evaluateSeo(draft, { keyword: job.keyword, locale: articleLocale(job), siteUrl: siteDomain, targetWords: job.length })
     await transition(db, config, job, draft, null, report, repairStatus, false, linkReport)
   } catch (failure) {
     if (failure instanceof WorkerError && failure.code === 'AI_KEY_UNREADABLE') {
@@ -588,7 +599,7 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
     if (error.code === 'AI_LEASE_LOST') return
     // A valid draft remains deliverable even if optional processing is interrupted.
     await transition(db, config, job, draft, draft ? null : error,
-      draft ? report ?? evaluateSeo(draft, { keyword: job.keyword, siteUrl: siteDomain, targetWords: job.length }) : null,
+      draft ? report ?? evaluateSeo(draft, { keyword: job.keyword, locale: articleLocale(job), siteUrl: siteDomain, targetWords: job.length }) : null,
       draft ? repairStatus ?? 'kept_draft' : null, false, linkReport)
   }
 }

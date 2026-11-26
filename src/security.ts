@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 
 const derive = promisify(scrypt);
 
-export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+export const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 export const issueToken = () => randomBytes(32).toString('base64url');
 
 export function seal(value: string, key: Buffer): string {

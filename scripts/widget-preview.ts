@@ -20,7 +20,7 @@ const app = Fastify({ bodyLimit: 16_384 })
 const widgetPath = fileURLToPath(new URL('../dist/widget/v1/ai-writer.js', import.meta.url))
 const csrfToken = randomBytes(32).toString('base64url')
 const allowedHosts = new Set(['127.0.0.1', 'localhost'].map(host => `${host}${port === 80 ? '' : `:${port}`}`))
-const writingSchema = writingFields.omit({ provider: true, api_key: true, keyAI: true }).strict()
+const writingSchema = writingFields.omit({ provider: true, base_url: true, api_key: true, keyAI: true }).strict()
 const idempotencySchema = z.string().min(1).max(160).regex(/^[\x21-\x7E]+$/)
 
 interface PreviewCustomer {
@@ -39,6 +39,8 @@ interface PreviewSite {
   name: string
   domain: string
   token_hash?: string | null
+  proof_required?: boolean
+  signing_public_key?: string | null
   webhook_url?: string | null
   webhook_secret?: string | null
 }
@@ -190,6 +192,7 @@ async function start() {
     const { site } = await customerContext()
     const crmSite: Site = {
       id: site._id, customer_id: site.customer_id, token_hash: site.token_hash ?? null,
+      proof_required: site.proof_required, signing_public_key: site.signing_public_key,
       webhook_url: site.webhook_url ?? null, webhook_secret: site.webhook_secret ?? null,
     }
     return reply.code(202).send(await createJob(db, config, crmSite, requestId, writing, 'preview', undefined))

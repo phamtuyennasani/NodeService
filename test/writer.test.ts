@@ -180,6 +180,31 @@ function assertReady(f: ReturnType<typeof fixture>, article: Article, repairStat
   ] : [])
 }
 
+test('translation jobs use the reviewed form snapshot and target locale without rewriting, researching or repairing the source', async () => {
+  const translation_source = { Title: 'Approved English', Content: '<p>Updated factual text 123.</p>' }
+  const f = fixture({ languages: { source: 'en', targets: ['ja'] }, locale: 'ja', translation_source },
+    { research: { enabled: true, timeoutMs: 1000, maxResults: 1, provider: 'duckduckgo' } })
+  let calls = 0
+  await f.run({
+    async research() { assert.fail('Translations preserve source facts') },
+    async outline() { assert.fail('Translations preserve source structure') },
+    async repair() { assert.fail('SEO repair must not rewrite a reviewed translation') },
+    async generate(input) {
+      calls++
+      assert.equal(input.locale, 'ja')
+      assert.deepEqual(input.translationSource, translation_source)
+      assert.deepEqual(input.languages, { source: 'en', targets: ['ja'] })
+      assert.equal(input.research, null)
+      assert.equal(input.outline, null)
+      return { article: seoArticle(), ...metadata }
+    },
+  })
+  assert.equal(calls, 1)
+  assert.equal(f.job.status, 'ready')
+  assert.equal(f.reservation.status, 'used')
+  assert.equal(f.tables.ai_attempts.length, 1)
+})
+
 test('scheduled writer researches, outlines and streams a compliant article without a repair call', async () => {
   const article = seoArticle()
   const f = fixture({ instructions: 'Định dạng bảng bằng CSS inline' }, { research: { enabled: true, timeoutMs: 1_000, maxResults: 1, provider: 'duckduckgo' } })
@@ -1228,6 +1253,88 @@ test('own-key attempts keep usage unpriced and do not read catalog pricing', asy
   await f.run()
   assert.ok(f.tables.ai_attempts.length >= 2)
   assert.ok(f.tables.ai_attempts.every(row => row.cost_usd === null && row.cost_source === null && row.pricing_id === null))
+})
+
+test('website own connection supplies the endpoint, key and literal model to every AI stage', async () => {
+  const encrypted = seal(JSON.stringify({ type: 'openai-compatible', base_url: 'https://personal.example/v1', api_key: 'personal-key' }), Buffer.alloc(32, 3))
+  const f = fixture({ key_mode: 'own', provider: 'openai-compatible', model: 'shared-model', encrypted_key: encrypted })
+  f.tables.ai_providers = [{ _id: 'openai-compatible', base_url: 'https://service.example/v1', encrypted_api_key: seal('service-key', f.config.encryptionKey) }]
+  f.tables.ai_models = [{ _id: 'shared-model', provider: 'openai-compatible', upstream_model: 'service-alias' }]
+  const stages: string[] = []
+  const check = (input: { provider: string; key: string; model: string; baseUrl?: string }) => {
+    assert.equal(input.provider, 'openai-compatible')
+    assert.equal(input.baseUrl, 'https://personal.example/v1')
+    assert.equal(input.key, 'personal-key')
+    assert.equal(input.model, 'shared-model')
+    assert.equal(f.job.encrypted_key, encrypted, 'retain only encrypted credentials while stages are running')
+  }
+  assert.equal(await f.run({
+    async outline(input) { stages.push('outline'); check(input); return { outline, ...metadata } },
+    async generate(input) { stages.push('draft'); check(input); return { article: shortArticle, ...metadata } },
+    async repair(input) { stages.push('repair'); check(input); return { article: seoArticle(), ...metadata } },
+  }), true)
+  assert.deepEqual(stages, ['outline', 'draft', 'repair'])
+  assertReady(f, seoArticle(), 'applied')
+  assert.equal(f.job.encrypted_key, null, 'remove credentials when the article completes')
+  assert.ok(f.tables.ai_attempts.every(row => row.cost_usd === null && row.cost_source === null && row.pricing_id === null))
+  assert.ok(!f.operations.some(operation => ['ai_models', 'model_prices'].includes(operation.table)))
+  assert.ok(!f.operations.some(operation => operation.table === 'ai_providers' && operation.method === 'findOne'))
+  assert.ok(!JSON.stringify(f.tables).includes('personal-key'))
+})
+
+test('legacy queued own jobs retain their existing provider endpoint and model mapping', async () => {
+  const f = fixture({ key_mode: 'own', provider: 'openai-compatible', model: 'legacy-model', encrypted_key: seal('legacy-personal-key', Buffer.alloc(32, 3)) })
+  f.tables.ai_providers = [{ _id: 'openai-compatible', base_url: 'https://legacy.example/v1', encrypted_api_key: seal('unrelated-service-key', f.config.encryptionKey) }]
+  f.tables.ai_models = [{ _id: 'legacy-model', provider: 'openai-compatible', upstream_model: 'legacy-upstream-model' }]
+  await f.run({
+    async generate(input) {
+      assert.equal(input.provider, 'openai-compatible')
+      assert.equal(input.key, 'legacy-personal-key')
+      assert.equal(input.baseUrl, 'https://legacy.example/v1')
+      assert.equal(input.model, 'legacy-upstream-model')
+      return { article: seoArticle(), ...metadata }
+    },
+  })
+  assertReady(f, seoArticle(), 'not_needed')
+})
+
+test('a transient own-connection failure retains the encrypted endpoint for retry then clears it', async () => {
+  const encrypted = seal(JSON.stringify({ type: 'openai-compatible', base_url: 'https://personal.example/v1', api_key: 'retry-personal-key' }), Buffer.alloc(32, 3))
+  const f = fixture({ key_mode: 'own', provider: 'openai-compatible', encrypted_key: encrypted })
+  await f.run({
+    async generate(input) {
+      assert.equal(input.baseUrl, 'https://personal.example/v1')
+      throw new WorkerError('AI_CONNECTION', 'Kết nối tạm gián đoạn.', true)
+    },
+  })
+  assert.equal(f.job.status, 'queued')
+  assert.equal(f.job.encrypted_key, encrypted)
+  f.job.available_at = new Date(0)
+  await f.run({
+    async generate(input) {
+      assert.equal(input.baseUrl, 'https://personal.example/v1')
+      assert.equal(input.key, 'retry-personal-key')
+      return { article: seoArticle(), ...metadata }
+    },
+  })
+  assertReady(f, seoArticle(), 'not_needed')
+  assert.equal(f.job.encrypted_key, null)
+})
+
+test('an invalid encrypted own connection fails closed before any provider call', async () => {
+  const encrypted = seal(JSON.stringify({ type: 'openai-compatible', base_url: 'https://127.0.0.1/v1', api_key: 'never-send-personal-key' }), Buffer.alloc(32, 3))
+  const f = fixture({ key_mode: 'own', provider: 'openai-compatible', encrypted_key: encrypted })
+  f.tables.ai_providers = [{ _id: 'openai-compatible', base_url: 'https://service.example/v1', encrypted_api_key: seal('service-key', f.config.encryptionKey) }]
+  await f.run({
+    async outline() { assert.fail('An invalid personal endpoint must not use the service connection') },
+    async generate() { assert.fail('An invalid personal endpoint must not call AI') },
+  })
+  assert.equal(f.job.status, 'queued')
+  assert.equal(f.job.error_code, 'AI_KEY_UNREADABLE')
+  assert.equal(f.job.encrypted_key, encrypted)
+  assert.equal(f.tables.ai_attempts.length, 0)
+  assert.ok(!String(f.job.error_message).includes('never-send-personal-key'))
+  assert.ok(!String(f.job.error_message).includes('127.0.0.1'))
 })
 
 function catalogPage(id: string, url: string, title: string, overrides: Row = {}) {

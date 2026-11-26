@@ -26,7 +26,7 @@ async function assertStageVisual(dialog: Locator, expected: typeof sceneStages[n
     stage: element.getAttribute('data-scene'),
     visible: getComputedStyle(element).display !== 'none' && getComputedStyle(element).visibility !== 'hidden',
   })));
-  assert.deepEqual(scenes.map(scene => scene.stage).sort(), [...sceneStages].sort(), 'every CRM checkpoint has its own scene');
+  assert.deepEqual(scenes.map(scene => scene.stage).sort(), [...sceneStages, 'translation'].sort(), 'writing checkpoints and translation each have their own scene');
   assert.deepEqual(scenes.filter(scene => scene.visible).map(scene => scene.stage), [expected], 'only the matching scene is displayed');
   const animations = await svg.locator(`g[data-scene="${expected}"] .scene-motion`).evaluateAll(elements =>
     elements.map(element => getComputedStyle(element).animationName));
@@ -110,7 +110,7 @@ test('widget immediately animates writing, prevents dismissal and duplicate requ
     await dialog.getByRole('status').getByText('Đang gửi yêu cầu viết bài…').waitFor();
     assert.equal(await activity.isVisible(), true, 'feedback appears before the POST completes');
     assert.equal(await close.isDisabled(), true);
-    assert.equal(await dialog.locator('.discard').isDisabled(), true);
+    assert.equal(await dialog.locator('.accept').isDisabled(), true);
     assert.equal(await dialog.locator('form').getAttribute('aria-busy'), 'true');
     assert.equal(await dialog.locator('form').isVisible(), false);
     assert.equal(await activity.locator('.writing-keyword').textContent(), 'máy lọc nước');
@@ -121,7 +121,7 @@ test('widget immediately animates writing, prevents dismissal and duplicate requ
     assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= 812, 'waiting feedback fits the mobile viewport');
 
     await close.dispatchEvent('click');
-    await dialog.locator('.discard').dispatchEvent('click');
+    await dialog.locator('.accept').dispatchEvent('click');
     await dialog.locator('form').dispatchEvent('submit');
     await page.keyboard.press('Escape');
     await page.mouse.click(1, 1);

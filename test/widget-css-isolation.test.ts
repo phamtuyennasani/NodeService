@@ -186,7 +186,7 @@ test('widget isolates form, progress and article CSS from host resets, inherited
 
           releasePost();
           await dialog.getByRole('heading', { name: article.Title, exact: true }).waitFor();
-          await assertIsolated(page, dialog, ['.preview > h3', '.metadata', '.body', '.body h2', '.body p', '.body td', '.accept']);
+          await assertIsolated(page, dialog, ['.preview .title', '.metadata', '.body', '.body h2', '.body p', '.body td', '.accept']);
           await assertOpenDialogResizes(page, dialog, 'article preview');
           const inline = await appearance(dialog.locator('.body p'), false);
           assert.equal(inline.css.color, 'rgb(19, 87, 36)', 'safe article colors survive modal isolation');
@@ -196,7 +196,7 @@ test('widget isolates form, progress and article CSS from host resets, inherited
           assert.equal(inline.css['line-height'], '24px');
           assert.equal(await dialog.locator('.body td').evaluate(element => getComputedStyle(element).padding), '8px');
           assert.equal(requests.length, 1, 'all generation is mocked by the test adapter');
-          await dialog.getByRole('button', { name: 'Chấp nhận' }).click();
+          await dialog.getByRole('button', { name: 'Áp dụng' }).click();
           await dialog.waitFor({ state: 'hidden' });
           assert.equal(await page.locator('#article [name="title"]').inputValue(), article.Title);
           const acceptedContent = await page.locator('#article [name="content"]').inputValue();

@@ -513,11 +513,13 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
         await modal.getByRole('button', { name: 'Tạo bản viết lại', exact: true }).click();
         await modal.getByText('Nhập API key riêng để viết lại bài.', { exact: true }).waitFor();
         assert.equal(posts.length, 0, 'do not post an own-key retry without a new API key');
+        await modal.getByText('Nhập Base URL để viết lại bài.', { exact: true }).waitFor();
+        await modal.getByLabel('Base URL', { exact: true }).fill('https://api.example.com/v1');
         await modal.getByLabel('API key riêng', { exact: true }).fill('  fixture-own-key  ');
         await modal.getByRole('button', { name: 'Tạo bản viết lại', exact: true }).click();
         await modal.waitFor({ state: 'hidden' });
         await page.locator('.ant-drawer').getByText(rewrittenId, { exact: true }).waitFor();
-        assert.deepEqual(posts, [{ method: 'POST', body: { keyAI: 'fixture-own-key' }, csrf: 'fixture-csrf' }]);
+        assert.deepEqual(posts, [{ method: 'POST', body: { base_url: 'https://api.example.com/v1', keyAI: 'fixture-own-key' }, csrf: 'fixture-csrf' }]);
         assert.deepEqual(unexpected, []);
         assert.deepEqual(pageErrors, []);
       } finally { await page.close(); }

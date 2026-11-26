@@ -636,6 +636,7 @@ test('CRM overview shows current jobs and processing slots independently from hi
     await t.test('the customer metric opens the owner when only a website is selected', async () => {
       const { page, reportRequests, unexpected, pageErrors } = await mockDashboard(browser, outputFiles[0].text, { websiteOnly: true });
       try {
+        await page.getByRole('button', { name: /^Khách hàng/ }).waitFor();
         assert.equal(reportRequests[0].searchParams.has('customer_id'), false);
         assert.equal(reportRequests[0].searchParams.get('website_id'), 'website-test');
         await page.getByRole('button', { name: /^Khách hàng/ }).click();
