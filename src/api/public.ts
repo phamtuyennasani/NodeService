@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { WIDGET_REQUEST_BODY_LIMIT } from '../widget-limits.js'
+import { articleFocusKeyword } from '../article-keyword.js'
 import { isCompatibleProvider, type Config, type Provider } from '../config.js'
 import { collection, sessionOf, transaction, type Database, type TransactionContext, type MongoSource } from '../db.js'
 import { digest } from '../security.js'
@@ -310,7 +311,7 @@ function registerDirectWidget(app: FastifyInstance, db: Database, config: Config
     return {
       job_id: job._id, status: job.status, mode: job.mode, source_article_id: job.source_article_id,
       writing_stage: job.status === 'writing' ? job.writing_stage ?? null : null,
-      ...languageSummary(job), ...articleIdentity(job), keyword: job.keyword, length: job.length, use_research: job.use_research ?? true, scheduled_at: null,
+      ...languageSummary(job), ...articleIdentity(job), keyword: job.status === 'ready' ? articleFocusKeyword(job.result?.[0], job.keyword) : job.keyword, length: job.length, use_research: job.use_research ?? true, scheduled_at: null,
       version: job.version, started_at: toIso(job.started_at), completed_at: toIso(job.completed_at),
       seo_report: job.status === 'ready' ? job.seo_report ?? null : null,
       seo_repair_status: job.status === 'ready' ? job.seo_repair_status ?? null : null,
@@ -356,7 +357,7 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
     return {
       job_id: job._id, status: job.status, mode: job.mode, source_article_id: job.source_article_id,
       writing_stage: job.status === 'writing' ? job.writing_stage ?? null : null,
-      ...languageSummary(job), ...articleIdentity(job), keyword: job.keyword, length: job.length, use_research: job.use_research ?? true, scheduled_at: toIso(job.scheduled_at),
+      ...languageSummary(job), ...articleIdentity(job), keyword: job.status === 'ready' ? articleFocusKeyword(job.result?.[0], job.keyword) : job.keyword, length: job.length, use_research: job.use_research ?? true, scheduled_at: toIso(job.scheduled_at),
       version: job.version, started_at: toIso(job.started_at), completed_at: toIso(job.completed_at),
       seo_report: job.status === 'ready' ? job.seo_report ?? null : null,
       seo_repair_status: job.status === 'ready' ? job.seo_repair_status ?? null : null,

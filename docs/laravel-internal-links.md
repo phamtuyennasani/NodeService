@@ -103,7 +103,7 @@ CRM xếp hạng từ khóa, tiêu đề, mô tả và chuyên mục sau bước
 
 URL được kiểm tra lại với danh mục trước khi lưu bản nháp và sau sửa SEO; link ngoài danh sách hoặc bị lặp sẽ bỏ thẻ liên kết, giữ chữ. Các liên kết an toàn có sẵn trong bài nguồn được xử lý riêng. Việc kiểm tra là thời điểm gần lúc lưu, không phải khóa URL vĩnh viễn; Laravel vẫn cần duyệt nội dung trước xuất bản. CRM không tải URL để chứng minh HTTP 200, canonical, indexability hay ngữ cảnh phù hợp. Nguồn danh mục phải chỉ gồm các trang công khai, đã xuất bản, canonical và phù hợp làm liên kết.
 
-Website không cấu hình URL và chưa từng đồng bộ giữ hành vi cũ. Với URL danh mục đã cấu hình, hoặc sau lần ghi danh mục đầu tiên kể cả đã xóa hết các mục, URL mới không nằm trong danh mục sẽ bị loại; lỗi đọc danh mục không khiến CRM dùng URL AI đoán. Danh mục không bị xóa theo thiết lập lưu lịch sử job. Kết quả giao bài vẫn đúng sáu trường `Title`, `Content`, `Slug`, `Desc`, `Description`, `Keywords`; link HTML nằm trong `Content`. CRM có tab **Liên kết nội bộ** để xem kết quả kiểm tra, không thay hợp đồng webhook.
+Website không cấu hình URL và chưa từng đồng bộ giữ hành vi cũ. Với URL danh mục đã cấu hình, hoặc sau lần ghi danh mục đầu tiên kể cả đã xóa hết các mục, URL mới không nằm trong danh mục sẽ bị loại; lỗi đọc danh mục không khiến CRM dùng URL AI đoán. Danh mục không bị xóa theo thiết lập lưu lịch sử job. Kết quả giao bài gồm `Title`, `SeoTitle`, `Content`, `Slug`, `Desc`, `Description`, `Keywords`; `SeoTitle` là tiêu đề SEO riêng của bài mới, link HTML nằm trong `Content`. CRM có tab **Liên kết nội bộ** để xem kết quả kiểm tra; không đưa dữ liệu nghiên cứu/dàn ý vào webhook.
 
 ## 5. API cấu hình và kiểm tra dành cho giao diện CRM
 

@@ -207,10 +207,11 @@ final class PackageTest extends TestCase
         $session = [];
         $options = ['authorize_url' => '/authorize.php', 'form' => '#article',
             'languages' => ['source' => 'en', 'targets' => ['vi', 'ja']],
-            'fields' => ['Title' => '[name="name[$lang]"]', 'Content' => '[name="content[$lang]"]', 'Slug' => '[name=slug]']];
+            'fields' => ['Title' => '[name="name[$lang]"]', 'SeoTitle' => '[name="seo[title][$lang]"]', 'Content' => '[name="content[$lang]"]', 'Slug' => '[name=slug]']];
         $html = $widget->render($options, Widget::csrfToken($session));
         $this->assertStringContainsString('name[$lang]', $html);
         $this->assertStringContainsString('content[$lang]', $html);
+        $this->assertStringContainsString('seo[title][$lang]', $html);
         $this->assertStringContainsString('"targets":["vi","ja"]', $html);
         $this->assertStringNotContainsString(self::TOKEN, $html);
         $this->expectException(\InvalidArgumentException::class);

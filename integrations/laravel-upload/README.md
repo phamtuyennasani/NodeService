@@ -65,13 +65,15 @@ Trong layout admin, sau script của trang và trước thẻ đóng body, thêm
 @include('admin.layouts.js')
 ```
 
-File `resources/views/admin/layouts/js.blade.php` trong ZIP cũng là nguồn của đoạn script ở hướng dẫn CRM. Khai báo `languages` và đầy đủ bảy trường trong `fields` ngay đầu AIConfig. Mẫu dùng nút `#news-ai-writer`, form `#news-main-form`, các trường `name[$lang]`, `content[$lang]`, `desc[$lang]`, `slug[$lang]` và ba trường SEO `seo[description][$lang]`, `seo[keywords][$lang]`, `seo[focus_keyword][$lang]`; đổi selector theo HTML thực tế của trang và bỏ mapping của những trường form không có.
+File `resources/views/admin/layouts/js.blade.php` trong ZIP cũng là nguồn của đoạn script ở hướng dẫn CRM. Khai báo `languages` và các trường cần điền trong `fields` ngay đầu AIConfig. Mẫu dùng nút `#news-ai-writer`, form `#news-main-form`, các trường `name[$lang]`, `content[$lang]`, `desc[$lang]`, `slug[$lang]` và các trường SEO `seo[title][$lang]`, `seo[description][$lang]`, `seo[keywords][$lang]`, `seo[focus_keyword][$lang]`; đổi selector theo HTML thực tế của trang và bỏ mapping của những trường form không có.
 
 ### Fields và ngôn ngữ
 
-Giữ nguyên các khóa `Title` (tiêu đề), `Content` (nội dung), `Desc` (mô tả ngắn), `Slug`, `Description` (mô tả SEO), `Keywords`, `FocusKeyword`. Giá trị bên phải là CSS selector khớp đúng một trường trong form. Chỉ khai báo những trường muốn điền; các trường không khai báo sẽ không được tự thêm vào mapping.
+Giữ nguyên các khóa `Title` (tên bài/H1), `SeoTitle` (tiêu đề SEO riêng), `Content` (nội dung), `Desc` (mô tả ngắn), `Slug`, `Description` (mô tả SEO), `Keywords`, `FocusKeyword`. Giá trị bên phải là CSS selector khớp đúng một trường trong form. Chỉ khai báo những trường muốn điền; các trường không khai báo sẽ không được tự thêm vào mapping.
 
-`Keywords` nhận các từ khóa liên quan trong bài, ngăn cách bằng dấu phẩy. `FocusKeyword` nhận từ khóa chính đã nhập khi yêu cầu viết, được điền riêng và không lấy từ `Keywords`. Nếu form không có các ô SEO hoặc từ khóa chính, bỏ mapping tương ứng.
+Từ bộ Laravel 1.0.10, `SeoTitle` điền vào `seo[title]` độc lập với tên bài; không còn sao chép `Title` sang ô SEO. Bài cũ chưa có `SeoTitle` dùng `Title` làm dự phòng. Khi nâng cấp, cập nhật layout từ ZIP hoặc thêm mapping `SeoTitle` vào `AIConfig.fields`/`aiFields` đang dùng.
+
+`Keywords` nhận các từ khóa liên quan trong bài, ngăn cách bằng dấu phẩy. `FocusKeyword` của bản gốc giữ từ khóa đã nhập; bản dịch mới nhận từ khóa chính đã chuyển ngữ trong `result[0].FocusKeyword`, độc lập với thứ tự `Keywords`. API status khi hoàn tất cũng trả `keyword` theo ngôn ngữ kết quả. Dùng `$lang` cho cả hai mapping nếu website có ô riêng theo ngôn ngữ. Không sao chép lại từ khóa gốc vào ô của bản dịch. Nếu form không có các ô SEO hoặc từ khóa chính, bỏ mapping tương ứng.
 
 Với form nhiều ngôn ngữ, dùng `$lang` cho các trường có phiên bản riêng. Ví dụ form dùng `ten`, `noidung`, `mota`:
 
@@ -82,6 +84,7 @@ languages: {
 },
 fields: {
     Title: '[name="ten[$lang]"]',
+    SeoTitle: '[name="seo[title][$lang]"]',
     Content: '[name="noidung[$lang]"]',
     Desc: '[name="mota[$lang]"]',
     Slug: '[name="slug[$lang]"]',
@@ -99,6 +102,7 @@ Với form một ngôn ngữ dùng tên trường cố định:
 languages: { source: 'vi', targets: [] },
 fields: {
     Title: '[name="ten"]',
+    SeoTitle: '[name="seo[title]"]',
     Content: '[name="noidung"]',
     Desc: '[name="mota"]',
     Slug: '[name="slug"]',
@@ -117,6 +121,7 @@ Nếu các trang dùng chung layout nhưng có tên trường khác nhau, truy�
 ```blade
 @include('crm-ai.writer', ['aiFields' => [
     'Title' => '[name="ten[$lang]"]',
+    'SeoTitle' => '[name="seo[title][$lang]"]',
     'Content' => '[name="noidung[$lang]"]',
     'Desc' => '[name="mota[$lang]"]',
     'Slug' => '[name="slug[$lang]"]',
@@ -143,6 +148,7 @@ const AIConfig = {
     languages: { source: 'vi', targets: [] },
     fields: {
         Title: '[name="name[$lang]"]',
+        SeoTitle: '[name="seo[title][$lang]"]',
         Content: '[name="content[$lang]"]',
         Desc: '[name="desc[$lang]"]',
         Slug: '[name="slug[$lang]"]',
@@ -182,6 +188,14 @@ Thêm link `route('crm-ai.settings')` vào menu admin để mở trang có ba ô
 Key được mã hóa bằng Laravel `APP_KEY` và lưu tại `storage/app/private/crm-ai/credentials.enc`. Khóa ký là `signing.pem` trong cùng thư mục. Khi chuyển server hoặc chạy nhiều máy chủ cho cùng website, dùng chung các file này và `APP_KEY`. API key riêng được cung cấp cho trình duyệt của tài khoản đã đăng nhập admin, các endpoint này đặt `Cache-Control: private, no-store`.
 
 ## Kiểm tra tích hợp
+
+### Nâng cấp website để nhận tiêu đề SEO
+
+1. Tải ZIP Laravel mới trong CRM. Ghép lại `resources/views/admin/layouts/js.blade.php` và `resources/views/crm-ai/writer.blade.php`, giữ cấu hình kết nối, ngôn ngữ, selector và callback editor đã tùy chỉnh.
+2. Thêm `SeoTitle: '[name="seo[title][$lang]"]'` vào `AIConfig.fields`. Nếu trang dùng `aiFields` hoặc `fieldsByLocale`, thêm khóa này vào mapping thay thế tương ứng. Mỗi mapping chỉ trỏ tới ô có thật trên form.
+3. Với SEO một ngôn ngữ/dùng chung, đổi selector thành `[name="seo[title]"]` hoặc tên input thực tế. Bỏ phần callback cũ tự gán `Title` sang ô SEO để không ghi đè `SeoTitle`.
+4. Làm mới cache view/config theo quy trình website, tải lại trang biên tập và viết một bài mới. Kiểm tra hai ô tên bài/tiêu đề SEO của bản gốc và bản dịch trước khi lưu. Bài lịch sử chưa có `SeoTitle` vẫn dùng `Title` làm dự phòng.
+5. Nếu nhận bài qua webhook, lưu `SeoTitle` vào trường SEO riêng. Adapter lấy `/result` phải giữ nguyên mảng bài viết, không lọc bỏ trường mới hoặc tự dựng lại tiêu đề từ keyword.
 
 - Nút chưa hiện. Kiểm tra đăng nhập admin, guard, mã kết nối và ID form.
 - CRM từ chối yêu cầu. Kiểm tra domain của website, khóa công khai đã đăng ký và giờ máy chủ. Với reverse proxy, Laravel cần nhận đúng scheme và host của trang biên tập.

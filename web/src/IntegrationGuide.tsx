@@ -16,6 +16,7 @@ const multilingualFieldsSnippet = `languages: {
 },
 fields: {
   Title: '[name="ten[$lang]"]',
+  SeoTitle: '[name="seo[title][$lang]"]',
   Content: '[name="noidung[$lang]"]',
   Desc: '[name="mota[$lang]"]',
   Slug: '[name="slug[$lang]"]',
@@ -26,6 +27,7 @@ fields: {
 const singleLanguageFieldsSnippet = `languages: { source: 'vi', targets: [] },
 fields: {
   Title: '[name="ten"]',
+  SeoTitle: '[name="seo[title]"]',
   Content: '[name="noidung"]',
   Desc: '[name="mota"]',
   Slug: '[name="slug"]',
@@ -35,6 +37,7 @@ fields: {
 },`;
 const pageFieldsSnippet = `@include('crm-ai.writer', ['aiFields' => [
   'Title' => '[name="ten[$lang]"]',
+  'SeoTitle' => '[name="seo[title][$lang]"]',
   'Content' => '[name="noidung[$lang]"]',
   'Desc' => '[name="mota[$lang]"]',
   'Slug' => '[name="slug[$lang]"]',
@@ -42,6 +45,8 @@ const pageFieldsSnippet = `@include('crm-ai.writer', ['aiFields' => [
   'Keywords' => '[name="seo[keywords][$lang]"]',
   'FocusKeyword' => '[name="seo[focus_keyword][$lang]"]',
 ]])`;
+const seoTitleFieldSnippet = `SeoTitle: '[name="seo[title][$lang]"]',`;
+const phpSeoTitleFieldSnippet = `'SeoTitle' => '[name=seo_title]',`;
 const customButtonCss = `.crm-ai-launch {
   background: #2455d6;
   color: #fff;
@@ -95,6 +100,14 @@ export function IntegrationGuide({ website, copy }: { website: Website; copy: (t
       <p>Bấm Viết bài AI, nhập tiêu chí và nhận bản gốc trong cửa sổ xem trước. Chọn <strong>Áp dụng</strong> để điền ngay bản gốc,
         hoặc <strong>Dịch sang các ngôn ngữ khác</strong> để tạo tất cả ngôn ngữ đích đã cấu hình. Dịch xong chỉ còn nút Áp dụng để điền toàn bộ phiên bản vào form.
         Sau khi áp dụng, lần bấm Viết bài AI tiếp theo sẽ bắt đầu một lượt viết mới.</p>
+      <h3>Tên bài và tiêu đề SEO</h3>
+      <p><code>Title</code> là tên bài viết/H1; <code>SeoTitle</code> là tiêu đề SEO riêng cho thẻ HTML <code>title</code>.
+        Map hai khóa vào hai ô khác nhau trên form. <code>Desc</code> là tóm tắt, còn <code>Description</code> là mô tả SEO.</p>
+      <p>Bài mới và bản dịch có cả hai tiêu đề trong cửa sổ xem trước, API lấy kết quả và webhook.
+        Bài lịch sử chưa có <code>SeoTitle</code> dùng <code>Title</code> làm dự phòng; tải lại bài cũ không tự tạo tiêu đề SEO mới.</p>
+      <p><code>FocusKeyword</code> là từ khóa chính của từng ngôn ngữ: bản gốc giữ từ khóa đã nhập, bản dịch dùng từ khóa đã chuyển ngữ.
+        <code>Keywords</code> là danh sách từ khóa liên quan đã chuyển ngữ. Map cả hai bằng selector có <code>$lang</code> nếu mỗi ngôn ngữ có ô riêng;
+        không sao chép lại từ khóa gốc vào các bản dịch hoặc lấy phần tử đầu của <code>Keywords</code> để thay từ khóa chính.</p>
     </>;
   }
 
@@ -124,7 +137,7 @@ export function IntegrationGuide({ website, copy }: { website: Website; copy: (t
           <Button icon={<CopyOutlined />} onClick={() => void copy(formSnippet)}>Sao chép vị trí nút</Button>
           <h3>Đặt AIConfig trong layout admin</h3>
           <p>Chép cả đoạn sau vào <code>resources/views/admin/layouts/js.blade.php</code>, ngoài các thẻ script đang có. Nạp file này ở cuối layout admin bằng <code>@include('admin.layouts.js')</code>.</p>
-          <p>Mẫu JS khai báo <code>languages</code> và đầy đủ bảy trường trong <code>fields</code> ngay đầu AIConfig. Đổi <code>mount</code>, <code>form</code> và các selector theo HTML thực tế; bỏ mapping của những trường form không có.</p>
+          <p>Mẫu JS khai báo <code>languages</code> và tám mapping trong <code>fields</code>, gồm cả <code>SeoTitle</code> và <code>FocusKeyword</code>. Đổi <code>mount</code>, <code>form</code> và các selector theo HTML thực tế; bỏ mapping của những trường form không có.</p>
           <h3>Fields cho form nhiều ngôn ngữ</h3>
           <p>Dùng <code>$lang</code> cho các trường có phiên bản riêng theo ngôn ngữ. Ví dụ form dùng <code>ten</code>, <code>noidung</code>, <code>mota</code>:</p>
           <pre className="code-block">{multilingualFieldsSnippet}</pre>
@@ -135,7 +148,7 @@ export function IntegrationGuide({ website, copy }: { website: Website; copy: (t
           <pre className="code-block">{singleLanguageFieldsSnippet}</pre>
           <Button icon={<CopyOutlined />} onClick={() => void copy(singleLanguageFieldsSnippet)}>Sao chép cấu hình một ngôn ngữ</Button>
           <p>Nếu slug dùng chung trong form đa ngôn ngữ, đặt <code>{`Slug: '[name="slug"]'`}</code>. Selector cố định chỉ được điền từ bản gốc; các bản dịch không ghi đè slug chung. Quy tắc tương tự áp dụng cho SEO dùng chung.</p>
-          <p>Giữ nguyên các khóa <code>Title</code> (tiêu đề), <code>Content</code> (nội dung), <code>Desc</code> (mô tả ngắn), <code>Slug</code>, <code>Description</code> (mô tả SEO), <code>Keywords</code> (các từ khóa liên quan, ngăn cách bằng dấu phẩy) và <code>FocusKeyword</code> (từ khóa chính đã nhập khi yêu cầu viết). <code>FocusKeyword</code> được điền riêng, không lấy từ danh sách <code>Keywords</code>.</p>
+          <p>Giữ nguyên các khóa <code>Title</code> (tên bài/H1), <code>SeoTitle</code> (tiêu đề SEO), <code>Content</code> (nội dung), <code>Desc</code> (mô tả ngắn), <code>Slug</code>, <code>Description</code> (mô tả SEO), <code>Keywords</code> (các từ khóa liên quan, ngăn cách bằng dấu phẩy) và <code>FocusKeyword</code> (từ khóa chính của từng ngôn ngữ). <code>FocusKeyword</code> được điền riêng, không lấy từ danh sách <code>Keywords</code>.</p>
           <p>Chỉ khai báo những trường muốn điền; mỗi selector cần khớp đúng một trường trong form. Nếu form không có ô SEO hoặc từ khóa chính, bỏ các mapping tương ứng. <code>Content</code> và <code>Desc</code> tự hỗ trợ CKEditor.</p>
           <p>Nếu nhiều trang dùng chung layout nhưng khác tên trường, truyền <code>aiFields</code> khi đặt nút ở từng trang:</p>
           <pre className="code-block">{pageFieldsSnippet}</pre>
@@ -147,7 +160,7 @@ export function IntegrationGuide({ website, copy }: { website: Website; copy: (t
             Khi dùng cùng <code>customStyle: true</code>, nút có <code>{'class="crm-ai-launch btn btn-primary"'}</code> và nhận CSS của website.</p>
           <pre className="code-block">{customButtonCss}</pre>
           <Button icon={<CopyOutlined />} onClick={() => void copy(customButtonCss)}>Sao chép CSS nút</Button>
-          <p>Mẫu AIConfig và script đầy đủ. Khai báo <code>languages</code> và <code>fields</code> ngay đầu file; mẫu có cả <code>Description</code>, <code>Keywords</code>, <code>FocusKeyword</code>. Đổi selector theo form và bỏ những trường không có:</p>
+          <p>Mẫu AIConfig và script đầy đủ. Khai báo <code>languages</code> và <code>fields</code> ngay đầu file; mẫu có cả <code>SeoTitle</code>, <code>Description</code>, <code>Keywords</code>, <code>FocusKeyword</code>. Đổi selector theo form và bỏ những trường không có:</p>
           <pre className="code-block">{widgetSnippet}</pre>
           <Button icon={<CopyOutlined />} onClick={() => void copy(widgetSnippet)}>Sao chép AIConfig và script</Button>
       <h3>Cập nhật bộ Laravel</h3>
@@ -155,6 +168,15 @@ export function IntegrationGuide({ website, copy }: { website: Website; copy: (t
         Giữ giá trị connection, prefix và middleware trong <code>config/crm-ai.php</code>;
         đối chiếu AIConfig với form hiện tại khi ghép <code>js.blade.php</code>.
         Giữ nguyên <code>storage/app/private/crm-ai/</code> và <code>APP_KEY</code>, rồi làm mới cache cấu hình, route và view theo quy trình của website.</p>
+      <h3>Thêm tiêu đề SEO vào website đang tích hợp</h3>
+      <ol>
+        <li>Ghép lại <code>admin/layouts/js.blade.php</code> từ ZIP mới và giữ selector, callback editor, ngôn ngữ đã tùy chỉnh.</li>
+        <li>Thêm mapping dưới đây vào <code>AIConfig.fields</code>. Nếu trang truyền <code>aiFields</code> hoặc dùng <code>fieldsByLocale</code>, thêm <code>SeoTitle</code> vào mapping đó vì nó thay toàn bộ mapping chung.</li>
+        <li>Bỏ đoạn callback cũ sao chép tên bài sang ô SEO. Với form một ngôn ngữ hoặc SEO dùng chung, dùng selector cố định như <code>{`[name="seo[title]"]`}</code>.</li>
+        <li>Tải lại trang biên tập và viết bài mới. Kiểm tra hai ô tiêu đề trước khi lưu; nếu website nhận webhook, lưu <code>SeoTitle</code> vào trường SEO riêng và giữ nguyên mảng kết quả khi chuyển tiếp API.</li>
+      </ol>
+      <pre className="code-block">{seoTitleFieldSnippet}</pre>
+      <Button icon={<CopyOutlined />} onClick={() => void copy(seoTitleFieldSnippet)}>Sao chép mapping tiêu đề SEO Laravel</Button>
     </> },
     { key: 'php', label: 'PHP thuần', children: <>
       {releaseInfo('php')}
@@ -189,6 +211,13 @@ export function IntegrationGuide({ website, copy }: { website: Website; copy: (t
       <h3>Cập nhật bộ PHP</h3>
       <p>Sao lưu rồi thay mã thư viện bằng ZIP mới. Giữ config, token, khóa ký, khóa mã hóa và dữ liệu trong thư mục private;
         ghép lại các thay đổi riêng ở bootstrap và trang biên tập. Lệnh install chạy lại sẽ giữ khóa đang có.</p>
+      <h3>Thêm tiêu đề SEO vào form PHP</h3>
+      <p>Trong <code>{'$widget->render()'}</code>, thêm mapping dưới đây vào <code>fields</code> và bảo đảm form có ô <code>seo_title</code>.
+        Đổi selector theo HTML thực tế. Với form đa ngôn ngữ, dùng <code>{`[name="seo[title][$lang]"]`}</code> và bổ sung khóa này vào các mapping <code>fields_by_locale</code> đang dùng.</p>
+      <pre className="code-block">{phpSeoTitleFieldSnippet}</pre>
+      <Button icon={<CopyOutlined />} onClick={() => void copy(phpSeoTitleFieldSnippet)}>Sao chép mapping tiêu đề SEO PHP</Button>
+      <p>Tải lại trang và viết bài mới, kiểm tra tên bài và tiêu đề SEO được điền riêng.
+        Khi nhận webhook hoặc lấy kết quả qua API, lưu <code>SeoTitle</code> vào trường SEO, không gán lại từ <code>Title</code>.</p>
     </> },
   ]} />;
 }

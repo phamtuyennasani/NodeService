@@ -18,6 +18,7 @@ test('site job status exposes CRM writing stages and final SEO metadata while pr
   const now = new Date()
   const article = {
     Title: 'Cách chọn máy lọc nước gia đình', Content: '<p>Kiểm tra nguồn nước trước khi chọn thiết bị.</p>',
+    SeoTitle: 'Máy lọc nước gia đình: chọn theo nguồn nước thực tế',
     Slug: 'cach-chon-may-loc-nuoc-gia-dinh', Desc: 'Tóm tắt.', Description: 'Mô tả SEO.',
     Keywords: ['nguồn nước', 'lõi lọc'],
   }
@@ -93,6 +94,12 @@ test('site job status exposes CRM writing stages and final SEO metadata while pr
   assert.deepEqual(result.json(), [article])
   assert.equal((await read('', otherToken)).statusCode, 404)
   assert.equal((await read('/result', otherToken)).statusCode, 404)
+
+  job.result = [{ ...article, FocusKeyword: 'water filters', Keywords: ['home', 'water filters'] }]
+  assert.equal((await read()).json().keyword, 'water filters', 'ready status exposes the result locale keyword for existing adapters')
+  assert.equal((await read('/result')).json()[0].FocusKeyword, 'water filters')
+  assert.equal(job.keyword, keyword, 'the saved source request is retained for auditing')
+  job.result = [article]
 
   delete job.seo_report
   delete job.seo_repair_status

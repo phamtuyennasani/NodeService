@@ -112,6 +112,7 @@ async function start() {
     languages: previewLanguages,
     fields: {
       Title: '[name="title[$lang]"]',
+      SeoTitle: '[name="seo_title[$lang]"]',
       Content: {
         selector: '[name="body[$lang]"]',
         getValue: element => editors.get((element as HTMLElement).dataset.editorLocale!)?.getData() ?? (element as HTMLTextAreaElement).value,

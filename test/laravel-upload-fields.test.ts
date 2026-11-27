@@ -6,6 +6,7 @@ import { chromium, type Page } from 'playwright';
 
 const article = {
   Title: 'Tiêu đề mới', Content: '<p>Nội dung mới</p>', Slug: 'tieu-de-moi',
+  SeoTitle: 'Tiêu đề SEO riêng cho bài viết mới',
   Desc: 'Mô tả ngắn mới', Description: 'Mô tả SEO mới', Keywords: ['bài viết'],
 };
 
@@ -20,8 +21,28 @@ test('Laravel upload accepts per-page fields without adding default mappings', a
     html: string;
     setup?: string;
     confirms?: number;
+    legacy?: boolean;
     verify: (page: Page) => Promise<void>;
   }[] = [
+    ...[false, true].map(legacy => ({
+      name: `default Laravel fields keep article and SEO titles separate (${legacy ? 'legacy result' : 'current result'})`,
+      fields: 'null', legacy,
+      html: '<input name="name[vi]"><input name="seo[title][vi]">',
+      verify: async (page: Page) => {
+        assert.equal(await page.locator('[name="name[vi]"]').inputValue(), article.Title);
+        assert.equal(await page.locator('[name="seo[title][vi]"]').inputValue(), legacy ? article.Title : article.SeoTitle);
+      },
+    })),
+    {
+      name: 'custom selectors map the SEO title independently of the article heading',
+      fields: `{ Title: '[name="ten"]', SeoTitle: '[name="seo_title"]' }`,
+      html: '<input name="ten"><input name="seo_title"><input name="seo[title][vi]" value="Giữ SEO ngoài mapping">',
+      verify: async page => {
+        assert.equal(await page.locator('[name="ten"]').inputValue(), article.Title);
+        assert.equal(await page.locator('[name="seo_title"]').inputValue(), article.SeoTitle);
+        assert.equal(await page.locator('[name="seo[title][vi]"]').inputValue(), 'Giữ SEO ngoài mapping');
+      },
+    },
     {
       name: 'plain name, content and mota selectors leave BaseCodeAW fields untouched',
       fields: `{ Title: '[name="name"]', Content: '[name="content"]', Desc: '[name="mota"]' }`,
@@ -133,7 +154,8 @@ test('Laravel upload accepts per-page fields without adding default mappings', a
           if (url.pathname === '/preview' && request.method() === 'POST') {
             writes++;
             assert.equal(request.postDataJSON().locale, 'vi');
-            return route.fulfill({ json: { job_id: 'custom-fields-job', status: 'ready', result: [article] } });
+            const { SeoTitle, ...legacyArticle } = article;
+            return route.fulfill({ json: { job_id: 'custom-fields-job', status: 'ready', result: [scenario.legacy ? legacyArticle : article] } });
           }
           if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
           errors.push(`Unexpected request ${request.method()} ${url.pathname}`);

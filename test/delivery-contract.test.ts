@@ -95,7 +95,7 @@ function memoryDatabase(tables: Record<string, Row[]>, hooks: {
   } as unknown as Database
 }
 
-test('ready delivery preserves the six-field Laravel payload and excludes internal writing data', async () => {
+test('ready delivery preserves the separate SEO title in the Laravel payload and excludes internal writing data', async () => {
   const jobId = randomUUID()
   const siteId = randomUUID()
   const eventId = randomUUID()
@@ -103,6 +103,8 @@ test('ready delivery preserves the six-field Laravel payload and excludes intern
   const secret = 'test-webhook-secret'
   const article = {
     Title: 'Cà phê tại nhà và bí quyết chọn hương vị riêng',
+    SeoTitle: 'Cách chọn cà phê và phương pháp pha tại nhà',
+    FocusKeyword: 'cà phê',
     Content: '<p style="color:#333">Chọn cà phê phù hợp với khẩu vị.</p>',
     Slug: 'ca-phe-tai-nha',
     Desc: 'Hướng dẫn pha cà phê tại nhà.',
@@ -147,7 +149,7 @@ test('ready delivery preserves the six-field Laravel payload and excludes intern
       assert.equal(input.clientRequestId, 'laravel-schedule-123')
       assert.equal(input.event, 'article.ready')
       assert.deepEqual(JSON.parse(input.body), [article])
-      assert.deepEqual(Object.keys(JSON.parse(input.body)[0]), ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'])
+      assert.deepEqual(Object.keys(JSON.parse(input.body)[0]), ['Title', 'SeoTitle', 'FocusKeyword', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'])
       assert.doesNotMatch(input.body, /seo_report|outline|research|writing_stage/)
 
       const headers = webhookHeaders({ ...input, timestamp: '2000000000' })

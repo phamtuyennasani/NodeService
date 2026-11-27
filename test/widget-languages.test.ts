@@ -6,8 +6,8 @@ import { chromium } from 'playwright'
 const bundle = (await build({ entryPoints: ['widget/ai-writer.ts'], bundle: true, format: 'iife', loader: { '.css': 'text' }, write: false })).outputFiles[0].text
 const articles = {
   'en-US': { Title: 'Original English article', Content: '<p>New English original 123.</p>', Slug: 'english-original', Desc: 'Summary', Description: 'SEO', Keywords: ['article'] },
-  ja: { Title: '日本語の記事', Content: '<p>日本語の内容 456。</p>', Slug: 'japanese', Desc: '説明', Description: '記事の説明', Keywords: ['記事'] },
-  vi: { Title: 'Bài tiếng Việt', Content: '<p>Nội dung tiếng Việt 456.</p>', Slug: 'bai-tieng-viet', Desc: 'Tóm tắt', Description: 'Mô tả', Keywords: ['bài viết'] },
+  ja: { Title: '日本語の記事', Content: '<p>日本語の内容 456。</p>', Slug: 'japanese', Desc: '説明', Description: '記事の説明', Keywords: ['日本語', '記事'], FocusKeyword: '記事' },
+  vi: { Title: 'Bài tiếng Việt', Content: '<p>Nội dung tiếng Việt 456.</p>', Slug: 'bai-tieng-viet', Desc: 'Tóm tắt', Description: 'Mô tả', Keywords: ['nội dung', 'bài viết'], FocusKeyword: 'bài viết' },
 }
 
 async function fixture(t: test.TestContext, options: { failTranslation?: boolean; failReadTranslation?: boolean; holdTranslation?: boolean; pollTranslation?: boolean; targets?: string[]; mobile?: boolean; remote?: boolean } = {}) {
@@ -42,12 +42,13 @@ async function fixture(t: test.TestContext, options: { failTranslation?: boolean
     if (path === '/') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset="utf-8"><meta name="csrf-token" content="test">
       <form id="article"><input name="name[en-us]" value="Saved original"><textarea name="content[en-us]">Saved content</textarea>
       <input name="name[ja]"><textarea name="content[ja]"></textarea><input id="vi-title"><textarea id="vi-body"></textarea>
+      <input name="focus[en-us]"><input name="focus[ja]"><input id="vi-focus"><input name="keywords[en-us]"><input name="keywords[ja]"><input id="vi-keywords">
       <input name="slug" value="saved-slug"><span id="tools"></span></form><script src="${script}" data-authorize-url="/authorize"></script><script>
       AIWriter.mount({mount:'#tools',form:'#article',${options.remote ? '' : "endpoint:'/preview',"}models:[{value:'test',label:'Test'}],
         languages:{source:'en-us',targets:${JSON.stringify(options.targets ?? ['ja', 'vi'])}},
-        fields:{Title:'[name="name[$lang]"]',Content:{selector:'[name="content[$lang]"]',getValue:element=>'<p>Old editor content.</p>',
+        fields:{Title:'[name="name[$lang]"]',FocusKeyword:'[name="focus[$lang]"]',Keywords:'[name="keywords[$lang]"]',Content:{selector:'[name="content[$lang]"]',getValue:element=>'<p>Old editor content.</p>',
           setValue:(element,value)=>{element.value=value;element.dataset.editorWrite='yes'}},Slug:'[name=slug]'},
-        fieldsByLocale:{vi:{Title:'#vi-title',Content:'#vi-body'}}});
+        fieldsByLocale:{vi:{Title:'#vi-title',FocusKeyword:'#vi-focus',Keywords:'#vi-keywords',Content:'#vi-body'}}});
       </script>` })
     if (path === '/widget.js' || path === '/widget/v1/ai-writer.js') return route.fulfill({ contentType: 'text/javascript', body: bundle })
     if (path.endsWith('/models')) return route.fulfill({ headers: cors, json: { proof_required: true, key_mode: 'service', data: [{ model: 'test', display_name: 'Test' }] } })
@@ -183,6 +184,11 @@ test('translates the preview original into every target then applies all version
   assert.equal(await f.page.locator('[name="content[ja]"]').inputValue(), articles.ja.Content)
   assert.equal(await f.page.locator('[name="content[ja]"]').getAttribute('data-editor-write'), 'yes')
   assert.equal(await f.page.locator('#vi-body').inputValue(), articles.vi.Content)
+  assert.equal(await f.page.locator('[name="focus[en-us]"]').inputValue(), 'article')
+  assert.equal(await f.page.locator('[name="focus[ja]"]').inputValue(), articles.ja.FocusKeyword)
+  assert.equal(await f.page.locator('#vi-focus').inputValue(), articles.vi.FocusKeyword)
+  assert.equal(await f.page.locator('[name="keywords[ja]"]').inputValue(), articles.ja.Keywords.join(', '))
+  assert.equal(await f.page.locator('#vi-keywords').inputValue(), articles.vi.Keywords.join(', '))
   assert.equal(await f.page.locator('[name=slug]').inputValue(), articles['en-US'].Slug)
   await f.page.getByRole('button', { name: 'Viết bài AI' }).click()
   assert.equal(await f.dialog.getByRole('button', { name: 'Viết ngay' }).isVisible(), true)

@@ -12,6 +12,7 @@ import { digest } from './security.js'
 import { normalizeArticleFields } from './worker/provider.js'
 import { widgetPreviewPage } from './widget-preview-page.js'
 import { WIDGET_REQUEST_BODY_LIMIT } from './widget-limits.js'
+import { articleFocusKeyword } from './article-keyword.js'
 
 const writingSchema = writingFields.omit({ provider: true, base_url: true, api_key: true, keyAI: true }).strict()
 const idempotencySchema = z.string().min(1).max(160).regex(/^[\x21-\x7E]+$/)
@@ -153,7 +154,7 @@ export async function buildWidgetPreviewApp(db: Database, config: Config, option
     if (!job) throw notFound()
     return {
       job_id: job._id, status: job.status, writing_stage: job.writing_stage ?? null,
-      keyword: job.keyword, length: job.length,
+      keyword: job.status === 'ready' ? articleFocusKeyword(job.result?.[0], job.keyword) : job.keyword, length: job.length,
       seo_report: job.status === 'ready' ? job.seo_report ?? null : null,
       seo_repair_status: job.status === 'ready' ? job.seo_repair_status ?? null : null,
       error_code: job.error_code ?? null, error_message: job.error_message ?? null,

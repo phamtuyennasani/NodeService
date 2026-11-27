@@ -64,7 +64,7 @@ final class Widget
             throw new InvalidArgumentException('Configure a same-origin authorization path and a session CSRF token.');
         }
         $fields = $options['fields'] ?? [];
-        $allowed = ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords', 'FocusKeyword'];
+        $allowed = ['Title', 'SeoTitle', 'Content', 'Slug', 'Desc', 'Description', 'Keywords', 'FocusKeyword'];
         if (! is_array($fields) || $fields === [] || array_diff(array_keys($fields), $allowed) !== []
             || ! is_string($options['form'] ?? null) || $options['form'] === '') {
             throw new InvalidArgumentException('Configure the article form selector and at least one supported field.');

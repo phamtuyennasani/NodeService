@@ -8,6 +8,7 @@ export const previewLocales = [previewLanguages.source, ...previewLanguages.targ
 function articleFields(locale: string) {
   return `<section id="article-${locale}" class="article-panel" data-article-locale="${locale}" role="tabpanel" aria-labelledby="article-tab-${locale}"${locale === previewLanguages.source ? '' : ' hidden'}>
       <label class="form-field">Tiêu đề<input name="title[${locale}]" lang="${locale}" placeholder="Nhập tiêu đề hoặc dùng Viết bài AI"></label>
+      <label class="form-field">Tiêu đề SEO<input name="seo_title[${locale}]" lang="${locale}" placeholder="Tiêu đề hiển thị trên kết quả tìm kiếm"></label>
       <label class="form-field">Đường dẫn (slug)<input name="slug[${locale}]" lang="${locale}" placeholder="duong-dan-bai-viet"></label>
       <div class="form-field editor-field">
         <label for="article-content-${locale}" id="content-label-${locale}">Nội dung HTML</label>

@@ -1,8 +1,10 @@
 # Đồng bộ bộ chấm SEO của Laravel với CRM
 
+Kết quả bài mới tách `Title` (tên bài/H1) và `SeoTitle` (tiêu đề SEO). CRM đo ký tự/vị trí từ khóa trên `SeoTitle`; bài cũ thiếu trường này dùng `Title`. Khi chấm lại trong form, truyền tiêu đề SEO vào `title` và có thể truyền tên bài riêng vào `articleTitle`; hai ô không tự ghi đè nhau.
+
 Chạy `npm run build:seo` hoặc `npm run build` trong CRM. Chép tệp `dist/widget/v1/seo-score.js` vào `public/assets/admin/js/seo-score.js` của Laravel. Đổi phiên bản trong URL của thẻ script ở `seo-box.blade.php` để trình duyệt tải bản mới.
 
-Blade tiếp tục dùng `window.SeoScore.evaluate(...)` với các trường hiện có. Khi nhận `article.ready`, tìm yêu cầu đã lưu ở Laravel theo `X-Client-Request-Id` và dùng từ khóa chính của yêu cầu đó cho `focus_keyword`. Với bản xem trước, dùng từ khóa đã gửi khi tạo yêu cầu. Trường `keywords` lấy danh sách `Keywords` trong bài; giao diện có thể hiển thị nhãn **Từ khóa**. `stats.permalinkLength` là số ký tự của slug do bộ chấm chỉ nhận được phần slug của URL bài.
+Blade tiếp tục dùng `window.SeoScore.evaluate(...)` với các trường hiện có. Khi nhận `article.ready`, dùng `FocusKeyword` trong bài cho `focus_keyword` nếu có: bản dịch mới trả từ khóa chính đã chuyển ngữ. Chỉ dùng từ khóa của yêu cầu gốc làm dự phòng cho kết quả cũ chưa có trường này. Với bản xem trước, dùng `result[0].FocusKeyword` hoặc `keyword` cuối từ status API. Trường `keywords` lấy danh sách `Keywords` của từng ngôn ngữ; không chọn phần tử đầu của danh sách làm từ khóa chính. `stats.permalinkLength` là số ký tự của slug do bộ chấm chỉ nhận được phần slug của URL bài.
 
 Điểm SEO là checklist hình thức, không phải chứng nhận đáp ứng chính sách Google hay dự báo thứ hạng. Báo cáo mới có `version: 2`. Các khóa cũ và số đo vẫn có để tương thích, nhưng mục về nguyên cụm từ khóa, vị trí, mật độ, mốc ký tự tiêu đề/mô tả và sự hiện diện liên kết nội bộ có `advisory: true`, `applicable: false`, `repairable: false`. Các mục này không tính vào điểm. `passed` của chúng chỉ ghi nhận phép đo. Không cộng điểm bằng cách đếm mọi `passed` mà bỏ qua `applicable`.
 

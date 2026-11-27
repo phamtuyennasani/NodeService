@@ -16,7 +16,7 @@ test('the Laravel upload example mounts the remote widget, signs its request and
   const crm = 'http://localhost:3252';
   const site = '11111111-1111-4111-8111-111111111111';
   const job = '22222222-2222-4222-8222-222222222222';
-  const article = { Title: 'Bài có chữ ký', Content: '<p>Nội dung</p>', Slug: 'bai', Desc: 'Mô tả', Description: 'SEO', Keywords: ['bài', 'liên quan'] };
+  const article = { Title: 'Bài có chữ ký', SeoTitle: 'Tiêu đề SEO của bài có chữ ký', Content: '<p>Nội dung</p>', Slug: 'bai', Desc: 'Mô tả', Description: 'SEO', Keywords: ['bài', 'liên quan'] };
   const browser = await chromium.launch();
   const authorized: { body: string, id: string }[] = [];
   let created = 0;
@@ -25,7 +25,7 @@ test('the Laravel upload example mounts the remote widget, signs its request and
     await page.route('**/*', async route => {
       const req = route.request();
       const url = new URL(req.url());
-      if (url.href === origin + '/') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset="utf-8"><form id="news-main-form"><input name="_token" value="fixture-csrf" type="hidden"><input name="name[vi]"><textarea name="content[vi]"></textarea><textarea name="desc[vi]"></textarea><input name="slug[vi]"><input name="seo[description][vi]"><input name="seo[keywords][vi]"><input name="seo[focus_keyword][vi]"><span id="news-ai-writer"></span></form>
+      if (url.href === origin + '/') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><meta charset="utf-8"><form id="news-main-form"><input name="_token" value="fixture-csrf" type="hidden"><input name="name[vi]"><input name="seo[title][vi]"><textarea name="content[vi]"></textarea><textarea name="desc[vi]"></textarea><input name="slug[vi]"><input name="seo[description][vi]"><input name="seo[keywords][vi]"><input name="seo[focus_keyword][vi]"><span id="news-ai-writer"></span></form>
         <script src="${crm}/widget/v1/ai-writer.js?site=${site}&expires=${Math.floor(Date.now() / 1000) + 3600}&signature=${'e'.repeat(64)}" data-authorize-url="/crm-ai-upload/authorize" data-credentials-url="/crm-ai-upload/credentials"></script>
         <script src="/js/crm-ai-config.js"></script>` });
       if (url.origin === origin && url.pathname === '/js/crm-ai-config.js') return route.fulfill({ contentType: 'text/javascript', body: aiConfig });
@@ -64,6 +64,7 @@ test('the Laravel upload example mounts the remote widget, signs its request and
     await dialog.getByRole('button', { name: 'Áp dụng' }).click();
     assert.equal(created, 1);
     assert.equal(await page.locator('[name="name[vi]"]').inputValue(), article.Title);
+    assert.equal(await page.locator('[name="seo[title][vi]"]').inputValue(), article.SeoTitle);
     assert.equal(await page.locator('[name="content[vi]"]').inputValue(), article.Content);
     assert.equal(await page.locator('[name="desc[vi]"]').inputValue(), article.Desc);
     assert.equal(await page.locator('[name="slug[vi]"]').inputValue(), article.Slug);

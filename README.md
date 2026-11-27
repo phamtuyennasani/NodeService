@@ -67,6 +67,8 @@ Có thể xem kết quả nguồn miễn phí trước hoặc bật **Nhờ AI c
 
 ### Nội dung tạo với hỗ trợ AI
 
+Kết quả bài mới có `Title` (tên bài/H1) và `SeoTitle` (tiêu đề SEO cho thẻ HTML `title`) riêng biệt. CRM và widget hiển thị cả hai; API lấy kết quả và webhook giữ nguyên `SeoTitle`. Map `SeoTitle` vào ô SEO của website, ví dụ `SeoTitle: '[name="seo[title][$lang]"]'`. Bản dịch chuyển ngữ cả hai tiêu đề. Bài cũ chưa có `SeoTitle` vẫn đọc được; giao diện/widget dùng `Title` làm dự phòng, không tự tạo tiêu đề SEO mới cho lịch sử.
+
 Bộ kiểm tra SEO phiên bản 2 ưu tiên lỗi hình thức thay cho việc ép nguyên cụm từ khóa. Trong **Yêu cầu viết → Chi tiết → Nguồn nghiên cứu**, CRM lưu URL và trích đoạn dùng khi viết để người biên tập đối chiếu với dàn ý. Nghiên cứu DuckDuckGo chọn vùng theo ngôn ngữ bài viết khi có hỗ trợ. [Quy trình nội dung và giới hạn kiểm tra](docs/content-quality.md) · [Đồng bộ bộ chấm Laravel](docs/laravel-seo.md).
 
 Chính sách viết áp dụng cho cả dàn ý, bài mới/viết lại và lượt chỉnh sửa: giải đáp nhu cầu người đọc, có giá trị bổ sung từ cách giải thích và dữ liệu có thật; không tạo biến thể hàng loạt chỉ để lấy thứ hạng, không bịa tác giả/chuyên môn/trải nghiệm hay xác nhận đã được kiểm duyệt. Tiêu đề và mô tả phải khớp nội dung, không giật tít hoặc thêm lời hứa thiếu căn cứ. Độ dài là mục tiêu theo chủ đề, không ép lặp từ hoặc thêm nội dung đệm cho đủ điểm. Nghiên cứu hiện tại là trích đoạn tìm kiếm, chưa phải toàn văn hay kiểm chứng độc lập; không đủ căn cứ thì bỏ khẳng định, không giả vờ đã xác minh hoặc gọi thông tin là mới nhất.
@@ -179,6 +181,7 @@ Với key dịch vụ, đặt đơn giá theo **VND trên một triệu token** 
 [
   {
     "Title": "Cách chọn máy lọc nước",
+    "SeoTitle": "Cách chọn máy lọc nước phù hợp với nguồn nước gia đình",
     "Content": "<p>Xác định nguồn nước và nhu cầu sử dụng.</p>",
     "Slug": "cach-chon-may-loc-nuoc",
     "Desc": "Các bước để chọn máy lọc nước.",
@@ -239,6 +242,7 @@ const AIConfig = {
   languages: { source: 'vi', targets: ['ja'] },
   fields: {
     Title: '[name="name[$lang]"]',
+    SeoTitle: '[name="seo[title][$lang]"]',
     Content: '[name="content[$lang]"]',
     Desc: '[name="desc[$lang]"]',
     Slug: '[name="slug[$lang]"]',
@@ -249,7 +253,7 @@ const AIConfig = {
 };
 ```
 
-Widget thay `$lang` bằng mã ngôn ngữ của từng bản, ví dụ `name[vi]` và `name[ja]`. Giữ các khóa trong `fields` và đổi selector bên phải khi form dùng tên khác. Nếu form dùng `ten[vi]`, `noidung[vi]` và `mota[vi]`, đặt `Title`, `Content` và `Desc` lần lượt thành `'[name="ten[$lang]"]'`, `'[name="noidung[$lang]"]'` và `'[name="mota[$lang]"]'`. Mỗi selector đã khai báo phải khớp đúng một trường trong form. `Desc` là mô tả ngắn, `Description` là mô tả SEO. Widget điền `Keywords` từ danh sách từ khóa của bài và điền `FocusKeyword` riêng từ từ khóa chính của yêu cầu.
+Widget thay `$lang` bằng mã ngôn ngữ của từng bản, ví dụ `name[vi]` và `name[ja]`. Giữ các khóa trong `fields` và đổi selector bên phải khi form dùng tên khác. Nếu form dùng `ten[vi]`, `noidung[vi]` và `mota[vi]`, đặt `Title`, `Content` và `Desc` lần lượt thành `'[name="ten[$lang]"]'`, `'[name="noidung[$lang]"]'` và `'[name="mota[$lang]"]'`. Mỗi selector đã khai báo phải khớp đúng một trường trong form. `Desc` là mô tả ngắn, `Description` là mô tả SEO. Widget điền `Keywords` từ danh sách từ khóa liên quan của từng bản. `FocusKeyword` của bản gốc giữ từ khóa đã nhập; bản dịch mới dùng từ khóa chính đã chuyển ngữ trong kết quả, độc lập với thứ tự `Keywords`. API status khi hoàn tất trả `keyword` theo ngôn ngữ kết quả; dữ liệu yêu cầu gốc vẫn được giữ.
 
 Form một ngôn ngữ có thể dùng `targets: []` và selector cố định như `[name="name"]`. Với mapping tự động, `Slug: '[name="slug"]'` chỉ điền slug chung từ bản gốc. Nếu các trang Laravel dùng chung layout, có thể truyền `aiFields` khi include `crm-ai.writer` để thay mapping của từng trang. Widget hỗ trợ `fieldsByLocale` khi một ngôn ngữ cần mapping riêng. [Cấu hình fields và ngôn ngữ](integrations/laravel-upload/README.md#fields-và-ngôn-ngữ)
 

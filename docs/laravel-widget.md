@@ -266,7 +266,7 @@ Route models bổ sung `own_key_configured` (boolean) và `model` (mã cố đ�
 
 Widget có ô **Hướng dẫn thêm** như CRM, tối đa 4.000 ký tự sau khi bỏ khoảng trắng đầu/cuối. Đặt `defaults.instructions` nếu website có hướng dẫn mặc định; người biên tập có thể sửa trước khi gửi. Ví dụ: `defaults: { length: 1500, instructions: 'Phân tích chi phí và thêm bảng so sánh trước phần câu hỏi thường gặp.' }`. Giá trị không trống được chuyển tiếp nguyên nội dung qua `instructions` của CRM; ô để trống không gửi trường này.
 
-Giữ các trường `writing_stage`, `keyword`, `length`, `seo_report` và `seo_repair_status` từ status API khi ghép `result`. Khi `status` là `writing`, widget dùng `writing_stage` để hiển thị đúng bước CRM đang chạy: `research` (nghiên cứu), `outline` (lập dàn ý), `draft` (viết nội dung), `seo_check` (kiểm tra SEO), `seo_repair` (chỉnh sửa SEO). Không tự suy đoán bước theo thời gian chờ. Adapter cũ thiếu trường này chỉ hiển thị thông báo CRM đang xử lý bài viết. Widget hiển thị chính báo cáo cuối đã lưu trong CRM, gồm điểm và từng tiêu chí còn cần xem lại; không tự nâng điểm hoặc coi `ready` là đã đạt mọi tiêu chí. Adapter cũ chưa trả báo cáo sẽ chỉ hiển thị bài. Với form có trường từ khóa chính riêng, thêm `FocusKeyword: '[name="focus_keyword"]'` vào `fields`; giá trị lấy từ keyword gốc của yêu cầu. `Keywords` tiếp tục là danh sách từ khóa liên quan trong bài.
+Giữ các trường `writing_stage`, `keyword`, `length`, `seo_report` và `seo_repair_status` từ status API khi ghép `result`. Khi `status` là `writing`, widget dùng `writing_stage` để hiển thị đúng bước CRM đang chạy: `research` (nghiên cứu), `outline` (lập dàn ý), `draft` (viết nội dung), `seo_check` (kiểm tra SEO), `seo_repair` (chỉnh sửa SEO). Không tự suy đoán bước theo thời gian chờ. Adapter cũ thiếu trường này chỉ hiển thị thông báo CRM đang xử lý bài viết. Widget hiển thị chính báo cáo cuối đã lưu trong CRM, gồm điểm và từng tiêu chí còn cần xem lại; không tự nâng điểm hoặc coi `ready` là đã đạt mọi tiêu chí. Adapter cũ chưa trả báo cáo sẽ chỉ hiển thị bài. Với form có trường từ khóa chính riêng, thêm `FocusKeyword: '[name="focus_keyword"]'` vào `fields`; dùng `$lang` nếu có ô riêng theo ngôn ngữ. Bản dịch mới dùng `result[0].FocusKeyword` đã chuyển ngữ, còn status API khi `ready` trả `keyword` theo ngôn ngữ kết quả. `Keywords` là danh sách từ khóa liên quan của từng bản, không dùng phần tử đầu để thay từ khóa chính.
 
 Khi lưu bản nháp ở Laravel, lưu cả `keyword` và `length` gốc của yêu cầu hoặc các giá trị tương ứng từ status API. Khi người dùng biên tập và cần chấm lại trên form, truyền `keyword` gốc cùng `targetWords: length` vào `window.SeoScore.evaluate(...)` để dùng cùng ngân sách độ dài với báo cáo CRM. Không lấy số từ hiện tại của bài làm `targetWords`; nếu bỏ trường này, bộ chấm cũ dùng khoảng chung 600–2.500 từ. Xem [hợp đồng chấm SEO](laravel-seo.md).
 
@@ -279,6 +279,7 @@ Kết quả route thăm dò khi hoàn tất có dạng:
   "result": [
     {
       "Title": "Tiêu đề bài viết",
+      "SeoTitle": "Tiêu đề SEO riêng mô tả nội dung bài viết",
       "Content": "<h2>Một mục trong bài</h2><p>Toàn bộ nội dung HTML do CRM trả về.</p>",
       "Slug": "tieu-de-bai-viet",
       "Desc": "Mô tả ngắn.",
@@ -290,6 +291,8 @@ Kết quả route thăm dò khi hoàn tất có dạng:
 ```
 
 JSON trên chỉ minh họa **cấu trúc phản hồi**, không phải nội dung để dùng làm kết quả thật. Luôn lấy bài đã lưu của job từ `/result`; không dựng lại từ `keyword`, `Desc` hoặc metadata danh sách bài. Không dùng `substr`, tóm tắt, giới hạn số đoạn hoặc giới hạn chữ cho `Content` trong proxy hay editor. Chiều cao vùng xem trước và thanh cuộn chỉ ảnh hưởng hiển thị; toàn bộ bài vẫn phải được điền vào form. Widget làm sạch HTML được phép trước khi hiển thị và áp dụng.
+
+`Title` là tên bài/H1; `SeoTitle` là tiêu đề SEO riêng, được giữ trong API lấy kết quả và webhook. Thêm `SeoTitle: '[name="seo[title][$lang]"]'` vào mapping nếu form có ô tương ứng, hoặc dùng selector cố định cho form một ngôn ngữ. Bản dịch nhận cả hai tiêu đề từ snapshot đang xem trước. Bài lịch sử chưa có `SeoTitle` dùng `Title` làm dự phòng.
 
 Để so sánh với CRM, dùng cùng website/khách hàng, mã model, từ khóa, giọng văn, phong cách, độ dài, hướng dẫn và `use_research`. Mỗi lượt AI có thể viết khác câu chữ; điều cần giữ giống nhau là cấu hình và quy trình xử lý đầy đủ. Kiểm tra job tương ứng trong **Yêu cầu viết** của CRM và đối chiếu nội dung `/result` với dữ liệu điền vào editor. Nếu job lỗi, hiển thị `error_message`; nếu còn `queued`, `writing` hoặc `retrying`, tiếp tục thăm dò thay vì trả bài mẫu.
 

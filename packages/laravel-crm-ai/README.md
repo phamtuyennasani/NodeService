@@ -52,6 +52,7 @@ Form hiện có cần ID và `@csrf`. Thêm component bên trong form hoặc c�
     form="#article-form"
     :fields="[
         'Title' => '[name=title]',
+        'SeoTitle' => '[name=seo_title]',
         'Content' => '[name=body]',
         'Slug' => '[name=slug]',
         'Desc' => '[name=summary]',
@@ -62,6 +63,8 @@ Form hiện có cần ID và `@csrf`. Thêm component bên trong form hoặc c�
 ```
 
 Widget điền bài vào các trường đã map. Biên tập viên bấm lưu bằng chức năng hiện có của website. Script tải trực tiếp từ CRM, nên trình duyệt cần truy cập được URL CRM. CSP của website nếu có cần cho phép origin CRM trong `script-src` và `connect-src`, cùng nonce cho script khởi tạo theo chính sách ứng dụng.
+
+Form cần có các input/textarea khớp selector đã khai báo; ví dụ tên bài dùng `<input name="title">`, tiêu đề SEO dùng `<input name="seo_title">`. `Title` và `SeoTitle` được điền riêng. Chỉ giữ mapping cho những trường có thật trong form.
 
 Với CKEditor, TinyMCE hoặc form có quy tắc riêng, nạp `<x-crm-ai::script />` rồi gọi `AIWriter.mount()` bằng mapping JavaScript của website. Lấy cấu hình key riêng qua `app(\NodeService\CrmAi\CrmAi::class)->mountCredentials()`. `Content` có thể nhận `{ selector: '[name=body]', setValue: (element, value) => editor.setData(value) }`. Đặt mapping editor và các trường đa ngôn ngữ trong view adapter của website.
 
@@ -117,6 +120,12 @@ composer archive --format=zip --dir=../../dist/packages
 Thư mục `vendor` và các file kiểm thử được loại khỏi ZIP. Đổi version trước khi phân phối bản nâng cấp để Composer kiểm tra đúng phiên bản và checksum.
 
 ## Đa ngôn ngữ
+
+`FocusKeyword` của bản gốc giữ từ khóa đã nhập; bản dịch mới trả từ khóa chính đã chuyển ngữ, tách biệt với danh sách `Keywords` trong ngôn ngữ đích. Dùng selector có `$lang` cho cả hai nếu form có ô riêng theo locale; khi nhận webhook lưu `FocusKeyword` từ bài, không gán lại từ khóa yêu cầu gốc. Kết quả cũ thiếu trường này tiếp tục dùng từ khóa yêu cầu làm dự phòng.
+
+Widget hỗ trợ `SeoTitle` để điền tiêu đề SEO riêng với tên bài `Title`, ví dụ `'SeoTitle' => '[name="seo[title][$lang]"]'` trong `$aiFields`. Chỉ thêm mapping khi form có ô tương ứng. Kết quả cũ chưa có trường này dùng `Title` làm dự phòng; bài mới và bản dịch trả `SeoTitle` riêng.
+
+Khi cập nhật website đang dùng component, thêm khóa `SeoTitle` vào `:fields` hoặc `$aiFields` của `<x-crm-ai::writer>`, cùng các mapping `fieldsByLocale` nếu có. Với form một ngôn ngữ, dùng selector cố định như `[name=seo_title]`. Bỏ phần code cũ sao chép tên bài sang ô SEO, tải lại trang rồi viết bài mới để kiểm tra. Website nhận webhook lưu `SeoTitle` vào trường SEO riêng và giữ nguyên trường này khi chuyển tiếp kết quả API.
 
 Khai báo `languages: {source, targets}` trong AIConfig và mapping theo locale. Sau khi có bản gốc trong popup, chọn **Áp dụng** hoặc dịch toàn bộ ngôn ngữ đích rồi áp dụng một lần. Sau khi áp dụng, mở widget sẽ bắt đầu một lượt viết mới. Mỗi bản dùng một job/lượt riêng. [Hướng dẫn và ví dụ Laravel/PHP đầy đủ](docs/multilingual.md).
 

@@ -20,6 +20,7 @@ test('demo applies AI HTML into real CKEditor, syncs manual edits and replaces a
   })
   const article = {
     Title: 'Bài viết trong CKEditor', Slug: 'bai-viet-trong-ckeditor',
+    SeoTitle: 'Hướng dẫn biên tập bài viết trong CKEditor',
     Content: '<h2>Hướng dẫn biên tập</h2><p style="color:#2455d6;font-size:18px;margin-bottom:20px">Đoạn <strong>in đậm</strong> và <a href="https://example.test/huong-dan">liên kết</a>.</p>' +
       '<h3>Các bước</h3><ul><li>Bước một</li><li>Bước hai</li></ul><blockquote><p>Lưu ý biên tập.</p></blockquote>' +
       '<table style="border-collapse:collapse;width:100%"><thead><tr><th scope="col">Tiêu chí</th></tr></thead><tbody><tr><td style="padding:12px">Đạt</td></tr></tbody></table>',
@@ -77,6 +78,7 @@ test('demo applies AI HTML into real CKEditor, syncs manual edits and replaces a
     await editable.waitFor()
     assert.equal(jobs, 1)
     assert.equal(await page.locator('[name="title[vi]"]').inputValue(), article.Title)
+    assert.equal(await page.locator('[name="seo_title[vi]"]').inputValue(), article.SeoTitle)
     assert.equal(await page.locator('[name="focus_keyword[vi]"]').inputValue(), 'biên tập')
     assert.equal(await editable.locator('h2').textContent(), 'Hướng dẫn biên tập')
     assert.equal(await editable.locator('h3').textContent(), 'Các bước')
@@ -99,6 +101,7 @@ test('demo applies AI HTML into real CKEditor, syncs manual edits and replaces a
     assert.match(await source.inputValue(), /Đã cập nhật/)
 
     await page.setViewportSize({ width: 375, height: 812 })
+    await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, null, { timeout: 5000 })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'toolbar wraps within the mobile form')
     assert.deepEqual(errors, [])
     assert.deepEqual(external, [], 'demo editor is self-hosted without CDN or license requests')
@@ -111,8 +114,8 @@ test('demo writes the Vietnamese original, translates to English only on request
   const [widget, editor] = await bundles
   const assets = new Map(editor.outputFiles.map(file => [basename(file.path), file.text]))
   const html = widgetPreviewPage({ site: { name: 'Website demo', domain: 'example.test' }, customer: { name: 'Khách demo', daily_limit: 10, monthly_limit: 100, max_length: 1500 }, csrfToken: 'fixture-csrf' })
-  const original = { Title: 'Máy lọc nước gia đình', Slug: 'may-loc-nuoc', Content: '<h2>Chọn máy lọc nước</h2><p>Nội dung bản gốc tiếng Việt.</p>', Desc: 'Tóm tắt tiếng Việt', Description: 'SEO tiếng Việt', Keywords: ['máy lọc nước', 'gia đình'] }
-  const translated = { Title: 'Home water filters', Slug: 'home-water-filters', Content: '<h2>Choosing a water filter</h2><p>The translated English article.</p>', Desc: 'English summary', Description: 'English SEO description', Keywords: ['water filters', 'home'] }
+  const original = { Title: 'Máy lọc nước gia đình', SeoTitle: 'Cách chọn máy lọc nước phù hợp cho gia đình', Slug: 'may-loc-nuoc', Content: '<h2>Chọn máy lọc nước</h2><p>Nội dung bản gốc tiếng Việt.</p>', Desc: 'Tóm tắt tiếng Việt', Description: 'SEO tiếng Việt', Keywords: ['máy lọc nước', 'gia đình'] }
+  const translated = { Title: 'Home water filters', SeoTitle: 'How to choose the right water filter for your home', Slug: 'home-water-filters', Content: '<h2>Choosing a water filter</h2><p>The translated English article.</p>', Desc: 'English summary', Description: 'English SEO description', Keywords: ['home water treatment', 'water filters'], FocusKeyword: 'water filters' }
   const posts: any[] = []
   const errors: string[] = []
   let release!: () => void
@@ -176,14 +179,17 @@ test('demo writes the Vietnamese original, translates to English only on request
   assert.equal(posts[1].translation_of_job_id, 'original')
   assert.equal(posts[1].translation_source.Content, original.Content)
   assert.equal(posts[1].translation_source.Title, original.Title)
+  assert.equal(posts[1].translation_source.SeoTitle, original.SeoTitle)
   assert.equal(await dialog.locator('.accept').isDisabled(), true)
   release()
   await dialog.getByRole('heading', { name: translated.Title, exact: true }).waitFor()
+  assert.equal(await dialog.locator('.metadata').getByText('water filters', { exact: true }).textContent(), 'water filters')
+  assert.equal(await dialog.locator('.metadata').getByText('máy lọc nước', { exact: true }).count(), 0)
   await dialog.getByText('Đã dịch 1/1', { exact: true }).waitFor()
   await dialog.getByRole('button', { name: 'Áp dụng', exact: true }).click()
   await dialog.waitFor({ state: 'hidden' })
   for (const [locale, article] of [['vi', original], ['en', translated]] as const) {
-    for (const [name, value] of Object.entries({ title: article.Title, slug: article.Slug, summary: article.Desc, seo_description: article.Description, keywords: article.Keywords.join(', '), focus_keyword: 'máy lọc nước' })) {
+    for (const [name, value] of Object.entries({ title: article.Title, seo_title: article.SeoTitle, slug: article.Slug, summary: article.Desc, seo_description: article.Description, keywords: article.Keywords.join(', '), focus_keyword: locale === 'en' ? translated.FocusKeyword : 'máy lọc nước' })) {
       assert.equal(await page.locator(`[name="${name}[${locale}]"]`).inputValue(), value)
     }
     const source = page.locator(`#article-content-${locale}`)

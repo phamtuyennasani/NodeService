@@ -62,7 +62,7 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
       audience: 'Chủ doanh nghiệp', angle: 'Bắt đầu từ nhu cầu sử dụng', questions: ['Website cần những chức năng nào?'],
       sections: [{ heading: 'Xác định nhu cầu', purpose: 'Chọn chức năng phục vụ khách hàng', estimatedWords: 400, subheadings: ['Chức năng cần thiết'], evidence: [{ sourceIndex: 1, fact: 'Ưu tiên nhu cầu đã xác minh.' }] }],
     },
-    result: [{ Title: 'Bài viết hoàn tất', Content: '<p>Nội dung đã viết.</p>', Slug: 'bai-viet-hoan-tat', Desc: 'Tóm tắt', Description: 'Mô tả SEO', Keywords: ['bài đã hoàn tất'] }],
+    result: [{ Title: 'Bài viết hoàn tất', SeoTitle: 'Tiêu đề SEO riêng của bài hoàn tất', Content: '<p>Nội dung đã viết.</p>', Slug: 'bai-viet-hoan-tat', Desc: 'Tóm tắt', Description: 'Mô tả SEO', Keywords: ['bài đã hoàn tất'] }],
     internal_link_report: {
       status: 'checked', candidates: 2,
       used: [{ url: 'https://example.vn/huong-dan-chon-website', anchor: 'hướng dẫn chọn website phù hợp' }],
@@ -557,6 +557,9 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
         const drawer = page.locator('.ant-drawer');
         await drawer.getByRole('tab', { name: 'Bài viết', exact: true }).click();
         await drawer.getByText('Kiểm tra trước khi xuất bản', { exact: true }).waitFor();
+          await drawer.getByRole('heading', { name: 'Bài viết hoàn tất', exact: true }).waitFor();
+          await drawer.getByText('Tiêu đề SEO', { exact: true }).waitFor();
+          await drawer.getByText('Tiêu đề SEO riêng của bài hoàn tất', { exact: true }).waitFor();
         await drawer.getByText(/Trạng thái đã viết hoặc đã giao chưa xác nhận nội dung đã được con người kiểm duyệt/).waitFor();
         if (process.env.CRM_EDITORIAL_SCREENSHOT) {
           await page.addStyleTag({ content: (await readFile('web/src/styles.css', 'utf8')).replace(/^@import[^;]+;\s*/m, '') });

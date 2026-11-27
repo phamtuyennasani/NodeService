@@ -127,7 +127,7 @@ test('CRM website catalog URL settings and manual sync', async t => {
         assert.ok(guide.includes('AIConfig.languages'));
         assert.ok(guide.includes('crmScript.dataset.credentialsUrl'));
         assert.doesNotMatch(guide, /crm_ai_article_ref|crm_ai_source_job_id|crm_ai_source_locale/);
-        assert.equal(await f.drawer.locator('pre').last().textContent(), laravelGuide.widget);
+        assert.equal(await f.drawer.locator('pre').filter({ hasText: 'const AIConfig =' }).textContent(), laravelGuide.widget);
         assert.doesNotMatch(guide, /x-crm-ai::|NodeService\\CrmAi|crm-ai:public-key/);
         assert.deepEqual(f.errors, []);
       } finally { await f.page.close(); }

@@ -16,6 +16,7 @@
         },
         fields: {
             Title: '[name="name[$lang]"]',
+            SeoTitle: '[name="seo[title][$lang]"]',
             Content: '[name="content[$lang]"]',
             Desc: '[name="desc[$lang]"]',
             Slug: '[name="slug[$lang]"]',
@@ -77,13 +78,8 @@
                 getValue: readEditor,
             } : target;
         };
-        add('Title', 'name', (element, value) => {
-            element.value = value;
-            notify(element);
-            const locale = element.name.match(/\[([^\]]+)\]$/)?.[1] ?? sourceLocale;
-            const seoTitle = form.querySelector(selector('seo[title]', locale));
-            if (seoTitle) { seoTitle.value = value; notify(seoTitle); }
-        });
+        add('Title', 'name');
+        add('SeoTitle', 'seo[title]', undefined, seoMultilang);
         add('Content', 'content', writeEditor);
         add('Desc', 'desc', writeEditor);
         add('Slug', 'slug', (element, value) => {

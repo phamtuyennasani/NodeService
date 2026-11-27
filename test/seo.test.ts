@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { evaluateSeoFields, seoPromptGuidance, seoWordRange, type SeoCriterion, type SeoInput, type SeoReport } from '../src/worker/seo.js'
+import { evaluateSeo, evaluateSeoFields, seoPromptGuidance, seoWordRange, type SeoCriterion, type SeoInput, type SeoReport } from '../src/worker/seo.js'
 
 const article: SeoInput = {
   keyword: 'cà phê',
@@ -16,6 +16,28 @@ function finding(report: SeoReport, key: SeoCriterion) {
   assert.ok(selected)
   return selected
 }
+
+test('SEO title measurements use SeoTitle while the article heading and legacy results remain independent', () => {
+  const legacy = { Title: 'Cà phê tại nhà', Description: article.description, Slug: article.slug, Content: article.contentHtml }
+  const current = { ...legacy, SeoTitle: 'Hướng dẫn chọn hương vị phù hợp' }
+  const report = evaluateSeo(current, { keyword: article.keyword })
+  assert.equal(report.metrics.titleCharacters, Array.from(current.SeoTitle).length)
+  assert.equal(finding(report, 'keywordInTitle').passed, false)
+  assert.equal(finding(report, 'titlePresent').passed, true)
+  assert.equal(finding(evaluateSeo({ ...current, Title: '' }, { keyword: article.keyword }), 'titlePresent').passed, false)
+  const old = evaluateSeo(legacy, { keyword: article.keyword })
+  assert.equal(old.metrics.titleCharacters, Array.from(legacy.Title).length)
+  assert.equal(finding(old, 'keywordInTitle').passed, true)
+})
+
+test('translated SEO uses its localized focus keyword rather than the source request or the first related term', () => {
+  const translated = { Title: 'Water filters for your home', SeoTitle: 'Choosing water filters', Description: 'How to choose water filters.',
+    Content: '<h2>Water filters</h2><p>Compare water filters for your home.</p>', Slug: 'water-filters', FocusKeyword: 'water filters', Keywords: ['home', 'water filters'] }
+  const report = evaluateSeo(translated, { keyword: 'máy lọc nước', locale: 'en' })
+  assert.equal(finding(report, 'keywordInTitle').passed, true)
+  assert.equal(finding(report, 'keywordInContent').passed, true)
+  assert.equal(report.metrics.keywordOccurrences, 2)
+})
 
 test('SEO uses the displayed title and meta ranges, including Vietnamese code points', () => {
   for (const [length, passed] of [[40, false], [41, true], [70, true], [71, false]] as const) {

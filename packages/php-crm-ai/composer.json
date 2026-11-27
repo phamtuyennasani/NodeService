@@ -1,6 +1,6 @@
 {
     "name": "nodeservice/php-crm-ai",
-    "version": "1.2.4",
+    "version": "1.2.7",
     "description": "Standalone PHP client and secure editor widget integration for NodeService CRM.",
     "type": "library",
     "license": "proprietary",

@@ -61,6 +61,7 @@ test('cleanArticle normalizes legacy article field names for reading and rewriti
 test('OpenAI Compatible generation assembles JSON from SSE chunks', async () => {
   const article = {
     Title: 'Bài viết thử nghiệm',
+    SeoTitle: 'Hướng dẫn thử nghiệm với ví dụ thực tế',
     Content: '<p>Nội dung bài viết.</p>',
     Slug: 'bai-viet-thu-nghiem',
     Desc: 'Mô tả ngắn.',
@@ -105,6 +106,7 @@ test('OpenAI Compatible generation assembles JSON from SSE chunks', async () => 
   assert.match(String(systemMessage?.content), /Meta description|meta description/i)
   assert.match(String(systemMessage?.content), /không tự ghép URL từ tên miền/)
   assert.deepEqual(result.article, article)
+  assert.notEqual(result.article.SeoTitle, result.article.Title)
   assert.deepEqual(result.usage, { input: 4, output: 9, cachedInput: 0, reasoning: 2, costTicks: undefined })
   assert.equal(result.responseId, 'chatcmpl-test')
   assert.equal(result.model, 'test-model')
@@ -128,6 +130,7 @@ function input(provider: GenerateInput['provider']): GenerateInput {
 
 const streamArticle = JSON.stringify({
   Title: 'Bài viết stream',
+  SeoTitle: 'Hướng dẫn đọc bài viết stream',
   Content: '<p>Nội dung stream.</p>',
   Slug: 'bai-viet-stream',
   Desc: 'Mô tả ngắn.',
@@ -371,7 +374,7 @@ test('catalog is absent from outline and metadata repair prompts and legacy draf
     return compatibleStream(value)
   }
   await generateOutline(linked, respond({ title: 'Dàn ý', searchIntent: 'Hướng dẫn', audience: 'Người mới', angle: 'Thực hành', questions: [], sections: [{ heading: 'Bắt đầu', purpose: 'Nêu bước đầu', estimatedWords: 300 }] }))
-  await repairArticle({ ...linked, draft: JSON.parse(streamArticle), issues: [{ key: 'lengthTitle', message: 'Biên tập tiêu đề' }] }, respond({ Title: 'Tiêu đề mô tả nội dung' }))
+  await repairArticle({ ...linked, draft: JSON.parse(streamArticle), issues: [{ key: 'lengthTitle', message: 'Biên tập tiêu đề' }] }, respond({ SeoTitle: 'Tiêu đề mô tả nội dung' }))
   await generateArticle(base, respond(JSON.parse(streamArticle)))
   for (const request of captured) {
     assert.doesNotMatch(JSON.stringify(request), /CATALOG_ONLY_MARKER|candidate-marker|danh_mục_liên_kết_nội_bộ/)
@@ -485,11 +488,13 @@ function compatibleStream(value: unknown) {
 
 const japaneseDomainArticle = {
   Title: 'ドメインの選び方',
+  SeoTitle: '用途に合ったドメインを選ぶためのガイド',
   Content: '<p>ドメインを選ぶポイントを解説します。</p>',
   Slug: 'ドメインの選び方',
   Desc: 'ドメイン選びの要点',
   Description: '用途に合ったドメインの選び方を解説します。',
   Keywords: ['ドメイン'],
+  FocusKeyword: 'ドメイン',
 }
 
 test('non-Latin translations request a romanized slug and preserve the translated title and content', async () => {
@@ -504,9 +509,32 @@ test('non-Latin translations request a romanized slug and preserve the translate
   })
   assert.deepEqual(result.article, { ...japaneseDomainArticle, Slug: 'domein-no-erabikata' })
 
+  const { FocusKeyword, ...originalArticle } = japaneseDomainArticle
   const original = await generateArticle({ ...request, translationSource: undefined, languages: { source: 'ja', targets: [] } },
-    async () => compatibleStream(japaneseDomainArticle))
+    async () => compatibleStream(originalArticle))
   assert.equal(original.article.Slug, 'ドメインの選び方')
+})
+
+test('a translation cannot silently reuse the source keyword when its localized FocusKeyword is missing', async () => {
+  const { FocusKeyword, ...missing } = japaneseDomainArticle
+  const request: GenerateInput = { ...input('openai-compatible'), keyword: 'tên miền', locale: 'ja',
+    languages: { source: 'vi', targets: ['ja'] },
+    translationSource: { Title: 'Tên miền', Content: '<p>Chọn tên miền theo mục đích sử dụng.</p>' } }
+  await assert.rejects(generateArticle(request, async () => compatibleStream(missing)),
+    (error: unknown) => error instanceof WorkerError && error.code === 'AI_ARTICLE'
+      && error.metadata?.generation?.invalidFields?.includes('FocusKeyword') === true)
+})
+
+test('rewriting a translated article retains its localized focus keyword and uses it in the prompt', async () => {
+  const source = { ...JSON.parse(streamArticle), FocusKeyword: 'water filters', Keywords: ['home', 'water filters'] }
+  const request = { ...input('openai-compatible'), keyword: 'máy lọc nước', source,
+    languages: { source: 'vi', targets: ['en'] }, locale: 'en' }
+  const result = await generateArticle(request, async (_url, init) => {
+    const body = JSON.parse(String(init?.body))
+    assert.equal(JSON.parse(body.messages[1].content).từ_khóa_chính, 'water filters')
+    return compatibleStream(JSON.parse(streamArticle))
+  })
+  assert.equal(result.article.FocusKeyword, 'water filters')
 })
 
 test('translations keep the article when the suggested slug is missing, Unicode or an encoded URL segment', async () => {
@@ -610,10 +638,13 @@ test('article diagnostics distinguish empty, malformed, invalid fields and sanit
   const missing = JSON.parse(streamArticle)
   delete missing.Description
   missing.Keywords = 'private keyword string'
+  const missingSeoTitle = JSON.parse(streamArticle)
+  delete missingSeoTitle.SeoTitle
   const cases = [
     { output: '   ', reason: 'empty_output' },
     { output: '{"Title":', reason: 'invalid_json' },
     { output: JSON.stringify(missing), reason: 'invalid_fields', fields: ['Description', 'Keywords'] },
+    { output: JSON.stringify(missingSeoTitle), reason: 'invalid_fields', fields: ['SeoTitle'] },
     { output: JSON.stringify({ ...JSON.parse(streamArticle), Content: '<script>private content</script>' }), reason: 'invalid_content' },
     { output: JSON.stringify({ ...JSON.parse(streamArticle), 'private extra field': 'private extra value' }), reason: 'invalid_fields' },
   ]
@@ -644,7 +675,7 @@ test('metadata repair limits the JSON patch and keeps the original HTML', async 
     draft,
     issues: [{ key: 'lengthTitle', message: 'Dùng từ 41 đến 70 ký tự.' }],
   }
-  const Title = 'Tiêu đề đã được sửa để người đọc dễ nắm nội dung'
+  const SeoTitle = 'Tiêu đề đã được sửa để người đọc dễ nắm nội dung'
   let systemMessage: unknown
   const result = await repairArticle(repairInput, async (_url, init) => {
     const request = JSON.parse(String(init?.body))
@@ -652,18 +683,20 @@ test('metadata repair limits the JSON patch and keeps the original HTML', async 
     systemMessage = request.messages[0].content
     assert.equal(request.stream, true)
     assert.ok(request.max_tokens < 1_024)
-    assert.deepEqual(prompt.trường_được_phép_sửa, ['Title'])
+    assert.deepEqual(prompt.trường_được_phép_sửa, ['SeoTitle'])
     assert.equal(prompt.bản_nháp.Content, undefined)
     assert.equal(prompt.ngữ_cảnh_nội_dung, 'Giữ định dạng này.')
     assert.equal(prompt.nghiên_cứu_web, undefined)
-    return compatibleStream({ Title })
+    return compatibleStream({ SeoTitle })
   })
   assertOriginalWritingPolicy(systemMessage)
   assertPeopleFirstSeoGuidance(systemMessage)
   assert.match(String(systemMessage), /chỉ diễn đạt lại thông tin đã có trong bản nháp và ngữ cảnh nội dung/)
   assert.doesNotMatch(String(systemMessage), /Đạt khoảng ký tự/)
-  assert.deepEqual(result.article, { ...draft, Title })
-  await assert.rejects(repairArticle(repairInput, async () => compatibleStream({ Title, Content: '<p>Bị sửa ngoài phạm vi.</p>' })), { code: 'AI_REPAIR' })
+  assert.deepEqual(result.article, { ...draft, SeoTitle })
+  assert.equal(result.article.Title, draft.Title, 'SEO title edits must preserve the article heading')
+  await assert.rejects(repairArticle(repairInput, async () => compatibleStream({ SeoTitle, Title: 'Đổi tên bài ngoài phạm vi.' })), { code: 'AI_REPAIR' })
+  await assert.rejects(repairArticle(repairInput, async () => compatibleStream({ SeoTitle, Content: '<p>Bị sửa ngoài phạm vi.</p>' })), { code: 'AI_REPAIR' })
 })
 
 test('metadata repair bounds factual context without transferring HTML or unrelated research', async () => {
@@ -763,8 +796,8 @@ test('SEO length plan expands a short draft and is absent when content is outsid
     recommendedChangeWords: 500,
     recommendedChangePercent: 50,
   })
-  await repairArticle({ ...repairInput, issues: [{ key: 'lengthTitle', message: 'Chỉnh tiêu đề.' }] }, capture({ Title: draft.Title }))
-  assert.deepEqual(prompt.trường_được_phép_sửa, ['Title'])
+  await repairArticle({ ...repairInput, issues: [{ key: 'lengthTitle', message: 'Chỉnh tiêu đề.' }] }, capture({ SeoTitle: draft.SeoTitle }))
+  assert.deepEqual(prompt.trường_được_phép_sửa, ['SeoTitle'])
   assert.equal(prompt.kiểm_tra_hiện_tại.kế_hoạch_độ_dài, undefined)
   assert.equal(prompt.bản_nháp.Content, undefined)
 })

@@ -22,18 +22,22 @@ test('language configuration accepts non-Vietnamese sources and canonical region
 })
 
 test('provider receives explicit output language and approved source without generating other configured languages', async () => {
-  const translated = { Title: '日本語の記事', Content: '<p>確認済みの内容です。</p>', Slug: '日本語の記事', Desc: '説明', Description: '記事の説明', Keywords: ['記事'] }
+  const translated = { Title: '日本語の記事', SeoTitle: '確認済みの記事を日本語で読む', Content: '<p>確認済みの内容です。</p>', Slug: '日本語の記事', Desc: '説明', Description: '記事の説明', Keywords: ['読み物', '記事'], FocusKeyword: '記事' }
   const input: GenerateInput = {
     provider: 'openai', key: 'fixture', model: 'fixture', keyword: 'article', tone: 'clear', style: 'guide', length: 800,
     instructions: null, source: null, signal: new AbortController().signal,
     languages: { source: 'en', targets: ['ja', 'vi'] }, locale: 'ja',
-    translationSource: { Title: 'Approved article', Content: '<p>The reviewed text is version two.</p>' },
+    translationSource: { Title: 'Approved article', SeoTitle: 'Read the reviewed article', Content: '<p>The reviewed text is version two.</p>' },
   }
   const result = await generateArticle(input, async (_url, init) => {
     const request = JSON.parse(String(init?.body))
     assert.match(request.instructions, /Ngôn ngữ kết quả bắt buộc là ja/)
     assert.match(request.instructions, /Không nghiên cứu lại/)
     assert.match(request.instructions, /phiên âm theo cách đọc của ngôn ngữ đích/)
+    assert.ok(request.text.format.schema.required.includes('SeoTitle'))
+    assert.ok(request.text.format.schema.required.includes('Title'))
+    assert.ok(request.text.format.schema.required.includes('FocusKeyword'))
+    assert.match(request.instructions, /FocusKeyword là bản dịch tự nhiên/)
     const prompt = JSON.parse(request.input)
     assert.equal(prompt.ngôn_ngữ_bản_gốc, 'en')
     assert.equal(prompt.ngôn_ngữ_kết_quả, 'ja')
@@ -42,6 +46,7 @@ test('provider receives explicit output language and approved source without gen
     return new Response(JSON.stringify({ output_text: JSON.stringify(translated) }), { headers: { 'Content-Type': 'application/json' } })
   })
   assert.deepEqual(result.article, { ...translated, Slug: 'approved-article' })
+  assert.equal(result.article.FocusKeyword, '記事')
   assert.equal(cleanArticle({ ...translated, Slug: 'دليل-المحتوى' }).Slug, 'دليل-المحتوى')
   assert.equal(cleanArticle({ ...translated, Slug: 'ガイド' }).Slug, 'ガイド')
   const report = evaluateSeo({ ...translated, Content: '<p>日本語の記事を書くためのガイドです。</p>' }, { keyword: '記事', locale: 'ja' })

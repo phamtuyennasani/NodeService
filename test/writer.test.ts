@@ -125,6 +125,7 @@ const shortArticle: Article = {
 function seoArticle(targetWords = 600): Article {
   return {
     Title: 'Cà phê cold brew: cách pha ngon và bảo quản tại nhà',
+    SeoTitle: 'Cách pha cà phê cold brew và bảo quản tại nhà',
     Content: '<h2>Cà phê cold brew cho người mới</h2>' + Array.from({ length: Math.max(2, Math.round(targetWords / 62)) }, (_, index) => '<p>Cà phê cold brew ' + 'thơm '.repeat(57) + index + '.</p>').join(''),
     Slug: 'ca-phe-cold-brew', Desc: 'Hướng dẫn pha tại nhà.',
     Description: 'Cà phê cold brew ' + 'à'.repeat(140), Keywords: [keyword],
@@ -174,14 +175,27 @@ function assertReady(f: ReturnType<typeof fixture>, article: Article, repairStat
   assert.equal(f.job.writing_stage, null)
   assert.equal(f.job.seo_repair_status, repairStatus)
   assert.equal(f.reservation.status, 'used')
-  assert.deepEqual(Object.keys(f.job.result[0]).sort(), ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'].sort())
+  assert.deepEqual(Object.keys(f.job.result[0]).sort(), ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords', ...(article.SeoTitle ? ['SeoTitle'] : [])].sort())
   assert.deepEqual(f.tables.webhook_deliveries.map(({ job_id, event, status }) => ({ job_id, event, status })), f.job.mode === 'scheduled' ? [
     { job_id: f.job._id, event: 'article.ready', status: 'pending' },
   ] : [])
 }
 
+test('writer saves a distinct SEO title with the generated article and its SEO measurements', async () => {
+  const article = { ...seoArticle(), SeoTitle: 'Hướng dẫn pha cold brew và bảo quản đúng cách' }
+  const f = fixture()
+  await f.run({ generate: async () => ({ article, ...metadata }) })
+  assert.equal(f.job.status, 'ready')
+  assert.deepEqual(f.job.result, [cleanArticle(article)])
+  assert.equal(f.job.result[0].Title, article.Title)
+  assert.equal(f.job.result[0].SeoTitle, article.SeoTitle)
+  assert.equal(f.job.seo_report.metrics.titleCharacters, Array.from(article.SeoTitle).length)
+})
+
 test('translation jobs use the reviewed form snapshot and target locale without rewriting, researching or repairing the source', async () => {
   const translation_source = { Title: 'Approved English', Content: '<p>Updated factual text 123.</p>' }
+  const translated = { ...seoArticle(), Title: '日本語の記事', SeoTitle: '記事の読み方', Content: '<h2>記事</h2><p>記事：確認済みの内容です。</p>',
+    FocusKeyword: '記事', Keywords: ['日本語', '記事'] }
   const f = fixture({ languages: { source: 'en', targets: ['ja'] }, locale: 'ja', translation_source },
     { research: { enabled: true, timeoutMs: 1000, maxResults: 1, provider: 'duckduckgo' } })
   let calls = 0
@@ -196,13 +210,16 @@ test('translation jobs use the reviewed form snapshot and target locale without 
       assert.deepEqual(input.languages, { source: 'en', targets: ['ja'] })
       assert.equal(input.research, null)
       assert.equal(input.outline, null)
-      return { article: seoArticle(), ...metadata }
+      return { article: translated, ...metadata }
     },
   })
   assert.equal(calls, 1)
   assert.equal(f.job.status, 'ready')
   assert.equal(f.reservation.status, 'used')
   assert.equal(f.tables.ai_attempts.length, 1)
+  assert.equal(f.job.result[0].FocusKeyword, '記事')
+  assert.equal(f.job.seo_report.metrics.keywordOccurrences, 2)
+  assert.equal(f.job.keyword, keyword, 'the source request stays unchanged')
 })
 
 test('scheduled writer researches, outlines and streams a compliant article without a repair call', async () => {
@@ -851,7 +868,7 @@ test('a repair error preserves the valid draft and records separate provider usa
 })
 
 test('natural metadata outside the legacy ranges keeps the article without a repair call', async () => {
-  const draft = { ...seoArticle(), Title: 'Cách chuẩn bị tại nhà', Description: 'Hướng dẫn pha đồ uống lạnh.' }
+  const draft = { ...seoArticle(), Title: 'Cách chuẩn bị tại nhà', SeoTitle: 'Hướng dẫn pha đồ uống tại nhà', Description: 'Hướng dẫn pha đồ uống lạnh.' }
   const f = fixture({ mode: 'preview', status: 'queued' })
   await f.run({
     generate: async () => ({ article: draft, ...metadata }),

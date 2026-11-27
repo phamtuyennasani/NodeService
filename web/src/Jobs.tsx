@@ -402,6 +402,8 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
           <div className="article-summary">{article.Desc}</div>
           <div dangerouslySetInnerHTML={{ __html: sanitizeArticleHtml(article.Content) }} />
           <Descriptions className="profile-description" column={1} size="small" items={[
+            { key: 'seo-title', label: 'Tiêu đề SEO', children: article.SeoTitle ?? article.Title },
+            { key: 'focus-keyword', label: 'Từ khóa chính', children: article.FocusKeyword ?? job.keyword },
             { key: 'slug', label: 'Slug', children: article.Slug },
             { key: 'seo', label: 'Mô tả SEO', children: article.Description },
             { key: 'tags', label: 'Từ khóa', children: article.Keywords?.map((keyword) => <Tag key={keyword}>{keyword}</Tag>) },

@@ -5,6 +5,7 @@ import { cleanArticle, generateArticle, type GenerateInput } from '../src/worker
 
 const article = {
   Title: 'Bài viết có bảng',
+  SeoTitle: 'Hướng dẫn trình bày bảng trong bài viết',
   Content: '<p>Nội dung.</p>',
   Slug: 'bai-viet-co-bang',
   Desc: 'Mô tả ngắn.',

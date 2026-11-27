@@ -5,6 +5,7 @@ import { isWritingStage, writingStageLabel } from '../src/writing-stage';
 import { writingVisual } from './writing-visual';
 import { WIDGET_REQUEST_BODY_LIMIT } from '../src/widget-limits';
 import { searchableSelect } from './searchable-select';
+import { articleFocusKeyword } from '../src/article-keyword';
 import styles from './styles.css';
 import { languageConfig, languageTag, type LanguageConfig } from '../src/language-config';
 
@@ -23,13 +24,13 @@ articlePurifier.addHook('uponSanitizeAttribute', (_node, attribute) => {
   attribute.keepAttr = Boolean(attribute.attrValue);
 });
 
-const fields = ['Title', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'] as const;
+const fields = ['Title', 'SeoTitle', 'Content', 'Slug', 'Desc', 'Description', 'Keywords'] as const;
 const toneOptions = ['Thân thiện', 'Chuyên nghiệp', 'Tư vấn', 'Thuyết phục', 'Trang trọng', 'Hài hước'];
 const styleOptions = ['Hướng dẫn', 'SEO', 'Chuyên gia', 'Kể chuyện', 'Danh sách', 'Tin tức'];
 type Field = typeof fields[number];
 type LegacyField = 'Desction' | 'Từ khóa';
 const legacyFields: Partial<Record<Field, LegacyField>> = { Description: 'Desction', Keywords: 'Từ khóa' };
-type Article = Record<Exclude<Field, 'Keywords'>, string> & { Keywords: string[] };
+type Article = Record<Exclude<Field, 'Keywords'>, string> & { Keywords: string[]; FocusKeyword?: string };
 type Target = string | { selector: string; setValue?: (element: Element, value: string) => void | Promise<void>; getValue?: (element: Element) => string };
 type FieldMap = Partial<Record<Field | LegacyField | 'FocusKeyword', Target>>;
 type KeyMode = 'own' | 'service';
@@ -102,7 +103,7 @@ function articleFrom(value: unknown): Article {
   const source = value[0] as Record<string, unknown>;
   const record: Record<string, unknown> = {};
   for (const field of fields) {
-    const entry = readField(source, field);
+    const entry = field === 'SeoTitle' && source.SeoTitle === undefined ? source.Title : readField(source, field);
     const valid = field === 'Keywords'
       ? Array.isArray(entry) && entry.length > 0 && entry.every(item => typeof item === 'string' && item.trim())
       : typeof entry === 'string' && entry.trim();
@@ -110,6 +111,10 @@ function articleFrom(value: unknown): Article {
     record[field] = entry;
   }
   const article = record as Article;
+  if (source.FocusKeyword !== undefined) {
+    if (typeof source.FocusKeyword !== 'string' || !source.FocusKeyword.trim()) throw new Error('Kết quả thiếu trường FocusKeyword.');
+    article.FocusKeyword = source.FocusKeyword.trim();
+  }
   const content = articlePurifier.sanitize(article.Content, {
     ALLOWED_TAGS: ['p', 'br', 'h2', 'h3', 'h4', 'strong', 'b', 'em', 'i', 'a', 'span', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'hr'],
     ALLOWED_ATTR: ['href', 'title', 'style', 'scope', 'colspan', 'rowspan'],
@@ -694,7 +699,7 @@ function mount(config: Config) {
     const metadata = select('.metadata');
     metadata.replaceChildren();
     for (const [label, value] of [
-      ['Slug', article.Slug], ['Mô tả', article.Desc], ['Mô tả SEO', article.Description],
+      ['Tiêu đề SEO', article.SeoTitle], ['Slug', article.Slug], ['Mô tả', article.Desc], ['Mô tả SEO', article.Description],
       ['Từ khóa chính', keyword], ['Từ khóa liên quan', article.Keywords.join(', ')],
     ]) {
       const term = document.createElement('dt');
@@ -783,8 +788,10 @@ function mount(config: Config) {
         ? await requestJson(jobUrl(endpoint, task.jobId, true), running.signal, undefined, readHeaders)
         : job.result;
       running.signal.throwIfAborted();
-      const draft: Draft = { article: articleFrom(article), job, locale,
-        keyword: typeof job.keyword === 'string' && job.keyword.trim() ? job.keyword : input.keyword };
+      const parsed = articleFrom(article);
+      const keyword = typeof job.keyword === 'string' && job.keyword.trim() ? job.keyword : input.keyword;
+      const draft: Draft = { article: parsed, job, locale,
+        keyword: isTranslation ? articleFocusKeyword(parsed, keyword) : keyword };
       drafts.set(locale, draft);
       showArticle(draft);
       pending = undefined;
@@ -812,11 +819,11 @@ function mount(config: Config) {
     translate.textContent = 'Đang dịch…';
     updateSubmit();
     try {
-      const { Title, Content, Desc, Description, Keywords } = original.article;
+      const { Title, SeoTitle, Content, Desc, Description, Keywords } = original.article;
       for (const locale of languages.targets) {
         if (drafts.has(locale)) continue;
         const body = JSON.stringify({ ...originalRequest, locale, use_research: false,
-          translation_source: { Title, Content, Desc, Description, Keywords },
+          translation_source: { Title, SeoTitle, Content, Desc, Description, Keywords },
           translation_of_job_id: original.job.job_id,
         });
         if (new TextEncoder().encode(body).length > WIDGET_REQUEST_BODY_LIMIT) throw new Error('Nội dung yêu cầu vượt giới hạn chuyển ngữ.');

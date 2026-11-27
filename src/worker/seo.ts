@@ -1,4 +1,5 @@
 import { Parser } from 'htmlparser2'
+import { articleFocusKeyword } from '../article-keyword.js'
 
 // Editorial checklist thresholds retained for CRM/widget API compatibility.
 // They are not Google requirements or evidence of search ranking or content quality.
@@ -68,10 +69,11 @@ export interface SeoReport {
   }
 }
 
-type SeoArticle = { Title: string; Description: string; Slug: string; Content: string }
+type SeoArticle = { Title: string; SeoTitle?: string; FocusKeyword?: string; Description: string; Slug: string; Content: string }
 export interface SeoInput {
   keyword: string
   title: string
+  articleTitle?: string
   description: string
   slug: string
   contentHtml: string
@@ -93,7 +95,7 @@ export function seoPromptGuidance(length: number): string[] {
   const budget = seoWordRange(length)
   return [
     'Ưu tiên trả lời đúng nhu cầu và ý định tìm kiếm của người đọc bằng nội dung chính xác, liên quan và có giá trị bổ sung; không viết chỉ để đạt điểm SEO hoặc thu hút lượt tìm kiếm.',
-    'Title mô tả trung thực nội dung, rõ ràng, riêng biệt và không giật tít. Desc tóm tắt hữu ích cho người đọc. Description tóm tắt chính xác câu trả lời hoặc lợi ích thực tế có trong bài, viết trọn câu và khác Title. Các mốc Title ' + title.min + '–' + title.max + ' ký tự, Description ' + metaDescription.min + '–' + metaDescription.max + ' ký tự chỉ là số liệu tham khảo cũ của CRM, không phải điều kiện cần đạt. Không kéo dài hoặc cắt câu chỉ để khớp mốc ký tự.',
+    'Title mô tả trung thực nội dung, rõ ràng, riêng biệt và không giật tít. SeoTitle là tiêu đề SEO cho thẻ HTML title, được biên tập riêng với Title là tên bài viết/H1; không thêm lời hứa ngoài nội dung. Desc tóm tắt hữu ích cho người đọc. Description tóm tắt chính xác câu trả lời hoặc lợi ích thực tế có trong bài, viết trọn câu và khác Title. Các mốc SeoTitle ' + title.min + '–' + title.max + ' ký tự, Description ' + metaDescription.min + '–' + metaDescription.max + ' ký tự chỉ là số liệu tham khảo cũ của CRM, không phải điều kiện cần đạt. Không kéo dài hoặc cắt câu chỉ để khớp mốc ký tự.',
     'Ngân sách TOÀN BỘ Content là ' + length + ' từ; phạm vi chấp nhận ' + budget.min + '–' + budget.max + ' từ, bao gồm mở bài, đề mục, bảng, danh sách và kết luận. Đếm từng đơn vị chữ/số cách nhau bằng khoảng trắng hoặc dấu câu; tiếng Việt “tên miền” được tính là 2 từ. Bám ngân sách từng phần của dàn ý, không nhân ngân sách cho từng H3. Giữ giải thích và ví dụ cụ thể, rút phần lặp nếu quá dài; bổ sung hướng dẫn hữu ích nếu quá ngắn. Không thêm câu cho đủ số từ hoặc cắt mất ý chính. Chia thành ít nhất hai đoạn p, mỗi đoạn không quá ' + paragraphMaxWords + ' từ.',
     'Dùng từ khóa chính như chủ đề và nhu cầu cần giải đáp. Dùng cách gọi và biến thể tự nhiên đúng ngôn ngữ của người đọc; không bắt buộc lặp nguyên cụm trong Title, Description, slug, 10% đầu bài hoặc tiêu đề phụ. Mở bài trả lời câu hỏi chính ngay bằng 1–3 câu có ích, thay cho lời dẫn chung chung. Không nhồi từ khóa hoặc viết để đạt mật độ cố định.',
     'Slug ngắn gọn, tối đa ' + slugMax + ' ký tự theo giới hạn biên tập CRM, mô tả đúng chủ đề, viết thường và ngăn cách từ bằng dấu gạch ngang. Không nhét cả truy vấn dài vào slug. Chỉ chèn liên kết nội bộ có thật, liên quan và giúp người đọc tìm hiểu thêm; dùng văn bản liên kết mô tả rõ trang đích. Không có URL phù hợp được cung cấp thì không tự tạo liên kết để lấy điểm.',
@@ -267,7 +269,7 @@ export function evaluateSeoFields(input: SeoInput): SeoReport {
   }
 
   const findings = [
-    finding('titlePresent', Boolean(title.trim()), 'Viết tiêu đề ngắn gọn, mô tả đúng câu trả lời và nội dung bài viết.'),
+    finding('titlePresent', Boolean((input.articleTitle ?? title).trim()), 'Viết tiêu đề ngắn gọn, mô tả đúng câu trả lời và nội dung bài viết.'),
     finding('descriptionPresent', Boolean(description.trim()), 'Viết mô tả riêng cho bài, tóm tắt trung thực nội dung người đọc sẽ nhận được.'),
     finding('headingStructure', headingsValid, 'Dùng đề mục H2 rồi H3 theo cấp, tránh nhảy cấp hoặc lặp đề mục. Title được hiển thị riêng nên Content không cần H1.', true, html.headingLevels.length > 0),
     finding('distinctParagraphs', repeatedParagraphs === 0, repeatedParagraphs ? 'Phát hiện ' + repeatedParagraphs + ' đoạn lặp nguyên nội dung. Gộp ý trùng, giữ ví dụ hoặc hướng dẫn hữu ích, không viết lại cùng ý chỉ để đủ số từ.' : 'Không phát hiện đoạn văn dài bị lặp nguyên nội dung. Kiểm tra này không xác minh tính độc đáo hoặc nguồn gốc bài viết.'),
@@ -299,7 +301,9 @@ export function evaluateSeoFields(input: SeoInput): SeoReport {
 export function evaluateSeo(article: SeoArticle, options: Pick<SeoInput, 'keyword' | 'siteUrl' | 'locale' | 'targetWords'>): SeoReport {
   return evaluateSeoFields({
     ...options,
-    title: article.Title,
+    keyword: articleFocusKeyword(article, options.keyword),
+    title: article.SeoTitle ?? article.Title,
+    articleTitle: article.Title,
     description: article.Description,
     slug: article.Slug,
     contentHtml: article.Content,

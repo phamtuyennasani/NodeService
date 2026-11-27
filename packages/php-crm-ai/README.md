@@ -63,6 +63,7 @@ echo $widget->render([
     'form' => '#article-form',
     'fields' => [
         'Title' => '[name=title]',
+        'SeoTitle' => '[name=seo_title]',
         'Content' => '[name=body]',
         'Slug' => '[name=slug]',
         'Desc' => '[name=summary]',
@@ -71,6 +72,8 @@ echo $widget->render([
     ],
 ], $csrf);
 ```
+
+Form cần có input/textarea khớp các selector đã khai báo. Ví dụ `<input name="title">` nhận tên bài `Title`, còn `<input name="seo_title">` nhận tiêu đề SEO `SeoTitle`. Chỉ giữ mapping cho các trường có thật; xem `examples/editor.php` để có form và mapping đi cùng nhau.
 
 Widget tải script từ CRM, gửi yêu cầu cấp chữ ký tới `authorize_url` cùng origin, rồi gửi yêu cầu viết trực tiếp đến CRM. CSRF token nằm trong thuộc tính script. Sau khi có bản gốc, chọn **Áp dụng** hoặc **Dịch sang các ngôn ngữ khác**. Dịch lấy bản gốc trong popup để tạo toàn bộ ngôn ngữ đích; sau đó chỉ còn nút **Áp dụng** để điền các phiên bản vào form. Khi đã áp dụng, lần mở widget tiếp theo bắt đầu một lượt viết mới. Với CSP, truyền `nonce` trong options theo chính sách ứng dụng và cho phép origin CRM trong `script-src`, `connect-src`.
 
@@ -149,6 +152,17 @@ composer archive --format=zip --dir=../../dist/packages
 ZIP phát hành chứa mã nguồn, autoloader, CLI và trang mẫu. Thư mục `vendor`, dữ liệu riêng và kiểm thử được loại khỏi bản phát hành. Tăng version khi phát hành bản nâng cấp để Composer nhận đúng phiên bản và checksum.
 
 ## Đa ngôn ngữ
+
+`FocusKeyword` của bản gốc giữ từ khóa đã nhập; bản dịch mới trả từ khóa chính đã chuyển ngữ, tách biệt với danh sách `Keywords` trong ngôn ngữ đích. Dùng selector có `$lang` cho cả hai nếu form có ô riêng theo locale; khi nhận webhook lưu `FocusKeyword` từ bài, không gán lại từ khóa yêu cầu gốc. Kết quả cũ thiếu trường này tiếp tục dùng từ khóa yêu cầu làm dự phòng.
+
+### Cập nhật website để nhận tiêu đề SEO
+
+1. Tải ZIP PHP mới trong CRM và thay mã thư viện; giữ nguyên thư mục private, config và các khóa hiện có. Ghép lại các tùy chỉnh riêng của website trong bootstrap/editor.
+2. Bổ sung `'SeoTitle' => '[name=seo_title]'` vào `fields` của `$widget->render()` và thêm hoặc chọn đúng ô tiêu đề SEO trên form. Không map `Title` và `SeoTitle` vào cùng một phần tử.
+3. Với đa ngôn ngữ, dùng `'SeoTitle' => '[name="seo[title][$lang]"]'` và thêm khóa này vào các mapping `fields_by_locale` nếu có. Selector cố định chỉ dùng cho bản gốc trong mapping tự động.
+4. Bỏ phần code cũ sao chép tên bài sang ô SEO, tải lại trang và viết bài mới để kiểm tra. Khi nhận webhook/lấy kết quả API, lưu `SeoTitle` vào trường SEO riêng; giữ nguyên mảng kết quả khi chuyển tiếp.
+
+Từ 1.2.5, widget hỗ trợ `SeoTitle` để điền tiêu đề SEO riêng với tên bài `Title`, ví dụ `'SeoTitle' => '[name="seo[title][$lang]"]'`. Chỉ thêm mapping khi form có ô tương ứng. Kết quả cũ chưa có trường này dùng `Title` làm dự phòng; bài mới và bản dịch trả `SeoTitle` riêng.
 
 Khai báo `languages: {source, targets}` trong AIConfig và mapping theo locale. Viết bản gốc, xem trước rồi chọn áp dụng ngay hoặc dịch toàn bộ ngôn ngữ đích trước khi áp dụng. Mỗi bản dùng một job/lượt riêng; thử lại phần dịch lỗi giữ các bản đã hoàn tất. [Hướng dẫn và ví dụ Laravel/PHP đầy đủ](docs/multilingual.md).
 

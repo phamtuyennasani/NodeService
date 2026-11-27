@@ -11,6 +11,7 @@ export const localeSchema = z.string().transform((value, ctx) => {
 })
 export const translationSourceSchema = z.object({
   Title: z.string().trim().min(1).max(350),
+  SeoTitle: z.string().trim().min(1).max(350).optional(),
   Content: z.string().trim().min(1).max(120_000),
   Desc: z.string().max(1_000).optional(),
   Description: z.string().max(1_000).optional(),
