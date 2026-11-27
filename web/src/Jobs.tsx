@@ -307,7 +307,16 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
     });
   }
   return <Drawer className="job-detail-drawer" title={job?.keyword ?? 'Chi tiết yêu cầu viết'} open={Boolean(id)} size={760} onClose={close}
-    extra={<Space wrap>{canExportPdf && <Button aria-label="Xuất PDF" icon={<FilePdfOutlined />} loading={exportingPdf} onClick={exportPdf}>Xuất PDF</Button>}<Tooltip title={canRewrite ? undefined : rewriteUnavailableReason(job)}><span><Button type="primary" icon={<ReloadOutlined />} disabled={!canRewrite} onClick={() => setRewriteOpen(true)}>Viết lại</Button></span></Tooltip>{canDelete && <Button danger icon={<DeleteOutlined />} onClick={removeJob}>{job?.result?.length ? 'Xóa bài' : 'Xóa khỏi hàng chờ'}</Button>}<Button icon={<ReloadOutlined />} loading={detail.loading} onClick={detail.reload}>Làm mới</Button></Space>}>
+    extra={<div className="job-detail-actions" role="group" aria-label="Thao tác bài viết">
+      <div className="job-detail-actions-main">
+        <Tooltip title={canRewrite ? undefined : rewriteUnavailableReason(job)}><span><Button type="primary" icon={<ReloadOutlined />} disabled={!canRewrite} onClick={() => setRewriteOpen(true)}>Viết lại</Button></span></Tooltip>
+        {canExportPdf && <Button aria-label="Xuất PDF" icon={<FilePdfOutlined />} loading={exportingPdf} onClick={exportPdf}>Xuất PDF</Button>}
+      </div>
+      <div className="job-detail-actions-secondary">
+        <Button type="text" icon={<ReloadOutlined />} loading={detail.loading} onClick={detail.reload}>Làm mới</Button>
+        {canDelete && <Button type="text" danger icon={<DeleteOutlined />} onClick={removeJob}>{job?.result?.length ? 'Xóa bài' : 'Xóa khỏi hàng chờ'}</Button>}
+      </div>
+    </div>}>
     <ResourceError error={detail.error} onRetry={detail.reload} />
     {detail.loading && !job && <Skeleton active />}
     {job && <>

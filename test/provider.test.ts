@@ -483,6 +483,52 @@ function compatibleStream(value: unknown) {
   return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(value) }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`)
 }
 
+const japaneseDomainArticle = {
+  Title: 'ドメインの選び方',
+  Content: '<p>ドメインを選ぶポイントを解説します。</p>',
+  Slug: 'ドメインの選び方',
+  Desc: 'ドメイン選びの要点',
+  Description: '用途に合ったドメインの選び方を解説します。',
+  Keywords: ['ドメイン'],
+}
+
+test('non-Latin translations request a romanized slug and preserve the translated title and content', async () => {
+  const request: GenerateInput = {
+    ...input('openai-compatible'), locale: 'ja', languages: { source: 'vi', targets: ['ja'] },
+    translationSource: { Title: 'Cách chọn tên miền', Content: '<p>Chọn tên miền theo mục đích sử dụng.</p>' },
+  }
+  const result = await generateArticle(request, async (_url, init) => {
+    const { messages } = JSON.parse(String(init?.body))
+    assert.match(messages[0].content, /phiên âm theo cách đọc của ngôn ngữ đích/)
+    return compatibleStream({ ...japaneseDomainArticle, Slug: 'Domein no Erabikata' })
+  })
+  assert.deepEqual(result.article, { ...japaneseDomainArticle, Slug: 'domein-no-erabikata' })
+
+  const original = await generateArticle({ ...request, translationSource: undefined, languages: { source: 'ja', targets: [] } },
+    async () => compatibleStream(japaneseDomainArticle))
+  assert.equal(original.article.Slug, 'ドメインの選び方')
+})
+
+test('translations keep the article when the suggested slug is missing, Unicode or an encoded URL segment', async () => {
+  const request: GenerateInput = {
+    ...input('openai-compatible'), locale: 'ja', languages: { source: 'vi', targets: ['ja'] },
+    translationSource: { Title: 'Cách chọn tên miền', Content: '<p>Chọn tên miền theo mục đích sử dụng.</p>' },
+  }
+  for (const Slug of [undefined, japaneseDomainArticle.Slug, encodeURIComponent(japaneseDomainArticle.Slug)]) {
+    const result = await generateArticle(request, async () => compatibleStream({ ...japaneseDomainArticle, Slug }))
+    assert.deepEqual(result.article, { ...japaneseDomainArticle, Slug: 'cach-chon-ten-mien' })
+  }
+
+  const nonLatinSource = {
+    ...request, languages: { source: 'ko', targets: ['ja'] },
+    translationSource: { Title: '도메인 선택 방법', Content: '<p>도메인을 고르는 방법입니다.</p>' },
+  }
+  const first = await generateArticle(nonLatinSource, async () => compatibleStream(japaneseDomainArticle))
+  const retry = await generateArticle(nonLatinSource, async () => compatibleStream(japaneseDomainArticle))
+  assert.match(first.article.Slug, /^article-[0-9a-f]{12}$/)
+  assert.equal(retry.article.Slug, first.article.Slug)
+})
+
 function compatibleText(text: string, finishReason = 'stop', usage?: Record<string, unknown>) {
   return new Response(`data: ${JSON.stringify({ id: 'safe-response-id', model: 'test-model', choices: [{ delta: { content: text }, finish_reason: finishReason }] })}\n\n`
     + (usage ? `data: ${JSON.stringify({ choices: [], usage })}\n\n` : '') + 'data: [DONE]\n\n')

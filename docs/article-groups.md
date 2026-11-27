@@ -12,7 +12,7 @@ CRM gom nhóm trước khi phân trang. Yêu cầu của nhiều website có th�
 4. Dịch xong chỉ còn nút **Áp dụng** để điền toàn bộ phiên bản vào form.
 5. Sau khi áp dụng, lần bấm Viết bài AI tiếp theo bắt đầu một bài mới và một nhóm CRM mới.
 
-Widget tự tạo mã `draft:<UUID>` cho mỗi lượt viết và tự liên kết các bản dịch với job gốc trong lượt đó. Website không cần truyền `articleRef`, `sourceJobId`, thêm input ẩn hoặc lưu mã CRM vào bài. BaseCodeAW không lưu các mã này trong `news.options`.
+Widget tự tạo mã `draft:<UUID>` cho mỗi lượt viết và tự liên kết các bản dịch với job gốc trong lượt đó. Website không cần truyền `articleRef`, `sourceJobId`, thêm input ẩn hoặc lưu mã CRM vào bài.
 
 Nếu dịch lỗi, các bản đã hoàn tất được giữ trong popup; thử lại tiếp tục phần còn thiếu. Yêu cầu chưa có phản hồi giữ cùng body và Idempotency-Key; job đã được nhận sẽ được đọc lại bằng mã đọc kết quả. Mỗi bản gốc/bản dịch vẫn là một job và một lượt riêng nếu dùng gói dịch vụ. Gom nhóm không phát sinh lượt viết bổ sung.
 

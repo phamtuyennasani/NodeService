@@ -36,7 +36,7 @@ Có thể map thêm `Desc`, `Description`, `Keywords`, `FocusKeyword`. Với ric
 
 Mỗi bản gốc/bản dịch là một job riêng, tính một lượt nếu dùng gói dịch vụ. Retry mạng giữ nguyên body và Idempotency-Key để nhận lại cùng job; các bản đã hoàn tất được giữ lại. Một bản dịch lỗi không làm thay đổi form. Khi chưa dịch đủ các ngôn ngữ đích, bấm **Thử lại bản dịch** để hoàn tất trước khi áp dụng. Sau khi áp dụng vẫn lưu bài qua chức năng hiện có của website.
 
-Giao diện widget hiện dùng tiếng Việt; ngôn ngữ giao diện độc lập với ngôn ngữ nội dung. Preview hỗ trợ chiều RTL cho các locale phổ biến. CRM giữ slug Unicode, nhưng adapter website vẫn có thể áp dụng quy tắc slug của CMS. Báo cáo SEO dùng checklist chung của CRM, không phải bộ tiêu chuẩn riêng cho mọi thị trường.
+Giao diện widget hiện dùng tiếng Việt. Ngôn ngữ giao diện độc lập với ngôn ngữ nội dung. Preview hỗ trợ chiều RTL cho các locale phổ biến. Khi dịch sang ngôn ngữ dùng hệ chữ ngoài Latin, CRM tạo slug phiên âm bằng chữ Latin không dấu, số và dấu gạch ngang, tối đa 75 ký tự. Website quyết định đường dẫn từ slug khi lưu. Báo cáo SEO dùng checklist chung của CRM.
 
 ## Dữ liệu gửi CRM
 
@@ -71,7 +71,7 @@ Các trường viết bài khác vẫn giữ nguyên. Snapshot hỗ trợ thêm 
 />
 ```
 
-Với bộ Laravel dạng chép file và BaseCodeAW, đặt `AIConfig.languages` trực tiếp trong `resources/views/admin/layouts/js.blade.php`. Mẫu component phía trên dành cho package Composer. Trong PHP, dùng chuỗi nháy đơn để giữ nguyên `$lang`, tránh PHP nội suy biến. BaseCodeAW dùng selector mẫu và callback CKEditor. Các trường SEO/slug dùng chung giữa các ngôn ngữ chỉ map vào bản gốc. Bản dịch luôn lấy bản gốc đang xem trước trong cùng lượt viết; không dùng bài đã áp dụng làm nguồn.
+Với bộ Laravel dạng chép file, đặt `AIConfig.languages` trực tiếp trong `resources/views/admin/layouts/js.blade.php` và điều chỉnh selector theo form của website. Mẫu component phía trên dành cho package Composer. Trong PHP, dùng chuỗi nháy đơn để giữ nguyên `$lang`, tránh PHP nội suy biến. File JS mẫu hỗ trợ callback CKEditor. Các trường SEO/slug dùng chung giữa các ngôn ngữ chỉ map vào bản gốc. Bản dịch luôn lấy bản gốc đang xem trước trong cùng lượt viết; không dùng bài đã áp dụng làm nguồn.
 
 ## PHP thuần
 

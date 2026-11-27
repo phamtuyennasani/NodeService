@@ -10,6 +10,38 @@ import phpGuide from './php-guide.json';
 type Platform = 'laravel' | 'php';
 type Release = { platform: Platform; version: string; filename: string; compatibility: string; bytes: number; sha256: string };
 const { provider: providerSnippet, files: laravelFiles, form: formSnippet, widget: widgetSnippet } = laravelGuide;
+const multilingualFieldsSnippet = `languages: {
+  source: 'vi',
+  targets: ['en', 'ja'],
+},
+fields: {
+  Title: '[name="ten[$lang]"]',
+  Content: '[name="noidung[$lang]"]',
+  Desc: '[name="mota[$lang]"]',
+  Slug: '[name="slug[$lang]"]',
+  Description: '[name="seo[description][$lang]"]',
+  Keywords: '[name="seo[keywords][$lang]"]',
+  FocusKeyword: '[name="seo[focus_keyword][$lang]"]',
+},`;
+const singleLanguageFieldsSnippet = `languages: { source: 'vi', targets: [] },
+fields: {
+  Title: '[name="ten"]',
+  Content: '[name="noidung"]',
+  Desc: '[name="mota"]',
+  Slug: '[name="slug"]',
+  Description: '[name="seo[description]"]',
+  Keywords: '[name="seo[keywords]"]',
+  FocusKeyword: '[name="seo[focus_keyword]"]',
+},`;
+const pageFieldsSnippet = `@include('crm-ai.writer', ['aiFields' => [
+  'Title' => '[name="ten[$lang]"]',
+  'Content' => '[name="noidung[$lang]"]',
+  'Desc' => '[name="mota[$lang]"]',
+  'Slug' => '[name="slug[$lang]"]',
+  'Description' => '[name="seo[description][$lang]"]',
+  'Keywords' => '[name="seo[keywords][$lang]"]',
+  'FocusKeyword' => '[name="seo[focus_keyword][$lang]"]',
+]])`;
 const customButtonCss = `.crm-ai-launch {
   background: #2455d6;
   color: #fff;
@@ -69,7 +101,7 @@ export function IntegrationGuide({ website, copy }: { website: Website; copy: (t
   const phpConfig = JSON.stringify({ url: window.location.origin, site_id: website.id, token: '<token-website>',
     editor_origin: `https://${website.domain}`, allow_localhost: false }, null, 2);
 
-  return <Tabs defaultActiveKey="laravel" items={[
+  return <Tabs className="integration-guide" defaultActiveKey="laravel" items={[
     { key: 'laravel', label: 'Laravel', children: <>
       {releaseInfo('laravel')}
           <h3>Chép bộ tích hợp Laravel 10–13</h3>
@@ -90,20 +122,34 @@ export function IntegrationGuide({ website, copy }: { website: Website; copy: (t
           <p>Đặt ID form là <code>news-main-form</code>, có <code>@csrf</code>, rồi chép dòng sau cạnh nút lưu.</p>
           <pre className="code-block">{formSnippet}</pre>
           <Button icon={<CopyOutlined />} onClick={() => void copy(formSnippet)}>Sao chép vị trí nút</Button>
-
           <h3>Đặt AIConfig trong layout admin</h3>
           <p>Chép cả đoạn sau vào <code>resources/views/admin/layouts/js.blade.php</code>, ngoài các thẻ script đang có. Nạp file này ở cuối layout admin bằng <code>@include('admin.layouts.js')</code>.</p>
-          <p>Đây là file JS được dùng trong BaseCodeAW và bộ ZIP. Mẫu dùng <code>news-main-form</code>, nút <code>news-ai-writer</code>, tiêu đề <code>name[$lang]</code> và nội dung <code>content[$lang]</code>. Website khác đổi ID và tên trường theo form của mình. Khai báo ngôn ngữ trong <code>AIConfig.languages</code>, ví dụ <code>{"{ source: 'en', targets: ['vi'] }"}</code>.</p>
+          <p>Mẫu JS khai báo <code>languages</code> và đầy đủ bảy trường trong <code>fields</code> ngay đầu AIConfig. Đổi <code>mount</code>, <code>form</code> và các selector theo HTML thực tế; bỏ mapping của những trường form không có.</p>
+          <h3>Fields cho form nhiều ngôn ngữ</h3>
+          <p>Dùng <code>$lang</code> cho các trường có phiên bản riêng theo ngôn ngữ. Ví dụ form dùng <code>ten</code>, <code>noidung</code>, <code>mota</code>:</p>
+          <pre className="code-block">{multilingualFieldsSnippet}</pre>
+          <Button icon={<CopyOutlined />} onClick={() => void copy(multilingualFieldsSnippet)}>Sao chép cấu hình đa ngôn ngữ</Button>
+          <p>Widget thay <code>$lang</code> bằng mã ngôn ngữ để tìm <code>ten[vi]</code>, <code>ten[en]</code>, <code>ten[ja]</code> và các trường tương ứng. Các trường phải có trong form, kể cả ở tab đang ẩn. Đặt <code>source</code> và <code>targets</code> theo ngôn ngữ website thực sự hỗ trợ. Trang dùng <code>name</code> đổi selector tiêu đề thành <code>{`[name="name[$lang]"]`}</code>.</p>
+          <h3>Fields cho form một ngôn ngữ</h3>
+          <p>Đặt <code>targets: []</code> và dùng selector đúng tên input của trang:</p>
+          <pre className="code-block">{singleLanguageFieldsSnippet}</pre>
+          <Button icon={<CopyOutlined />} onClick={() => void copy(singleLanguageFieldsSnippet)}>Sao chép cấu hình một ngôn ngữ</Button>
+          <p>Nếu slug dùng chung trong form đa ngôn ngữ, đặt <code>{`Slug: '[name="slug"]'`}</code>. Selector cố định chỉ được điền từ bản gốc; các bản dịch không ghi đè slug chung. Quy tắc tương tự áp dụng cho SEO dùng chung.</p>
+          <p>Giữ nguyên các khóa <code>Title</code> (tiêu đề), <code>Content</code> (nội dung), <code>Desc</code> (mô tả ngắn), <code>Slug</code>, <code>Description</code> (mô tả SEO), <code>Keywords</code> (các từ khóa liên quan, ngăn cách bằng dấu phẩy) và <code>FocusKeyword</code> (từ khóa chính đã nhập khi yêu cầu viết). <code>FocusKeyword</code> được điền riêng, không lấy từ danh sách <code>Keywords</code>.</p>
+          <p>Chỉ khai báo những trường muốn điền; mỗi selector cần khớp đúng một trường trong form. Nếu form không có ô SEO hoặc từ khóa chính, bỏ các mapping tương ứng. <code>Content</code> và <code>Desc</code> tự hỗ trợ CKEditor.</p>
+          <p>Nếu nhiều trang dùng chung layout nhưng khác tên trường, truyền <code>aiFields</code> khi đặt nút ở từng trang:</p>
+          <pre className="code-block">{pageFieldsSnippet}</pre>
+          <Button icon={<CopyOutlined />} onClick={() => void copy(pageFieldsSnippet)}>Sao chép fields theo trang</Button>
+          <p><code>aiFields</code> thay toàn bộ <code>AIConfig.fields</code> cho trang đó; ngôn ngữ vẫn lấy từ <code>AIConfig.languages</code> trong layout. Form một ngôn ngữ có thể truyền selector cố định như mẫu trên. Khi cập nhật bộ cũ, chép lại các view <code>crm-ai/writer.blade.php</code>, <code>admin/layouts/js.blade.php</code> từ ZIP mới và điều chỉnh cấu hình theo form.</p>
           <p>Để tự CSS nút Viết bài AI, đổi <code>customStyle: false</code> thành <code>customStyle: true</code> trong AIConfig.
             Nút có class <code>.crm-ai-launch</code> nằm trong HTML của website; popup tiếp tục dùng CSS riêng của widget. Thêm CSS vào stylesheet admin, ví dụ:</p>
           <p>Có thể thêm <code>{"customClass: 'btn btn-primary'"}</code> để gắn class vào nút.
             Khi dùng cùng <code>customStyle: true</code>, nút có <code>{'class="crm-ai-launch btn btn-primary"'}</code> và nhận CSS của website.</p>
           <pre className="code-block">{customButtonCss}</pre>
           <Button icon={<CopyOutlined />} onClick={() => void copy(customButtonCss)}>Sao chép CSS nút</Button>
-          <p>Mẫu AIConfig và script:</p>
+          <p>Mẫu AIConfig và script đầy đủ. Khai báo <code>languages</code> và <code>fields</code> ngay đầu file; mẫu có cả <code>Description</code>, <code>Keywords</code>, <code>FocusKeyword</code>. Đổi selector theo form và bỏ những trường không có:</p>
           <pre className="code-block">{widgetSnippet}</pre>
           <Button icon={<CopyOutlined />} onClick={() => void copy(widgetSnippet)}>Sao chép AIConfig và script</Button>
-          <p>Với BaseCodeAW đã tích hợp, chỉnh AIConfig trong <code>resources/views/admin/layouts/js.blade.php</code>. Trang cấu hình AI là <code>/admin/crm-ai/settings</code>.</p>
       <h3>Cập nhật bộ Laravel</h3>
       <p>Sao lưu trước khi cập nhật. Chép các file dịch vụ, controller, middleware, provider, route và view của bộ mới.
         Giữ giá trị connection, prefix và middleware trong <code>config/crm-ai.php</code>;

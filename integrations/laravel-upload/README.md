@@ -2,6 +2,8 @@
 
 Bộ ZIP chứa các file để chép vào dự án Laravel hiện có. Dịch vụ ký yêu cầu và lưu key nằm trong `app/CrmAi`. Controller, middleware, route, config và view đặt theo cấu trúc Laravel. Script nút viết được tải từ CRM.
 
+Mỗi website cấu hình kết nối, prefix, ngôn ngữ và mapping trường theo ứng dụng của mình. Các selector trong mẫu là ví dụ để điều chỉnh theo form thực tế.
+
 ## Chép file
 
 Giải nén ZIP rồi chép các file theo bảng sau. Các đường dẫn tính từ thư mục gốc chứa `artisan` của website.
@@ -63,9 +65,70 @@ Trong layout admin, sau script của trang và trước thẻ đóng body, thêm
 @include('admin.layouts.js')
 ```
 
-File `resources/views/admin/layouts/js.blade.php` được dùng nguyên bản trong BaseCodeAW, bộ ZIP và hướng dẫn CRM. AIConfig dùng nút `#news-ai-writer`, form `#news-main-form`, tiêu đề `name[$lang]` và nội dung `content[$lang]`. Các dòng `add(...)` map thêm mô tả, slug, SEO và có callback CKEditor. Khi ứng dụng dùng tên trường khác, chỉnh mapping theo form.
+File `resources/views/admin/layouts/js.blade.php` trong ZIP cũng là nguồn của đoạn script ở hướng dẫn CRM. Khai báo `languages` và đầy đủ bảy trường trong `fields` ngay đầu AIConfig. Mẫu dùng nút `#news-ai-writer`, form `#news-main-form`, các trường `name[$lang]`, `content[$lang]`, `desc[$lang]`, `slug[$lang]` và ba trường SEO `seo[description][$lang]`, `seo[keywords][$lang]`, `seo[focus_keyword][$lang]`; đổi selector theo HTML thực tế của trang và bỏ mapping của những trường form không có.
 
-Đặt `AIConfig.languages` trong chính file JS này, ví dụ `{ source: 'en', targets: ['vi'] }`. Mặc định là `{ source: 'vi', targets: [] }`. Các ngôn ngữ đích cần có trường tương ứng trên form.
+### Fields và ngôn ngữ
+
+Giữ nguyên các khóa `Title` (tiêu đề), `Content` (nội dung), `Desc` (mô tả ngắn), `Slug`, `Description` (mô tả SEO), `Keywords`, `FocusKeyword`. Giá trị bên phải là CSS selector khớp đúng một trường trong form. Chỉ khai báo những trường muốn điền; các trường không khai báo sẽ không được tự thêm vào mapping.
+
+`Keywords` nhận các từ khóa liên quan trong bài, ngăn cách bằng dấu phẩy. `FocusKeyword` nhận từ khóa chính đã nhập khi yêu cầu viết, được điền riêng và không lấy từ `Keywords`. Nếu form không có các ô SEO hoặc từ khóa chính, bỏ mapping tương ứng.
+
+Với form nhiều ngôn ngữ, dùng `$lang` cho các trường có phiên bản riêng. Ví dụ form dùng `ten`, `noidung`, `mota`:
+
+```javascript
+languages: {
+    source: 'vi',
+    targets: ['en', 'ja'],
+},
+fields: {
+    Title: '[name="ten[$lang]"]',
+    Content: '[name="noidung[$lang]"]',
+    Desc: '[name="mota[$lang]"]',
+    Slug: '[name="slug[$lang]"]',
+    Description: '[name="seo[description][$lang]"]',
+    Keywords: '[name="seo[keywords][$lang]"]',
+    FocusKeyword: '[name="seo[focus_keyword][$lang]"]',
+},
+```
+
+Widget thay `$lang` bằng mã ngôn ngữ: `ten[vi]`, `ten[en]`, `ten[ja]`. Form phải có đầy đủ các trường tương ứng, kể cả trong các tab đang ẩn. Đổi `source` và `targets` theo các ngôn ngữ website thực sự hỗ trợ. Nếu tiêu đề dùng `name`, đổi selector thành `[name="name[$lang]"]`.
+
+Với form một ngôn ngữ dùng tên trường cố định:
+
+```javascript
+languages: { source: 'vi', targets: [] },
+fields: {
+    Title: '[name="ten"]',
+    Content: '[name="noidung"]',
+    Desc: '[name="mota"]',
+    Slug: '[name="slug"]',
+    Description: '[name="seo[description]"]',
+    Keywords: '[name="seo[keywords]"]',
+    FocusKeyword: '[name="seo[focus_keyword]"]',
+},
+```
+
+Nếu slug dùng chung cho các ngôn ngữ, đặt `Slug: '[name="slug"]'` trong mapping đa ngôn ngữ. Selector cố định chỉ áp dụng cho bản gốc; các bản dịch không ghi đè slug chung. Quy tắc tương tự áp dụng cho SEO dùng chung. Có thể dùng ID như `Content: '#editor-content'` khi chỉ điền bản gốc.
+
+Các mapping `Content` và `Desc` tự đọc/ghi CKEditor nếu có instance trùng ID của textarea; input/textarea thường vẫn dùng được. Với editor khác, có thể truyền `{ selector, setValue, getValue }`; callback riêng được giữ nguyên.
+
+Nếu các trang dùng chung layout nhưng có tên trường khác nhau, truyền mapping tại vị trí đặt nút của từng trang:
+
+```blade
+@include('crm-ai.writer', ['aiFields' => [
+    'Title' => '[name="ten[$lang]"]',
+    'Content' => '[name="noidung[$lang]"]',
+    'Desc' => '[name="mota[$lang]"]',
+    'Slug' => '[name="slug[$lang]"]',
+    'Description' => '[name="seo[description][$lang]"]',
+    'Keywords' => '[name="seo[keywords][$lang]"]',
+    'FocusKeyword' => '[name="seo[focus_keyword][$lang]"]',
+]])
+```
+
+`aiFields` thay toàn bộ `AIConfig.fields` cho trang đó; ngôn ngữ vẫn lấy từ `AIConfig.languages` trong layout. `aiFields` nhận selector hoặc object có `selector`; callback JavaScript đặt trong `AIConfig.fields`. Form một ngôn ngữ có thể truyền các selector cố định như ví dụ trên.
+
+Khi cập nhật bộ cũ, chép lại `resources/views/admin/layouts/js.blade.php` và `resources/views/crm-ai/writer.blade.php`, rồi điều chỉnh `languages` và `fields` theo form trước khi dùng.
 
 ### Tự CSS nút viết bài
 
@@ -78,6 +141,15 @@ const AIConfig = {
     customStyle: true,
     customClass: 'btn btn-primary',
     languages: { source: 'vi', targets: [] },
+    fields: {
+        Title: '[name="name[$lang]"]',
+        Content: '[name="content[$lang]"]',
+        Desc: '[name="desc[$lang]"]',
+        Slug: '[name="slug[$lang]"]',
+        Description: '[name="seo[description][$lang]"]',
+        Keywords: '[name="seo[keywords][$lang]"]',
+        FocusKeyword: '[name="seo[focus_keyword][$lang]"]',
+    },
 };
 ```
 
@@ -100,12 +172,6 @@ Thêm CSS vào stylesheet của trang admin; selector cho nút là `.crm-ai-laun
 Widget lấy cấu hình key riêng qua endpoint có đăng nhập admin và tải script từ CRM. Người dùng nhập tiêu chí, nhận bản gốc trong cửa sổ xem trước rồi chọn **Áp dụng** hoặc **Dịch sang các ngôn ngữ khác**. Dịch xử lý tất cả ngôn ngữ đích theo cấu hình từ chính bản gốc đang xem trước; sau khi hoàn tất chỉ còn nút **Áp dụng** để điền cả bản gốc và các bản dịch vào form. Chưa bấm Áp dụng thì nội dung trên form chưa thay đổi. Website không cần thêm input ẩn hoặc lưu mã bài, mã job CRM.
 
 Sau khi áp dụng, nút **Viết bài AI** bắt đầu lại từ bước nhập tiêu chí để viết bài mới. Widget không dùng bài đã điền trên form để tiếp tục dịch. Nếu một bản dịch lỗi, **Thử lại bản dịch** giữ các bản đã hoàn tất và tiếp tục phần còn thiếu.
-
-Nếu slug hoặc SEO chỉ có ở ngôn ngữ gốc, truyền tùy chọn khi include nút.
-
-```blade
-@include('crm-ai.writer', ['slugMultilang' => false, 'seoMultilang' => false])
-```
 
 Website có CSP cần cho phép origin CRM trong `script-src` và `connect-src`, cùng script inline theo chính sách website.
 

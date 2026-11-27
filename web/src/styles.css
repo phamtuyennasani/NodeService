@@ -147,6 +147,8 @@ code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; 
 .profile-description { margin-bottom: 20px; }
 .drawer-actions { margin-top: 16px; }
 .code-block { max-width: 100%; padding: 16px; border: 1px solid #dbe0d3; border-radius: 9px; background: #f4f6ee; color: #2d4936; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.integration-guide :is(.ant-space, .ant-btn) + p { margin-top: 16px; }
+.integration-guide .ant-btn + h3 { margin-top: 24px; }
 
 @media (max-width: 600px) {
   .page-heading { gap: 12px; margin-bottom: 20px; }

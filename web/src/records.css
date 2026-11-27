@@ -135,10 +135,13 @@
 .record-provider-detail .ant-table-thead > tr > th { white-space: nowrap; }
 
 /* Detail views */
-.job-detail-drawer .ant-drawer-header { flex-wrap: wrap; gap: 12px; }
-.job-detail-drawer .ant-drawer-header-title { min-width: 160px; }
-.job-detail-drawer .ant-drawer-extra { max-width: 100%; margin-inline-start: 0; }
-.job-detail-drawer .ant-drawer-extra .ant-space { max-width: 100%; }
+.job-detail-drawer .ant-drawer-header { flex-direction: column; align-items: stretch; gap: 16px; }
+.job-detail-drawer .ant-drawer-header-title { flex: none; min-width: 0; width: 100%; }
+.job-detail-drawer .ant-drawer-title { line-height: 1.35; text-wrap: pretty; }
+.job-detail-drawer .ant-drawer-extra { width: 100%; max-width: 100%; margin-inline-start: 0; }
+.job-detail-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 16px; }
+.job-detail-actions-main, .job-detail-actions-secondary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; }
+.job-detail-actions-secondary { margin-inline-start: auto; }
 .quota-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 20px; }
 .quota { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fafbf6; }
 .quota-header, .quota-detail { display: flex; justify-content: space-between; align-items: baseline; gap: 5px; flex-wrap: wrap; }
@@ -205,6 +208,7 @@
 }
 
 @media (max-width: 540px) {
+  .job-detail-actions-secondary { margin-inline-start: 0; }
   .record-providers { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 12px; }
   .record-providers > button { padding: 12px 8px; gap: 8px; }
   .record-provider-info strong { font-size: 13px; }

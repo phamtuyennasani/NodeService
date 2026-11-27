@@ -6,7 +6,7 @@ Các lớp bảo vệ trong ứng dụng giảm khả năng làm cạn tài nguy
 
 Mỗi website dùng site token cùng một cặp khóa EC P-256 độc lập. Backend PHP giữ khóa riêng ngoài public root và Git. CRM lưu khóa công khai. Khi nâng cấp, migration bật yêu cầu chữ ký cho các website hiện có. Website mới cũng yêu cầu khóa ký. Lịch đã được CRM tiếp nhận tiếp tục chạy bằng worker.
 
-Với BaseCodeAW, mở `/admin/crm-ai/settings` và bấm **Tạo khóa máy chủ**, rồi sao chép khóa công khai tại cùng trang. Trong CRM, mở **Website → Kết nối API → Đăng ký khóa ký** và dán khóa công khai. Thay khóa yêu cầu phiên CRM hợp lệ và xác nhận mật khẩu như các thao tác nhạy cảm khác. Đổi token giữ khóa ký đã đăng ký. Giữ bản sao an toàn của khóa riêng khi chuyển server hoặc đăng ký khóa công khai mới sau khi đổi khóa.
+Với bộ Laravel, mở `route('crm-ai.settings')` (mặc định `/crm-ai/settings`, tùy prefix đã cấu hình) và bấm **Tạo khóa máy chủ**, rồi sao chép khóa công khai tại cùng trang. Trong CRM, mở **Website → Kết nối API → Đăng ký khóa ký** và dán khóa công khai. Thay khóa yêu cầu phiên CRM hợp lệ và xác nhận mật khẩu như các thao tác nhạy cảm khác. Đổi token giữ khóa ký đã đăng ký. Giữ bản sao an toàn của khóa riêng khi chuyển server hoặc đăng ký khóa công khai mới sau khi đổi khóa.
 
 API quản trị `PUT /api/crm/websites/{id}/signing-key` nhận `{ public_key, expected_fingerprint }`. Lần đầu gửi `expected_fingerprint: null`. Khi thay khóa, gửi vân tay đang hiển thị trên CRM để tránh ghi đè thay đổi đồng thời. API dùng site token không có quyền đăng ký hoặc thay khóa.
 
@@ -32,7 +32,7 @@ function crmRequestProof(string $siteId, string $token, string $privateKeyPem,
 }
 ```
 
-Gửi đúng chuỗi `$body` đã ký, cùng các header tương ứng. Lượt gọi server-to-server thường dùng origin rỗng. Khi lấy quyền cho widget, backend ký origin trang biên tập và path `/v1/widget/{site_id}/previews`. Chỉ cấp quyền sau khi xác thực đăng nhập, quyền biên tập và CSRF. Script nhúng đặt `data-authorize-url` trỏ tới endpoint PHP cùng origin. BaseCodeAW dùng `POST /admin/crm-ai/authorize`, nhận `{ body, id }` và trả `{ proof }`. Widget gửi nguyên body và mã yêu cầu tới CRM cùng chữ ký vừa cấp.
+Gửi đúng chuỗi `$body` đã ký, cùng các header tương ứng. Lượt gọi server-to-server thường dùng origin rỗng. Khi lấy quyền cho widget, backend ký origin trang biên tập và path `/v1/widget/{site_id}/previews`. Chỉ cấp quyền sau khi xác thực đăng nhập, quyền biên tập và CSRF. Script nhúng đặt `data-authorize-url` trỏ tới endpoint PHP cùng origin. Với bộ Laravel, lấy URL bằng `route('crm-ai.authorize')` (mặc định `POST /crm-ai/authorize`, tùy prefix đã cấu hình), nhận `{ body, id }` và trả `{ proof }`. Widget gửi nguyên body và mã yêu cầu tới CRM cùng chữ ký vừa cấp.
 
 Chữ ký script có hạn một giờ phục vụ tải danh mục model. Với website đã bật bảo vệ, tạo bài cần chữ ký riêng cho từng yêu cầu. Nonce được lưu trong MongoDB dùng chung giữa các replica. Với thao tác ghi, ghi nonce và cập nhật dữ liệu/hạn mức nằm trong cùng transaction. Gửi lại cùng yêu cầu tạo bài cùng `Idempotency-Key` trả cùng job, giữ một lượt. Khi thử lại sau lỗi mạng, giữ nguyên body và mã yêu cầu, lấy chữ ký mới nếu chữ ký trước đã hết hạn. Nonce đã dùng cho yêu cầu khác trả `409 site_proof_replayed`. Kho chống replay lỗi trả `503`, thiếu/sai/hết hạn chữ ký trả `401`, website chưa đăng ký khóa trả `403`.
 

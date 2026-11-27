@@ -2,7 +2,7 @@
 
 Vào **Website → chọn website → Hướng dẫn tích hợp**, chọn **Laravel** hoặc **PHP thuần**. Mỗi tab hiển thị phiên bản, môi trường hỗ trợ, nút tải ZIP, cách cài và cách cập nhật. Nút tải sử dụng phiên đăng nhập và chữ ký trình duyệt CRM hiện có.
 
-Laravel là bộ chép file cho Laravel 10–13, dùng cùng AIConfig với BaseCodeAW. PHP thuần là thư viện PHP 8.2+ hiện có, có autoloader và các file ví dụ, hỗ trợ giải nén không cần Composer. Nội dung hướng dẫn lấy từ các file nguồn của đúng bộ tích hợp khi build.
+Laravel là bộ chép file cho Laravel 10–13, cấu hình AIConfig theo form và ngôn ngữ của từng website. PHP thuần là thư viện PHP 8.2+ hiện có, có autoloader và các file ví dụ, hỗ trợ giải nén không cần Composer. Nội dung hướng dẫn lấy từ các file nguồn của đúng bộ tích hợp khi build.
 
 ## Phát hành bản cập nhật
 

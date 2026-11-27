@@ -217,7 +217,7 @@ export function Websites({ query }: { query: URLSearchParams }) {
     </Drawer>
     <Modal title="Đăng ký khóa ký máy chủ" open={Boolean(signingSite)} onCancel={() => setSigningSite(null)}
       confirmLoading={savingKey} onOk={() => void saveSigningKey()} okText="Xác nhận khóa ký" okButtonProps={{ disabled: !publicKey.trim() }}>
-      <p>Với Laravel, mở <code>route('crm-ai.settings')</code> và bấm <strong>Tạo khóa máy chủ</strong>; BaseCodeAW dùng <code>/admin/crm-ai/settings</code>. Với PHP thuần, chạy lệnh <code>install</code> trong hướng dẫn PHP. Dán khóa công khai P-256 bên dưới.</p>
+      <p>Với Laravel, mở <code>route('crm-ai.settings')</code> và bấm <strong>Tạo khóa máy chủ</strong>. Với PHP thuần, chạy lệnh <code>install</code> trong hướng dẫn PHP. Dán khóa công khai P-256 bên dưới.</p>
       <Input.TextArea aria-label="Khóa công khai máy chủ" value={publicKey} onChange={event => setPublicKey(event.target.value)} rows={6} maxLength={1024} placeholder="-----BEGIN PUBLIC KEY-----" />
     </Modal>
     <Modal title={editing === 'new' ? 'Thêm website' : 'Chỉnh sửa website'} open={Boolean(editing)} onCancel={() => setEditing(null)}

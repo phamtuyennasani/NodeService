@@ -6,6 +6,8 @@ Bộ [Laravel CRM AI dạng chép file](../integrations/laravel-upload/README.md
 service, controller, middleware, config, route, Blade và mẫu AIConfig theo cây thư
 mục Laravel 10–13. Tạo ZIP bằng `python scripts/build-laravel-upload.py` tại dự án CRM.
 
+Khai báo rõ `AIConfig.languages` và `AIConfig.fields` theo form. Với nhiều ngôn ngữ, dùng selector như `[name="ten[$lang]"]`, `[name="noidung[$lang]"]`, `[name="mota[$lang]"]`, `[name="slug[$lang]"]`; form cần có các trường tương ứng với `source` và từng ngôn ngữ trong `targets`. Form một ngôn ngữ dùng `targets: []` và có thể dùng selector cố định như `[name="ten"]`. Slug dùng chung đặt `[name="slug"]` để chỉ bản gốc điền vào trường này. Xem [ví dụ fields và ngôn ngữ](../integrations/laravel-upload/README.md#fields-và-ngôn-ngữ).
+
 ## Package Composer
 
 Package dùng chung nằm tại [packages/laravel-crm-ai](../packages/laravel-crm-ai/README.md).
@@ -32,8 +34,9 @@ yêu cầu cho API viết ngay, lên lịch, viết lại và lấy kết quả.
 có hạn 60 giây. CRM ghi nonce dùng một lần cùng giao dịch tạo job và giữ hạn mức.
 Gửi lại cùng `Idempotency-Key` và nội dung trả cùng job.
 
-BaseCodeAW hiện dùng bộ chép file ở phần đầu tài liệu. Kết nối đặt trong
-`config/crm-ai.php`; trang cấu hình là `/admin/crm-ai/settings`. Dịch vụ nằm trong
+Với bộ chép file ở phần đầu tài liệu, kết nối đặt trong
+`config/crm-ai.php`; mở trang cấu hình bằng `route('crm-ai.settings')`, mặc định
+`/crm-ai/settings` hoặc theo prefix đã cấu hình. Dịch vụ nằm trong
 `app/CrmAi`, khóa và key mã hóa nằm trong `storage/app/private/crm-ai/`.
 AIConfig và ngôn ngữ đặt trong `resources/views/admin/layouts/js.blade.php`;
 không cần input ẩn hoặc lưu mã bài, mã job CRM vào dữ liệu bài viết.
@@ -292,4 +295,11 @@ JSON trên chỉ minh họa **cấu trúc phản hồi**, không phải nội du
 
 ## Chạy thử cục bộ
 
-Chạy CRM/API và worker từ `.env` hiện tại bằng `npm start`, rồi chạy `npm run dev:widget` trong terminal khác. Mở `http://127.0.0.1:3220` và đặt `WIDGET_SITE_ID` theo ID của một website dùng hạn mức dịch vụ. Trang này dùng adapter cục bộ để tạo job thật, gọi AI và sử dụng hạn mức của website. CRM xử lý job bằng worker đang chạy. Để kiểm tra chữ ký của trang biên tập hoặc website chỉ dùng key riêng, dùng [luồng trực tiếp trên BaseCodeAW](#kiểm-tra-luồng-trực-tiếp-trên-basecodeaw).
+Chạy CRM/API và worker từ `.env` hiện tại bằng `npm start`, rồi chạy `npm run dev:widget` trong terminal khác. Mở `http://127.0.0.1:3220` và đặt `WIDGET_SITE_ID` theo ID của một website dùng hạn mức dịch vụ. Trang này dùng adapter cục bộ để tạo job thật, gọi AI và sử dụng hạn mức của website. CRM xử lý job bằng worker đang chạy. Để kiểm tra chữ ký của trang biên tập hoặc website chỉ dùng key riêng, làm theo [các bước kiểm tra trên website](#kiểm-tra-tích-hợp-trên-website).
+
+## Kiểm tra tích hợp trên website
+
+1. Chạy CRM/API và worker. Đăng nhập trang quản trị của website đã tích hợp, kiểm tra kết nối trong `config/crm-ai.php` và mapping `languages`, `fields` theo form thực tế.
+2. Mở `route('crm-ai.settings')` theo prefix của website, tạo khóa máy chủ và đăng ký khóa công khai trong **CRM → Website → Kết nối API → Đăng ký khóa ký**. Nếu dùng key AI riêng, cấu hình Base URL, API key và Model tại trang này.
+3. Mở form biên tập có nút **Viết bài AI**, chọn model và gửi yêu cầu. Kiểm tra job tương ứng trong **Yêu cầu viết** của CRM; đây là luồng tạo bài thật qua worker.
+4. Khi có bản xem trước, chọn **Áp dụng** hoặc dịch sang các ngôn ngữ đích đã cấu hình. Kiểm tra tiêu đề, nội dung, slug và các trường SEO được điền đúng selector của từng ngôn ngữ; lưu bài bằng chức năng hiện có của website.

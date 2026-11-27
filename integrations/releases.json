@@ -1,12 +1,12 @@
 {
   "laravel": {
-    "version": "1.0.5",
-    "filename": "laravel-crm-ai-upload-1.0.5.zip",
+    "version": "1.0.9",
+    "filename": "laravel-crm-ai-upload-1.0.9.zip",
     "compatibility": "Laravel 10–13"
   },
   "php": {
-    "version": "1.2.3",
-    "filename": "nodeservice-php-crm-ai-1.2.3.zip",
+    "version": "1.2.4",
+    "filename": "nodeservice-php-crm-ai-1.2.4.zip",
     "compatibility": "PHP 8.2+, cURL, OpenSSL, JSON"
   }
 }

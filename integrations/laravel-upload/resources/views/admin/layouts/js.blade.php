@@ -14,6 +14,15 @@
             source: 'vi',
             targets: [],
         },
+        fields: {
+            Title: '[name="name[$lang]"]',
+            Content: '[name="content[$lang]"]',
+            Desc: '[name="desc[$lang]"]',
+            Slug: '[name="slug[$lang]"]',
+            Description: '[name="seo[description][$lang]"]',
+            Keywords: '[name="seo[keywords][$lang]"]',
+            FocusKeyword: '[name="seo[focus_keyword][$lang]"]',
+        },
     };
 
     const initCrmAi = async function () {
@@ -26,6 +35,15 @@
         if (!window.AIWriter) {
             mount.textContent = 'Chưa tải được công cụ viết AI. Hãy tải lại trang.';
             return;
+        }
+
+        let configuredFields = AIConfig.fields;
+        if (mount.hasAttribute('data-fields')) {
+            try { configuredFields = JSON.parse(mount.dataset.fields) ?? configuredFields; }
+            catch (_) {
+                mount.textContent = 'Kiểm tra cấu hình fields của trang.';
+                return;
+            }
         }
 
         const slugMultilang = mount.dataset.slugMultilang !== '0';
@@ -50,12 +68,13 @@
                 } });
             });
         };
-        const fields = {};
+        const readEditor = element => window.CKEDITOR?.instances[element.id]?.getData() ?? element.value ?? element.textContent ?? '';
+        const defaultFields = {};
         const add = (field, name, setter, localized = true) => {
             const target = selector(name, localized ? '$lang' : sourceLocale);
-            if (form.querySelector(selector(name, sourceLocale))) fields[field] = setter ? {
+            if (form.querySelector(selector(name, sourceLocale))) defaultFields[field] = setter ? {
                 selector: target, setValue: setter,
-                getValue: element => window.CKEDITOR?.instances[element.id]?.getData() ?? element.value,
+                getValue: readEditor,
             } : target;
         };
         add('Title', 'name', (element, value) => {
@@ -77,6 +96,16 @@
         add('Description', 'seo[description]', undefined, seoMultilang);
         add('Keywords', 'seo[keywords]', undefined, seoMultilang);
         add('FocusKeyword', 'seo[focus_keyword]', undefined, seoMultilang);
+
+        const fields = configuredFields == null ? defaultFields : Object.fromEntries(
+            Object.entries(configuredFields).map(([field, target]) => [field,
+                target && (field === 'Content' || field === 'Desc') ? {
+                    setValue: writeEditor,
+                    getValue: readEditor,
+                    ...(typeof target === 'string' ? { selector: target } : target),
+                } : target,
+            ]),
+        );
 
         try {
             const response = await fetch(crmScript.dataset.credentialsUrl, {

@@ -1,10 +1,10 @@
 # NodeService
 
-Dịch vụ Node.js nhận yêu cầu viết ngay, lên lịch và viết lại từ các website Laravel. CRM tiếng Việt dùng React, Ant Design và Recharts, mở tại trang gốc. Fastify phục vụ API. MongoDB lưu khách hàng, website, hạn mức, bài viết, lần gọi AI và lượt giao webhook.
+NodeService là CRM tiếng Việt để quản lý yêu cầu viết bài AI, lịch viết, bản viết lại và các bản dịch theo từng website. Website Laravel hoặc PHP thuần có thể gọi API và gắn widget vào trang biên tập. CRM theo dõi hạn mức, chi phí AI và việc giao bài theo lịch qua webhook. Giao diện dùng React, Ant Design và Recharts, API dùng Fastify và dữ liệu lưu trong MongoDB.
 
 ## Chạy dịch vụ
 
-Cần Node.js 24 LTS và MongoDB Atlas hoặc MongoDB 7 trở lên chạy dưới dạng replica set hoặc sharded cluster. Dịch vụ dùng transaction và change stream nên MongoDB standalone không được hỗ trợ. Khi chạy cục bộ, có thể dùng replica set một nút.
+Khuyến nghị Node.js 24 LTS. Dùng MongoDB Atlas hoặc MongoDB 7 trở lên chạy dưới dạng replica set hoặc sharded cluster để hỗ trợ transaction và change stream. Khi chạy cục bộ, có thể dùng replica set một nút. Lệnh `npm run build` cần Python 3 gọi được bằng `python` để đóng gói các bộ tích hợp.
 
 ```sh
 npm ci
@@ -14,6 +14,8 @@ openssl rand -base64 32
 ```
 
 Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ MongoDB vào `MONGODB_URI` và URL CRM vào `APP_ORIGIN`. Với cấu hình mẫu cục bộ, khởi động MongoDB với `--replSet rs0`, chạy `rs.initiate()` trong `mongosh` một lần và đợi nút trở thành PRIMARY. Tài khoản MongoDB cần quyền tạo collection và quản lý chỉ mục trong cơ sở dữ liệu của ứng dụng. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Có thể đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho cấu hình cũ. Cách quản lý mới là mở **Nhà cung cấp AI** trong CRM, chọn **Cấu hình key** hoặc **Cấu hình kết nối**, rồi nhập key. NodeService mã hóa key bằng `ENCRYPTION_KEY` trước khi ghi vào MongoDB và chỉ hiển thị trạng thái đã cấu hình.
+
+Đặt `CRM_ADMIN_EMAIL` trong `.env` thành địa chỉ đã xác minh của quản trị viên trước khi tạo tài khoản. Khai báo cấu hình SMTP trong `.env` để CRM gửi OTP tới địa chỉ này khi đăng nhập lần đầu.
 
 ```sh
 npm run migrate
@@ -28,7 +30,9 @@ Trong **Yêu cầu viết → Chi tiết**, nút **Xuất PDF** xuất hiện kh
 
 Đăng nhập trên thiết bị mới yêu cầu OTP gửi tới email đã xác minh của tài khoản. Vào **Cài đặt → Email / SMTP** để cấu hình máy chủ, cổng, bảo mật, email gửi và thông tin đăng nhập SMTP; cổng 465 thường dùng TLS trực tiếp, cổng 587 dùng STARTTLS bắt buộc. Có thể dùng các biến `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM` và cặp `SMTP_USER`/`SMTP_PASSWORD` để khởi tạo khi chưa có cấu hình trong CRM. Không ghi OTP hoặc thông tin SMTP vào log. Khi tạo tài khoản bằng CLI, có thể cấp sẵn hộp thư do người vận hành đã xác minh qua `CRM_ADMIN_EMAIL`. Khi nâng cấp lên OTP, phiên đã gắn khóa trình duyệt và vẫn hợp lệ tiếp tục dùng được đến hạn thông thường: mở **Tài khoản** để xác minh email sau khi cấu hình SMTP, trước khi đăng xuất. Đăng nhập từ thiết bị chưa tin cậy không bỏ qua OTP khi thiếu email đã xác minh hoặc SMTP. Nếu không còn phiên hợp lệ, người vận hành cấp email bằng `npm run admin:email -- <username>` với `CRM_ADMIN_EMAIL` và mật khẩu hiện tại (nhập ẩn hoặc `CRM_ADMIN_PASSWORD`); lệnh này thu hồi toàn bộ phiên, thiết bị tin cậy và yêu cầu OTP cũ, không thay mật khẩu. Không đặt bí mật trực tiếp trong command line. Chi tiết xem [hướng dẫn bảo mật](docs/security.md).
 
-Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthropic, xAI hoặc **OpenAI Compatible** để thêm mã model, đặt tên hiển thị và bật các model muốn cung cấp. OpenAI, Anthropic và xAI dùng **Cấu hình key** để nhập API key. Với OpenAI Compatible, mở **Cấu hình kết nối**, nhập Base URL của API tương thích OpenAI và API key. Ở bản cài mới, GPT-4.1 được bật sẵn. Sau đó cấu hình **Khách hàng**, **Website** và **Bảng giá model**. Trong hồ sơ website, dùng **Cấp token** và **Cấp khóa ký** để lấy hai giá trị cho Laravel. Thêm model vào danh sách cho phép khi cấu hình gói dịch vụ. [CRM tại localhost:3210](http://localhost:3210/)
+Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthropic, xAI hoặc **OpenAI Compatible** để thêm mã model, đặt tên hiển thị và bật các model muốn cung cấp. OpenAI, Anthropic và xAI dùng **Cấu hình key** để nhập API key. Với OpenAI Compatible, mở **Cấu hình kết nối**, nhập Base URL của API tương thích OpenAI và API key. Ở bản cài mới, GPT-4.1 được bật sẵn. Sau đó cấu hình **Khách hàng**, **Website** và **Bảng giá model**. Thêm model vào danh sách cho phép khi cấu hình gói dịch vụ. [Mở CRM ở localhost](http://localhost:3210/)
+
+Trong **Website → Kết nối API**, chọn **Cấp token** để lấy thông tin kết nối, rồi chọn **Đăng ký khóa ký** để dán khóa công khai do backend website tạo. Nếu website nhận bài theo lịch, dùng **Cấp khóa webhook** để lấy khóa xác minh webhook.
 
 Để dùng nhiều API tương thích OpenAI, mở tab dạng kết nối **OpenAI Compatible** trong **Nhà cung cấp AI**, rồi bấm **Thêm provider**. Các provider nằm trong danh sách bên trong tab này; chọn một provider để quản lý cấu hình và model của nó. Mỗi kết nối có tên, Base URL, API key mã hóa và danh sách model riêng; **Kiểm tra kết nối** và ping model dùng đúng kết nối đang chọn. Hai provider có thể dùng cùng mã model API: CRM lưu mã nội bộ riêng để cấp quyền khách hàng, lên lịch và tính giá chính xác, rồi gửi mã model API thực khi gọi upstream. Widget hiển thị thêm tên kết nối để phân biệt. Cấu hình OpenAI Compatible cũ được hiển thị là **Kết nối mặc định** nếu chưa đổi tên; các lịch/model đã có được giữ nguyên. Các giới hạn OpenAI Compatible trong **Cài đặt** áp dụng riêng cho từng kết nối, với cửa sổ đồng thời/phút độc lập.
 
@@ -58,7 +62,7 @@ Trước khi xuất bản, người biên tập phải kiểm tra toàn bộ bà
 
 Website nên cân nhắc giải thích cách dùng tự động hóa ở vị trí phù hợp với độc giả (ví dụ trang quy trình biên tập); chỉ nêu người duyệt, bằng cấp và việc đã kiểm chứng khi có thật. Hệ thống không tự chèn một tuyên bố đã được chuyên gia kiểm duyệt vào bài. Nếu dùng dữ liệu sản phẩm/hình ảnh AI trong Merchant Center hoặc thêm structured data/alt text ở Laravel, cần kiểm tra và thực hiện các yêu cầu riêng tương ứng; luồng bài viết này chưa triển khai các bước đó. Tham khảo [hướng dẫn dùng nội dung generative AI của Google](https://developers.google.com/search/docs/fundamentals/using-gen-ai-content).
 
-Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Overview** hiển thị job và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng cho key dịch vụ. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream. Mỗi chunk mới gia hạn timeout này. `AI_OUTLINE_TIMEOUT_MS` và `AI_SEO_REPAIR_TIMEOUT_MS` cho phép đặt riêng thời gian chờ khi không nhận chunk cho dàn ý và chỉnh SEO. Dàn ý mặc định theo `AI_TIMEOUT_MS`, còn chỉnh SEO mặc định 90 giây.
+Mục **Yêu cầu viết** hiển thị giai đoạn đang chạy, lịch sử từng lượt gọi AI và tab **Kiểm tra SEO** cho bài hoàn tất. **Tổng quan** hiển thị yêu cầu đang xử lý và số luồng đang hoạt động. Chi phí dàn ý, viết và chỉnh SEO được ghi riêng cho key dịch vụ. `AI_TIMEOUT_MS` là thời gian tối đa không nhận dữ liệu stream. Mỗi chunk mới gia hạn timeout này. `AI_OUTLINE_TIMEOUT_MS` và `AI_SEO_REPAIR_TIMEOUT_MS` cho phép đặt riêng thời gian chờ khi không nhận chunk cho dàn ý và chỉnh SEO. Dàn ý mặc định theo `AI_TIMEOUT_MS`, còn chỉnh SEO mặc định 90 giây.
 
 CRM nhận thay đổi job, chi phí AI và trạng thái giao webhook qua SSE từ MongoDB change stream, kể cả khi API và worker chạy ở các tiến trình riêng. Danh sách chỉ tải lại thông tin của job thay đổi; khi kết nối được khôi phục hoặc quay lại tab, CRM đối chiếu lại dữ liệu để bù các sự kiện bị lỡ. Trang Tổng quan kiểm tra thêm hoạt động hiện tại mỗi 10 giây và báo cáo mỗi 60 giây khi tab hiển thị, để cập nhật heartbeat và bù gián đoạn sự kiện mà không tải lại cả trang.
 
@@ -80,24 +84,24 @@ Các tiến trình `api`, `writer`, `webhook` đều có thể dọn dẹp với
 
 Xóa bài đã hoàn tất không hoàn lại lượt viết đã dùng trong kỳ. Xóa yêu cầu còn chờ sẽ giải phóng lượt giữ tương ứng.
 
-## Package tích hợp PHP
+## Tích hợp Laravel và PHP thuần
 
-- [nodeservice/php-crm-ai](packages/php-crm-ai/README.md) dành cho PHP thuần, dùng Composer hoặc autoloader trong ZIP. Có HTTP client tự ký, helper widget, kho cấu hình AI mã hóa và trang PHP mẫu.
-- [nodeservice/laravel-crm-ai](packages/laravel-crm-ai/README.md) dành cho Laravel 10–13, có auto-discovery, Blade component và lệnh Artisan.
+Trong **Website → chọn website → Hướng dẫn tích hợp**, CRM hiển thị phiên bản, đoạn cấu hình mẫu và nút tải ZIP cho hai bộ sau.
 
-Các bản ZIP nằm trong `dist/packages`. Mỗi website đăng ký khóa ký riêng trong CRM trước khi gọi API.
+- **Laravel 10–13** dùng bộ chép file vào ứng dụng và chỉnh `AIConfig` theo form biên tập. [Hướng dẫn bộ Laravel](integrations/laravel-upload/README.md)
+- **PHP thuần 8.2+** dùng Composer hoặc autoloader trong ZIP, có HTTP client tự ký, helper widget và trang mẫu. [Hướng dẫn bộ PHP thuần](packages/php-crm-ai/README.md)
 
-`AIConfig.languages` khai báo ngôn ngữ gốc và danh sách ngôn ngữ đích, `fieldsByLocale` map kết quả vào từng tab. Sau khi CRM trả bản gốc, khách chọn Áp dụng hoặc dịch tất cả ngôn ngữ đích rồi áp dụng một lần. Xem [hướng dẫn đa ngôn ngữ](docs/multilingual.md).
-Từ 1.1.1, có thể khai báo một lần `fields` với selector như `[name="name[$lang]"]`; widget tự thay ngôn ngữ, chỉ cần `fieldsByLocale` cho các ngoại lệ.
-Widget tự tạo mã nhóm cho từng lượt viết, gom bản gốc và các bản dịch trên CRM. Sau khi áp dụng, lần viết tiếp theo bắt đầu bài mới và nhóm mới; website không cần lưu mã bài hoặc mã job CRM. Xem [hướng dẫn quản lý nhóm bài](docs/article-groups.md).
+Các ZIP được tạo trong `dist/packages` khi build. Laravel cũng có thể tích hợp qua package Composer riêng với Blade component và lệnh Artisan. [Package Composer cho Laravel](packages/laravel-crm-ai/README.md) · [Quy trình đóng gói ZIP](docs/integration-downloads.md)
 
-## API dành cho Laravel
+## API cho website
 
-Danh mục URL để tự chèn liên kết nội bộ: xem [hướng dẫn cấu hình danh mục Laravel](docs/laravel-internal-links.md). Trong cấu hình website, nhập URL HTTPS công khai trả JSON toàn bộ danh mục với `id`, `url`, `title`, `summary` và `categories` tùy chọn; lưu rồi chọn **Kiểm tra danh mục**. CRM chủ động lấy trước khi viết, dùng bộ nhớ đệm năm phút và chọn ứng viên trong lượt AI hiện có; giữ nguyên định dạng bài/webhook. Laravel chỉ xuất trang đã xuất bản với URL canonical thực. API đẩy `POST /v1/site-content` cũ vẫn dùng khi chưa cấu hình URL danh mục.
+Để chèn liên kết nội bộ, nhập **URL danh mục liên kết** HTTPS công khai cùng tên miền website, lưu rồi chọn **Kiểm tra danh mục**. Endpoint trả JSON dạng `{ "items": [...] }` với `id`, `url`, `title`, `summary` và `categories` tùy chọn cho mỗi mục. Website chỉ cung cấp trang đã xuất bản cùng URL canonical thực. API đẩy `POST /v1/site-content` vẫn dùng được khi chưa cấu hình URL danh mục. [Hướng dẫn cấu hình danh mục](docs/laravel-internal-links.md)
 
-Laravel gửi header `Authorization: Bearer <site_token>` và `Accept: application/json`. Khi tạo một yêu cầu, sinh một mã duy nhất, lưu cùng yêu cầu và gửi mã đó qua `Idempotency-Key`. Dùng lại mã khi thử gửi cùng yêu cầu sau lỗi mạng.
+Trước lượt viết, CRM lấy danh mục và lưu vào bộ nhớ đệm trong năm phút. CRM so khớp từ khóa và ngữ cảnh dàn ý với tiêu đề, tóm tắt và danh mục để chọn tối đa 8 ứng viên. AI có thể chọn tối đa 3 trang đích trong chính lượt viết. CRM đối chiếu các URL trước khi lưu bài. Tab **Liên kết nội bộ** trong chi tiết yêu cầu hiển thị kết quả đối chiếu theo danh mục. [Cách chọn và kiểm tra liên kết](docs/laravel-internal-links.md)
 
-Sau nâng cấp, website cần đăng ký khóa công khai EC P-256 tại **Website → Kết nối API → Đăng ký khóa ký**. Các API dùng site token yêu cầu thêm `X-Site-Proof` do khóa riêng của backend website ký. Với BaseCodeAW, mở `/admin/crm-ai/settings`, tạo khóa máy chủ rồi sao chép khóa công khai để đăng ký. Xem [cách ký yêu cầu và chống dùng lại cho PHP](docs/security.md#khóa-ký-máy-chủ-website). Widget lấy chữ ký từng lượt qua endpoint PHP đã xác thực trước khi gửi trực tiếp tới CRM.
+Backend website gửi header `Authorization: Bearer <site_token>` và `Accept: application/json`. Khi tạo một yêu cầu, sinh một mã duy nhất, lưu cùng yêu cầu và gửi mã đó qua `Idempotency-Key`. Dùng lại mã khi thử gửi cùng yêu cầu sau lỗi mạng.
+
+Sau nâng cấp, website cần đăng ký khóa công khai EC P-256 tại **Website → Kết nối API → Đăng ký khóa ký**. Các API dùng site token yêu cầu thêm `X-Site-Proof` do khóa riêng của backend website ký. Với bộ Laravel, mở `route('crm-ai.settings')` (mặc định `/crm-ai/settings`, tùy prefix đã cấu hình), tạo khóa máy chủ rồi sao chép khóa công khai để đăng ký. Xem [cách ký yêu cầu và chống dùng lại cho PHP](docs/security.md#khóa-ký-máy-chủ-website). Widget lấy chữ ký từng lượt qua endpoint PHP đã xác thực trước khi gửi trực tiếp tới CRM.
 
 | Thao tác | Endpoint | Payload hoặc kết quả |
 | --- | --- | --- |
@@ -152,7 +156,7 @@ Với key dịch vụ, đặt đơn giá theo **VND trên một triệu token** 
 
 ## Nhận webhook trong Laravel
 
-Khai báo route POST nhận webhook từ Node.js. Đọc nội dung nguyên gốc qua `$request->getContent()` trước khi giải mã JSON. Xác nhận chữ ký bằng khóa của đúng website.
+CRM gửi webhook cho bài theo lịch. Với yêu cầu xem trước, lấy bài qua endpoint kết quả. Khai báo route POST nhận webhook từ Node.js. Đọc nội dung nguyên gốc qua `$request->getContent()` trước khi giải mã JSON. Xác nhận chữ ký bằng khóa webhook của đúng website.
 
 ```php
 $raw = $request->getContent();
@@ -186,9 +190,34 @@ Với `article.failed`, body chứa `{ "error": { "code": "...", "message": "...
 
 ## Gắn widget vào trang biên tập
 
-Trong CRM, mở **Website → Hướng dẫn tích hợp**, chọn Laravel hoặc PHP thuần để tải ZIP và lấy đoạn nhúng. Trang biên tập tải script từ CRM bằng URL đã ký, sau đó gọi CRM trực tiếp để lấy model, tạo yêu cầu viết và xem kết quả. CRM xử lý bằng cùng worker với **Viết ngay**.
+Trang biên tập tải script từ CRM bằng URL đã ký, sau đó gọi CRM trực tiếp để lấy model, tạo yêu cầu viết và xem kết quả. CRM xử lý bằng cùng worker với **Viết bài ngay** trong mục **Yêu cầu viết**. Lấy đoạn nhúng tương ứng trong tab **Hướng dẫn tích hợp** của website.
 
-BaseCodeAW dùng [bộ Laravel dạng chép file](integrations/laravel-upload/README.md), kết nối trong `config/crm-ai.php` và AIConfig tại `resources/views/admin/layouts/js.blade.php`. Bộ này có mapping CKEditor, trường đa ngôn ngữ và tùy chọn `customStyle`, `customClass` cho nút viết bài. CRM sinh đoạn hướng dẫn JS từ chính file mẫu khi build.
+Bộ [Laravel dạng chép file](integrations/laravel-upload/README.md) dùng kết nối trong `config/crm-ai.php` và AIConfig tại `resources/views/admin/layouts/js.blade.php`. Mỗi website điều chỉnh mapping theo form của mình, gồm hỗ trợ CKEditor, trường đa ngôn ngữ và tùy chọn `customStyle`, `customClass` cho nút viết bài. CRM sinh đoạn hướng dẫn JS từ chính file mẫu khi build.
+
+Ví dụ cấu hình cho form có bản gốc tiếng Việt và bản dịch tiếng Nhật. Đặt khối này ở đầu script mẫu của bộ Laravel và chỉnh các selector theo HTML thực tế.
+
+```js
+const AIConfig = {
+  mount: '#news-ai-writer',
+  form: '#news-main-form',
+  customStyle: false,
+  customClass: '',
+  languages: { source: 'vi', targets: ['ja'] },
+  fields: {
+    Title: '[name="name[$lang]"]',
+    Content: '[name="content[$lang]"]',
+    Desc: '[name="desc[$lang]"]',
+    Slug: '[name="slug[$lang]"]',
+    Description: '[name="seo[description][$lang]"]',
+    Keywords: '[name="seo[keywords][$lang]"]',
+    FocusKeyword: '[name="seo[focus_keyword][$lang]"]',
+  },
+};
+```
+
+Widget thay `$lang` bằng mã ngôn ngữ của từng bản, ví dụ `name[vi]` và `name[ja]`. Giữ các khóa trong `fields` và đổi selector bên phải khi form dùng tên khác. Nếu form dùng `ten[vi]`, `noidung[vi]` và `mota[vi]`, đặt `Title`, `Content` và `Desc` lần lượt thành `'[name="ten[$lang]"]'`, `'[name="noidung[$lang]"]'` và `'[name="mota[$lang]"]'`. Mỗi selector đã khai báo phải khớp đúng một trường trong form. `Desc` là mô tả ngắn, `Description` là mô tả SEO. Widget điền `Keywords` từ danh sách từ khóa của bài và điền `FocusKeyword` riêng từ từ khóa chính của yêu cầu.
+
+Form một ngôn ngữ có thể dùng `targets: []` và selector cố định như `[name="name"]`. Với mapping tự động, `Slug: '[name="slug"]'` chỉ điền slug chung từ bản gốc. Nếu các trang Laravel dùng chung layout, có thể truyền `aiFields` khi include `crm-ai.writer` để thay mapping của từng trang. Widget hỗ trợ `fieldsByLocale` khi một ngôn ngữ cần mapping riêng. [Cấu hình fields và ngôn ngữ](integrations/laravel-upload/README.md#fields-và-ngôn-ngữ)
 
 Với ứng dụng chọn dùng package Composer [nodeservice/laravel-crm-ai](packages/laravel-crm-ai/README.md), có thể cài package và dùng component hoặc đoạn Blade dưới đây cho mapping riêng. Đây là cách tích hợp Composer tùy chọn; bộ chép file dùng hướng dẫn ở liên kết phía trên. Các giá trị AI nhận `null` khi chưa cấu hình key riêng.
 
@@ -212,7 +241,8 @@ Với ứng dụng chọn dùng package Composer [nodeservice/laravel-crm-ai](pa
       Slug: '[name="slug"]',
       Desc: '[name="summary"]',
       Description: '[name="seo_description"]',
-      Keywords: '[name="keywords"]'
+      Keywords: '[name="keywords"]',
+      FocusKeyword: '[name="focus_keyword"]'
     }
   };
   window.AIWriter?.mount(config);
@@ -223,9 +253,28 @@ Với ứng dụng chọn dùng package Composer [nodeservice/laravel-crm-ai](pa
 
 Website có hạn mức được chọn model CRM cấp. Khi cấu hình đủ **Base URL**, **API key** và **Model** trong setting website, người viết có thể chọn **Dùng key riêng**. Lượt dùng key riêng kết nối theo chuẩn OpenAI Compatible và không trừ hạn mức hay tính chi phí CRM. Website chỉ được dùng key riêng luôn lấy model từ setting.
 
-Site token nằm ở backend và chỉ dùng để ký URL script theo tên miền. Luồng trực tiếp truyền key AI riêng vào `AIWriter.mount` trên trang biên tập có xác thực. Xem [hướng dẫn tích hợp Laravel](docs/laravel-widget.md) để cài module và kiểm tra quyền truy cập.
+Backend website giữ site token và khóa ký riêng, tạo URL script đã ký và cấp chữ ký cho từng yêu cầu viết của widget. Luồng trực tiếp truyền key AI riêng vào `AIWriter.mount` trên trang biên tập có xác thực. [Hướng dẫn tích hợp Laravel](docs/laravel-widget.md)
 
-Nút **Áp dụng** điền bản gốc và các bản dịch đã tạo vào form. Sau khi áp dụng, mở widget sẽ bắt đầu một lượt viết mới. Biên tập viên bấm nút lưu của website để lưu bài. Để dùng cùng tiêu chí SEO với CRM, xem [hướng dẫn đồng bộ bộ chấm SEO](docs/laravel-seo.md).
+Sau khi nhận bản xem trước, biên tập viên có thể **Áp dụng** bản gốc hoặc chọn **Dịch sang các ngôn ngữ khác** rồi áp dụng tất cả một lần. Mỗi bản dịch là một yêu cầu riêng. Bản dịch thành công tính một lượt khi dùng key dịch vụ. Worker dịch từ bản xem trước, giữ URL đích trong nội dung, dịch phần chữ của liên kết và bỏ qua bước nghiên cứu, dàn ý và chỉnh SEO tự động. CRM hiển thị bản gốc và các bản dịch trong **Yêu cầu viết → Nhóm theo bài gốc**. Sau khi áp dụng, biên tập viên lưu bài bằng chức năng của website. [Quy trình đa ngôn ngữ](docs/multilingual.md) · [Quản lý nhóm bài](docs/article-groups.md) · [Đồng bộ bộ chấm SEO](docs/laravel-seo.md)
+
+### Slug của bản dịch
+
+Khi tạo bản dịch sang ngôn ngữ dùng hệ chữ ngoài Latin, CRM yêu cầu AI phiên âm một cụm ngắn từ tiêu đề đã dịch theo cách đọc của ngôn ngữ đích. Slug kết quả viết thường, có tối đa 75 ký tự và chỉ gồm `a-z`, `0-9` và dấu gạch ngang. Tiêu đề, nội dung và metadata khác vẫn dùng ngôn ngữ đích. [Prompt và xử lý slug của worker](src/worker/provider.ts)
+
+Nếu slug AI trả về không dùng được sau khi chuẩn hóa, CRM thử tạo slug ASCII từ tiêu đề bản dịch rồi đến tiêu đề bản gốc. Nếu cả hai tiêu đề đều không tạo được slug hợp lệ, CRM dùng một mã ổn định dạng `article-<mã>` để giữ bản dịch.
+
+Ví dụ slug cho các bản dịch của bài **Cách pha cà phê Việt Nam**.
+
+| Ngôn ngữ | Tiêu đề | Slug phiên âm mẫu |
+| --- | --- | --- |
+| Nhật (`ja`) | ベトナムコーヒーの淹れ方 | `betonamu-kohi-no-irekata` |
+| Hàn (`ko`) | 베트남 커피 내리는 법 | `beteunam-keopi-naerineun-beop` |
+| Trung giản thể (`zh`) | 如何冲泡越南咖啡 | `ruhe-chongpao-yuenan-kafei` |
+| Lào (`lo`) | ວິທີຊົງກາເຟຫວຽດນາມ | `vithi-song-kafe-viat-nam` |
+| Khmer (`km`) | របៀបឆុងកាហ្វេវៀតណាម | `robiep-chhong-kafe-viet-nam` |
+| Nga (`ru`) | Как приготовить вьетнамский кофе | `kak-prigotovit-vyetnamskiy-kofe` |
+
+Với `Slug: '[name="slug[$lang]"]'`, widget điền slug vào từng ô như `slug[ja]`. Website quyết định cấu trúc đường dẫn, chẳng hạn `/ja/betonamu-kohi-no-irekata`, và xử lý slug trùng khi lưu. Cách phiên âm thực tế có thể khác giữa các model.
 
 ### Xem widget cục bộ với dữ liệu CRM thật
 
@@ -235,7 +284,7 @@ Chạy CRM/API và worker bằng `npm start` (hoặc các tiến trình riêng n
 npm run dev:widget
 ```
 
-Trang xem thử chạy tại `http://127.0.0.1:3220`, dùng `.env` hiện có và website trong MongoDB. Đặt `WIDGET_SITE_ID` theo ID của website dùng hạn mức dịch vụ trước khi chạy. Adapter cục bộ tạo job thật, gọi nhà cung cấp AI và dùng hạn mức của website. Để thử chữ ký và key riêng trên trang biên tập, xem [hướng dẫn kiểm tra BaseCodeAW](docs/laravel-widget.md#kiểm-tra-luồng-trực-tiếp-trên-basecodeaw).
+Trang xem thử chạy tại `http://127.0.0.1:3220`, dùng `.env` hiện có và website trong MongoDB. Đặt `WIDGET_SITE_ID` theo ID của website dùng hạn mức dịch vụ trước khi chạy. Adapter cục bộ tạo job thật, gọi nhà cung cấp AI và dùng hạn mức của website. Để thử chữ ký và key riêng trên trang biên tập, xem [hướng dẫn kiểm tra tích hợp trên website](docs/laravel-widget.md#kiểm-tra-tích-hợp-trên-website).
 
 Các worker dùng cùng MongoDB database sẽ cùng lấy việc từ một hàng đợi. Khi thử bản build local cạnh môi trường khác, dùng `MONGODB_DATABASE` riêng cho cả CRM/worker và widget preview để tránh worker cũ nhận bài. Nếu chủ ý chạy chung database, mọi worker cần cùng phiên bản và `ENCRYPTION_KEY`; chỉ khởi động lại API không cập nhật các worker bên ngoài.
 
@@ -244,8 +293,6 @@ CRM/API khởi tạo một giá trị kiểm tra mã hóa dùng chung trong `ser
 API từ chối nhận yêu cầu dùng key dịch vụ không giải mã được trước khi giữ quota. Nếu key thay đổi sau khi đã nhận bài, worker giữ job ở hàng đợi với mã `AI_KEY_UNREADABLE`, thử lại sau 60 giây và không tăng số lần thất bại hoặc xóa key riêng/quota. Sau khi sửa đúng cấu hình, job tiếp tục; quản trị viên có thể hủy job đang chờ theo cách thông thường. Lỗi xác thực do nhà cung cấp trả về vẫn được xử lý riêng.
 
 ## Kiểm thử
-
-Trong **Website → Hướng dẫn tích hợp**, có hai tab Laravel và PHP thuần với nút tải ZIP theo phiên bản. `npm run build` tự đóng gói các bản tích hợp vào `dist/packages` (cần Python 3). Xem [quy trình phát hành bộ tích hợp](docs/integration-downloads.md) khi cập nhật mã và phiên bản.
 
 ```sh
 npm run typecheck

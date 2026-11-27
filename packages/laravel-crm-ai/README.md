@@ -63,7 +63,7 @@ Form hiện có cần ID và `@csrf`. Thêm component bên trong form hoặc c�
 
 Widget điền bài vào các trường đã map. Biên tập viên bấm lưu bằng chức năng hiện có của website. Script tải trực tiếp từ CRM, nên trình duyệt cần truy cập được URL CRM. CSP của website nếu có cần cho phép origin CRM trong `script-src` và `connect-src`, cùng nonce cho script khởi tạo theo chính sách ứng dụng.
 
-Với CKEditor, TinyMCE hoặc form có quy tắc riêng, nạp `<x-crm-ai::script />` rồi gọi `AIWriter.mount()` bằng mapping JavaScript của website. Lấy cấu hình key riêng qua `app(\NodeService\CrmAi\CrmAi::class)->mountCredentials()`. `Content` có thể nhận `{ selector: '[name=body]', setValue: (element, value) => editor.setData(value) }`. BaseCodeAW giữ mapping CKEditor và các trường đa ngôn ngữ trong view adapter của ứng dụng.
+Với CKEditor, TinyMCE hoặc form có quy tắc riêng, nạp `<x-crm-ai::script />` rồi gọi `AIWriter.mount()` bằng mapping JavaScript của website. Lấy cấu hình key riêng qua `app(\NodeService\CrmAi\CrmAi::class)->mountCredentials()`. `Content` có thể nhận `{ selector: '[name=body]', setValue: (element, value) => editor.setData(value) }`. Đặt mapping editor và các trường đa ngôn ngữ trong view adapter của website.
 
 ## Cấu hình AI riêng
 
@@ -77,7 +77,7 @@ Component có ba ô. `base_url` là địa chỉ HTTPS của nhà cung cấp Ope
 
 Package mã hóa cấu hình bằng Laravel `APP_KEY` vào `storage/app/private/crm-ai-credentials.enc`. Form dùng kho file ngay sau khi cài Composer. Nếu tự dựng giao diện admin, dùng ba ô cùng tên, gửi `PUT` đến `route('crm-ai.settings.update')` với `@csrf` và `@method('PUT')`. Dùng `app(\NodeService\CrmAi\CrmAi::class)->form()` để lấy URL, model và trạng thái có key. Trường `api_key` luôn để trống khi render.
 
-Với website đã có cột cấu hình mã hóa, có thể cấu hình `credentials.model`, `credentials.id` và `credentials.attribute`. Lệnh `crm-ai:install` chỉ thêm cột khi chưa tồn tại. `credentials.id` mặc định `1`, giá trị `null` dùng bản ghi đầu tiên để tương thích module BaseCodeAW cũ. Provider tự bổ sung cast mã hóa và ẩn thuộc tính này khi serialize model. Có thể bind interface `NodeService\CrmAi\Contracts\CredentialsStore` để dùng kho cấu hình của ứng dụng.
+Với website đã có cột cấu hình mã hóa, có thể cấu hình `credentials.model`, `credentials.id` và `credentials.attribute`. Lệnh `crm-ai:install` chỉ thêm cột khi chưa tồn tại. `credentials.id` mặc định `1`, giá trị `null` dùng bản ghi đầu tiên để tương thích cấu hình cũ. Provider tự bổ sung cast mã hóa và ẩn thuộc tính này khi serialize model. Có thể bind interface `NodeService\CrmAi\Contracts\CredentialsStore` để dùng kho cấu hình của ứng dụng.
 
 Theo luồng widget gọi trực tiếp CRM, key AI riêng được đưa vào JavaScript trên trang biên tập có xác thực. Site token và khóa ký máy chủ nằm ở backend. Các trang render component được đặt `no-store`, debug collector được tắt trước khi lấy thông tin nhạy cảm.
 
