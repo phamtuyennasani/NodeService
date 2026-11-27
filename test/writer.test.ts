@@ -125,7 +125,7 @@ const shortArticle: Article = {
 function seoArticle(targetWords = 600): Article {
   return {
     Title: 'Cà phê cold brew: cách pha ngon và bảo quản tại nhà',
-    Content: '<h2>Cà phê cold brew cho người mới</h2>' + Array.from({ length: Math.max(2, Math.round(targetWords / 62)) }, () => '<p>Cà phê cold brew ' + 'thơm '.repeat(58).trim() + '.</p>').join(''),
+    Content: '<h2>Cà phê cold brew cho người mới</h2>' + Array.from({ length: Math.max(2, Math.round(targetWords / 62)) }, (_, index) => '<p>Cà phê cold brew ' + 'thơm '.repeat(57) + index + '.</p>').join(''),
     Slug: 'ca-phe-cold-brew', Desc: 'Hướng dẫn pha tại nhà.',
     Description: 'Cà phê cold brew ' + 'à'.repeat(140), Keywords: [keyword],
   }
@@ -234,6 +234,9 @@ test('scheduled writer researches, outlines and streams a compliant article with
   }), true)
   assert.deepEqual(calls, ['research', 'outline', 'draft'])
   assertReady(f, article, 'not_needed')
+  assert.equal(f.job.research_review.status, 'found')
+  assert.deepEqual(f.job.research_review.sources, research.sources)
+  assert.equal(f.job.research_review.locale, 'vi')
   assert.equal(f.job.attempt_count, 1)
   assert.deepEqual(f.tables.ai_attempts.map(row => [row.stage, row.status]), [['outline', 'succeeded'], ['draft', 'succeeded']])
   assert.ok(f.tables.ai_attempts.every(row => row.cost_usd === '0.000195000000' && row.pricing_id === 'price-test'))
@@ -510,14 +513,18 @@ test('a service job left by an older quota rejection fails without calling AI', 
   assert.deepEqual(f.tables.ai_attempts, [])
 })
 
-test('provider limits defer a draft without consuming a retry or repeating its outline', async () => {
-  const f = fixture()
+test('provider limits defer a draft without repeating its outline or changing the research source indexes', async () => {
+  const f = fixture({}, { research: { enabled: true, timeoutMs: 1000, maxResults: 1, provider: 'duckduckgo' } })
   f.config.providerLimits.openai.requestsPerMinute = 1
   let outlines = 0
+  let searches = 0
+  const sources = [{ title: 'Original source', url: 'https://example.org/original', snippet: 'Original evidence.' }]
   const deps: WriterDependencies = {
+    async research() { searches++; return { query: keyword, researchedAt: new Date().toISOString(), sources } },
     async outline() { outlines++; return { outline, ...metadata } },
     async generate(input) {
       assert.deepEqual(input.outline, outline)
+      assert.deepEqual(input.research?.sources, sources)
       return { article: seoArticle(), ...metadata }
     },
   }
@@ -536,6 +543,8 @@ test('provider limits defer a draft without consuming a retry or repeating its o
   f.job.available_at = new Date(0)
   assert.equal(await f.run(deps), true)
   assert.equal(outlines, 1)
+  assert.equal(searches, 1)
+  assert.deepEqual(f.job.research_review.sources, sources)
   assertReady(f, seoArticle(), 'not_needed')
 })
 
@@ -668,7 +677,7 @@ test('SEO repair is discarded when it breaks a criterion the draft passed', asyn
 })
 
 test('a second SEO pass uses the accepted draft to finish its remaining length warning', async () => {
-  const draft = { ...seoArticle(2400), Title: 'Hướng dẫn pha đồ uống lạnh ngon và bảo quản tại nhà' }
+  const draft = { ...seoArticle(2400), Slug: 'a'.repeat(76) }
   const first = seoArticle(2000)
   const second = seoArticle(1500)
   const f = fixture({ length: 1500 })
@@ -679,7 +688,7 @@ test('a second SEO pass uses the accepted draft to finish its remaining length w
       repairs += 1
       if (repairs === 1) {
         assert.deepEqual(input.draft, cleanArticle(draft))
-        assert.ok(input.issues.some(issue => issue.key === 'keywordInTitle'))
+        assert.ok(input.issues.some(issue => issue.key === 'lengthPermalink'))
         return { article: first, ...metadata, usage: { ...metadata.usage, reasoning: 100 } }
       }
       assert.equal(repairs, 2)
@@ -700,9 +709,9 @@ test('a second SEO pass uses the accepted draft to finish its remaining length w
 })
 
 test('SEO repair stops after two improving passes even when an editable warning remains', async () => {
-  const draft = { ...seoArticle(2000), Title: 'Pha đồ uống lạnh tại nhà', Description: 'Hướng dẫn pha đồ uống lạnh.' }
-  const first = { ...draft, Title: seoArticle().Title }
-  const second = { ...first, Description: seoArticle().Description }
+  const draft = { ...seoArticle(2000), Slug: 'a'.repeat(76), Content: seoArticle(2000).Content.replace('<h2>', '<h4>').replace('</h2>', '</h4>') }
+  const first = { ...draft, Slug: seoArticle().Slug }
+  const second = { ...first, Content: seoArticle(2000).Content }
   const f = fixture({ length: 1500 })
   let repairs = 0
   await f.run({
@@ -722,7 +731,7 @@ test('SEO repair stops after two improving passes even when an editable warning 
 
 for (const outcome of ['unchanged', 'regressing', 'failed'] as const) {
   test(`a second SEO pass that is ${outcome} keeps the accepted first revision`, async () => {
-    const draft = { ...seoArticle(2400), Title: 'Pha đồ uống lạnh tại nhà' }
+    const draft = { ...seoArticle(2400), Slug: 'a'.repeat(76) }
     const first = seoArticle(2000)
     const f = fixture({ length: 1500 })
     let repairs = 0
@@ -734,7 +743,7 @@ for (const outcome of ['unchanged', 'regressing', 'failed'] as const) {
         assert.equal(repairs, 2)
         assert.deepEqual(input.draft, cleanArticle(first))
         if (outcome === 'failed') throw new WorkerError('AI_RESPONSE', 'Second repair unavailable', false, 0, metadata)
-        return { article: outcome === 'unchanged' ? input.draft : { ...seoArticle(1500), Title: 'Bị mất từ khóa' }, ...metadata }
+        return { article: outcome === 'unchanged' ? input.draft : { ...seoArticle(1500), Slug: 'a'.repeat(76) }, ...metadata }
       },
     })
     assert.equal(repairs, 2)
@@ -745,7 +754,7 @@ for (const outcome of ['unchanged', 'regressing', 'failed'] as const) {
 }
 
 test('a follow-up repair exceeding provider capacity retains the accepted first revision', async () => {
-  const draft = { ...seoArticle(2400), Title: 'Pha đồ uống lạnh tại nhà' }
+  const draft = { ...seoArticle(2400), Slug: 'a'.repeat(76) }
   const first = seoArticle(2000)
   const f = fixture({ length: 1500 })
   let repairs = 0
@@ -764,7 +773,7 @@ test('a follow-up repair exceeding provider capacity retains the accepted first 
   assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'lengthContent').passed, false)
 })
 
-test('the shared writer repairs keyword placement, metadata and the requested article length', async () => {
+test('the shared writer repairs the requested article budget without forcing exact-match metadata', async () => {
   const article: Article = {
     Title: 'Cách pha bằng nước lạnh',
     Content: '<p>Trộn cà phê xay thô với nước sạch trong bình có nắp. Bắt đầu bằng mẻ nhỏ để dễ điều chỉnh độ đậm theo khẩu vị.</p>'
@@ -784,9 +793,7 @@ test('the shared writer repairs keyword placement, metadata and the requested ar
       assert.equal(input.length, 1500)
       assert.deepEqual(f.job.result, [cleanArticle(article)], 'the useful draft is saved before SEO work')
       const issues = new Set(input.issues.map(issue => issue.key))
-      for (const key of ['keywordInTitle', 'titleStartWithKeyword', 'lengthTitle', 'keywordInMetaDescription',
-        'lengthMetaDescription', 'keywordInPermalink', 'keywordIn10Percent', 'keywordInContent',
-        'lengthContent', 'keywordInSubheadings'] satisfies SeoCriterion[]) assert.ok(issues.has(key), key)
+      assert.deepEqual([...issues], ['lengthContent'])
       assert.equal(issues.has('keywordDensity'), false, 'density must not trigger keyword stuffing')
       assert.equal(issues.has('linksHasInternal'), false, 'missing catalog links must not invite fabricated URLs')
       return { article: revised, ...metadata }
@@ -843,20 +850,17 @@ test('a repair error preserves the valid draft and records separate provider usa
   assert.equal(f.tables.ai_attempts[2].cost_usd, '0.000195000000')
 })
 
-test('a metadata repair failure retains the full useful article with its SEO warnings', async () => {
+test('natural metadata outside the legacy ranges keeps the article without a repair call', async () => {
   const draft = { ...seoArticle(), Title: 'Cách chuẩn bị tại nhà', Description: 'Hướng dẫn pha đồ uống lạnh.' }
   const f = fixture({ mode: 'preview', status: 'queued' })
   await f.run({
     generate: async () => ({ article: draft, ...metadata }),
-    async repair(input) {
-      assert.ok(input.issues.some(issue => issue.key === 'keywordInTitle'))
-      assert.ok(input.issues.some(issue => issue.key === 'lengthMetaDescription'))
-      throw new WorkerError('AI_RESPONSE', 'Metadata repair unavailable', false, 0, metadata)
-    },
+    async repair() { assert.fail('Exact-match metadata and legacy character ranges cannot trigger a paid repair') },
   })
-  assertReady(f, draft, 'kept_draft')
+  assertReady(f, draft, 'not_needed')
   assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'lengthContent').passed, true)
   assert.equal(f.job.seo_report.findings.find((row: Row) => row.key === 'keywordInTitle').passed, false)
+  assert.equal(f.tables.ai_attempts.filter(row => row.stage === 'seo_repair').length, 0)
 })
 
 test('SEO repair timeout measures idle time between streamed chunks', { timeout: 2_000 }, async () => {

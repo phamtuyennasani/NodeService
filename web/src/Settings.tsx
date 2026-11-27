@@ -4,6 +4,7 @@ import { ReloadOutlined, SaveOutlined, UndoOutlined } from '@ant-design/icons';
 import { ApiError, mutate, useResource } from './api';
 import { datetime, PageHeading, Panel, ResourceError } from './shared';
 import { SmtpSettings } from './SmtpSettings';
+import { KeywordSettings } from './KeywordSettings';
 import './settings.css';
 
 type Provider = 'openai' | 'anthropic' | 'xai' | 'openai-compatible';
@@ -59,15 +60,16 @@ function NumericField({ name, label, min, max, extra, seconds = false }: {
   </Form.Item>;
 }
 
-export function Settings() {
+export function Settings({ query }: { query?: URLSearchParams } = {}) {
   const resource = useResource<SettingsResponse>('/settings');
   const [current, setCurrent] = useState<SettingsResponse>();
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saveError, setSaveError] = useState<string>();
   const [conflict, setConflict] = useState(false);
-  const [activeTab, setActiveTab] = useState('operations');
+  const [activeTab, setActiveTab] = useState(query?.get('tab') === 'keywords' ? 'keywords' : 'operations');
   const [smtpVisited, setSmtpVisited] = useState(false);
+  const [keywordsVisited, setKeywordsVisited] = useState(query?.get('tab') === 'keywords');
   const [form] = Form.useForm<RuntimeSettings>();
   const { message, modal } = App.useApp();
 
@@ -181,15 +183,15 @@ export function Settings() {
   </div>;
 
   return <div className="settings-page">
-    <PageHeading title="Cài đặt" description="Cấu hình vận hành và email CRM dùng chung cho các máy kết nối cùng database." action={activeTab !== 'smtp' ? <div className="heading-actions">
+    <PageHeading title="Cài đặt" description="Cấu hình vận hành và email CRM dùng chung cho các máy kết nối cùng database." action={activeTab !== 'smtp' && activeTab !== 'keywords' ? <div className="heading-actions">
       <Button icon={<ReloadOutlined />} onClick={reload} disabled={saving || resource.loading}>Tải lại</Button>
       <Button type="primary" aria-label="Lưu cài đặt" icon={<SaveOutlined />} onClick={() => form.submit()} loading={saving} disabled={!current || !dirty || conflict || resource.loading}>Lưu cài đặt</Button>
     </div> : undefined} />
-    <Tabs className="settings-navigation" activeKey={activeTab} onChange={key => { setActiveTab(key); if (key === 'smtp') setSmtpVisited(true); }} items={[
+    <Tabs className="settings-navigation" activeKey={activeTab} onChange={key => { setActiveTab(key); if (key === 'smtp') setSmtpVisited(true); if (key === 'keywords') setKeywordsVisited(true); }} items={[
       { key: 'operations', label: 'Vận hành' }, { key: 'limits', label: 'Giới hạn AI' },
-      { key: 'retention', label: 'Lưu trữ dữ liệu' }, { key: 'smtp', label: 'Email / SMTP' },
+      { key: 'retention', label: 'Lưu trữ dữ liệu' }, { key: 'smtp', label: 'Email / SMTP' }, { key: 'keywords', label: 'Từ khóa' },
     ]} />
-    <div hidden={activeTab === 'smtp'}>
+    <div hidden={activeTab === 'smtp' || activeTab === 'keywords'}>
     <ResourceError error={resource.error} onRetry={reload} />
     {saveError && <Alert className="resource-error" type="error" showIcon title="Chưa lưu cài đặt" description={saveError} action={conflict ? <Button size="small" onClick={reload}>Tải cấu hình mới</Button> : undefined} />}
     {!current && resource.loading && <Panel><Skeleton active paragraph={{ rows: 8 }} /></Panel>}
@@ -210,5 +212,6 @@ export function Settings() {
     </>}
     </div>
     {smtpVisited && <div hidden={activeTab !== 'smtp'}><SmtpSettings /></div>}
+    {keywordsVisited && <div hidden={activeTab !== 'keywords'}><KeywordSettings /></div>}
   </div>;
 }

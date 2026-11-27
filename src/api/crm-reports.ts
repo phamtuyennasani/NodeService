@@ -31,7 +31,8 @@ const jobsSchema = listSchema.extend({ article_group_id: idSchema.optional(), st
 const deliveriesSchema = listSchema.extend({ status: z.enum(['pending', 'sending', 'delivered', 'failed']).optional(), event: z.enum(['article.ready', 'article.failed']).optional(), issue: z.enum(['queue', 'stale']).optional() })
 const idParams = z.object({ id: idSchema })
 const scheduleFields = z.object({ customer_id: idSchema.optional(), website_id: idSchema, model: writingFields.shape.model, keyword: z.string().trim().min(1).max(500), tone: z.string().trim().min(1).max(240), style: z.string().trim().min(1).max(500), length: articleLengthSchema, instructions: z.string().trim().max(4000).optional(), base_url: writingFields.shape.base_url, keyAI: writingFields.shape.keyAI, key_mode: writingFields.shape.key_mode, ...articleIdentityFields, languages: writingFields.shape.languages, locale: writingFields.shape.locale, translation_source: writingFields.shape.translation_source, use_research: z.boolean().default(true), scheduled_at: timestampSchema }).strict()
-const immediateFields = scheduleFields.omit({ scheduled_at: true }).extend({ exclude_content_ids: excludedContentIdsSchema.optional() })
+const immediateFields = scheduleFields.omit({ scheduled_at: true }).extend({ exclude_content_ids: excludedContentIdsSchema.optional(),
+  keyword_selection: z.object({ analysis_id: idSchema, candidate_id: z.string().regex(/^[a-f0-9]{24}$/) }).strict().optional() })
 const rewriteFields = z.object({ instructions: z.string().trim().max(4000).optional(), base_url: writingFields.shape.base_url, keyAI: writingFields.shape.keyAI, key_mode: writingFields.shape.key_mode, exclude_content_ids: excludedContentIdsSchema.optional() }).strict()
 const DAY = 86_400_000
 const VIETNAM_OFFSET = 7 * 60 * 60 * 1000
@@ -335,7 +336,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       key_mode: fields.key_mode,
       use_research: fields.use_research,
       exclude_content_ids: fields.exclude_content_ids,
-    }, 'preview', undefined)
+    }, 'preview', undefined, undefined, undefined, fields.keyword_selection)
     return reply.code(202).send(result)
   })
 
@@ -754,6 +755,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       seo_report: ready ? row.seo_report ?? null : null,
       seo_repair_status: ready ? row.seo_repair_status ?? null : null,
       internal_link_report: ready ? row.internal_link_report ?? null : null,
+      research_review: ready ? row.research_review ?? null : null,
       instructions: row.instructions,
       translation_source: row.translation_source ?? null,
       attempts: attempts.map(attempt => ({

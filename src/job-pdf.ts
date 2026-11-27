@@ -188,7 +188,11 @@ export async function renderJobPdf(input: JobPdfInput, signal?: AbortSignal): Pr
     rendering = (async () => {
       const fonts = await loadFonts()
       if (stopped) throw new JobPdfError('unavailable')
-      browser = await chromium.launch({ headless: true, timeout: 12_000 })
+      const serverlessChromium = process.env.VERCEL === '1' ? (await import('@sparticuz/chromium')).default : undefined
+      browser = await chromium.launch({
+        headless: true, timeout: 12_000,
+        ...(serverlessChromium ? { args: serverlessChromium.args, executablePath: await serverlessChromium.executablePath() } : {}),
+      })
       if (stopped) { await browser.close(); throw new JobPdfError('unavailable') }
       const context = await browser.newContext({ javaScriptEnabled: false, serviceWorkers: 'block', offline: true, locale: 'vi-VN', viewport: { width: 665, height: 980 }, acceptDownloads: false })
       await context.route('**/*', route => route.abort())

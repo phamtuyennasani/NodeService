@@ -1,0 +1,31 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm ci --include=dev",
+  "buildCommand": "node scripts/build-vercel.mjs crm",
+  "outputDirectory": "dist/vercel-static",
+  "regions": ["sin1"],
+  "functions": {
+    "api/index.mjs": {
+      "maxDuration": 300,
+      "includeFiles": "{dist/web/**,dist/widget/**,dist/packages/**,node_modules/@fontsource/inter/**,node_modules/@sparticuz/chromium/bin/**}"
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
+  "daemons": {
+    "crm-workers": {
+      "root": ".",
+      "entrypoint": "deployment/Dockerfile",
+      "instances": { "sin1": 1 },
+      "resources": { "requests": { "memory": "1Gi" } },
+      "terminationGracePeriodSeconds": 900,
+      "livenessProbe": {
+        "httpGet": { "port": 8080, "path": "/health" },
+        "initialDelaySeconds": 20,
+        "periodSeconds": 10,
+        "timeoutSeconds": 2,
+        "failureThreshold": 3
+      }
+    }
+  }
+}

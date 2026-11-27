@@ -261,6 +261,7 @@ export interface Delivery {
 }
 
 export type JobDetails = Job & {
+  research_review?: import('../../src/worker/research.js').ResearchReview | null;
   translation_source?: { Title: string; Content: string; Desc?: string; Description?: string; Keywords?: string[] } | null;
   rewrite_key_mode?: 'own' | 'service';
   outline?: ArticleOutline | null;

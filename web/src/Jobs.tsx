@@ -102,6 +102,28 @@ function OutlineReview({ job }: { job: JobDetails }) {
   </section>;
 }
 
+function ResearchReview({ job }: { job: JobDetails }) {
+  const review = job.research_review;
+  if (!review) return <EmptyState description="Bài này chưa có nguồn nghiên cứu được lưu" />;
+  const titles = { found: 'Tư liệu dùng trong quá trình viết', unavailable: 'Chưa lấy được nguồn nghiên cứu', disabled: 'Yêu cầu không sử dụng nghiên cứu web', translation: 'Bản dịch giữ dữ kiện của bản gốc' };
+  return <section className="outline-review" aria-label="Nguồn nghiên cứu">
+    <Alert type={review.status === 'unavailable' ? 'warning' : 'info'} showIcon title={titles[review.status]}
+      description={review.status === 'translation' ? 'Đối chiếu bản dịch với bản gốc đã duyệt, đặc biệt là số liệu, mức độ khẳng định và điều kiện áp dụng.' : 'Đây là trích đoạn kết quả tìm kiếm, chưa phải toàn văn hoặc xác minh sự thật. Mở trang nguồn để đối chiếu dữ kiện, ngày áp dụng và phạm vi trước khi xuất bản.'} />
+    <Descriptions column={1} size="small" items={[
+      { key: 'query', label: 'Truy vấn', children: review.query },
+      { key: 'locale', label: 'Ngôn ngữ bài viết', children: review.locale },
+      { key: 'time', label: 'Ghi nhận lúc', children: datetime(review.checked_at) },
+    ]} />
+    <ol className="outline-sections">{review.sources.map((source, index) => <li key={source.url}>
+      <h3>Nguồn {index + 1}: {source.title}</h3>
+      <p>{source.snippet}</p>
+      {source.publishedAt && <p>Ngày do nguồn cung cấp: {source.publishedAt}</p>}
+      {/^https?:\/\//i.test(source.url) && <a href={source.url} target="_blank" rel="noopener noreferrer" style={{ overflowWrap: 'anywhere' }}>{source.url}</a>}
+    </li>)}</ol>
+    <p>Đối chiếu các dữ kiện gắn “Nguồn” trong dàn ý với danh sách này. Kiểm tra câu trả lời chính, ví dụ thực tế, thông tin thương hiệu và các tuyên bố cần chuyên môn. Điểm SEO không xác nhận các nội dung này.</p>
+  </section>;
+}
+
 function SeoReview({ job }: { job: JobDetails }) {
   const report = job.seo_report;
   if (!report) return <EmptyState description={['completed', 'ready'].includes(job.status) ? 'Bài này chưa có báo cáo kiểm tra SEO' : 'Báo cáo SEO sẽ xuất hiện khi bài viết hoàn tất'} />;
@@ -128,8 +150,8 @@ function SeoReview({ job }: { job: JobDetails }) {
     ]} />}
     <ul className="seo-findings">{report.findings.map(finding => <li key={finding.key} data-state={!finding.applicable ? 'excluded' : finding.passed ? 'passed' : 'warning'}>
       <span className="seo-finding-icon" aria-hidden="true">{!finding.applicable ? <MinusCircleOutlined /> : finding.passed ? <CheckCircleOutlined /> : <WarningOutlined />}</span>
-      <div><strong>{finding.label}</strong>{!finding.passed && <p>{finding.message}</p>}</div>
-      <span className="seo-finding-state">{!finding.applicable ? 'Chưa áp dụng' : finding.passed ? 'Đạt' : 'Cần xem lại'}</span>
+      <div><strong>{finding.label}</strong>{(!finding.passed || finding.advisory) && <p>{finding.message}</p>}</div>
+      <span className="seo-finding-state">{finding.advisory ? 'Tham khảo' : !finding.applicable ? 'Chưa áp dụng' : finding.passed ? 'Đạt' : 'Cần xem lại'}</span>
     </li>)}</ul>
   </section>;
 }
@@ -142,7 +164,8 @@ function rewriteUnavailableReason(job?: Job) {
     : 'Có thể viết lại sau khi bài viết hoàn tất.';
 }
 
-function ScheduleModal({ open, onClose, onCreated, immediate = false }: { open: boolean; onClose: () => void; onCreated: () => void; immediate?: boolean }) {
+export type KeywordWritingPreset = { customer_id: string; website_id: string; keyword: string; locale: string; keyword_selection: { analysis_id: string; candidate_id: string } };
+export function ScheduleModal({ open, onClose, onCreated, immediate = false, preset }: { open: boolean; onClose: () => void; onCreated: () => void; immediate?: boolean; preset?: KeywordWritingPreset }) {
   const [form] = Form.useForm();
   const [customerId, setCustomerId] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -152,22 +175,37 @@ function ScheduleModal({ open, onClose, onCreated, immediate = false }: { open: 
   const providers = useResource<{ data: { provider: string; display_name: string; enabled: boolean; models: { model: string; display_name: string; enabled: boolean }[] }[] }>('/providers');
   const models = (providers.data?.data ?? []).flatMap(provider => provider.enabled ? provider.models.filter(model => model.enabled).map(model => ({ value: model.model, label: `${model.display_name} · ${provider.display_name}` })) : []);
   const { message } = App.useApp();
-  function close() { if (saving) return; form.resetFields(); setCustomerId(undefined); onClose(); }
+  useEffect(() => {
+    if (open && preset) {
+      setCustomerId(preset.customer_id);
+      form.setFieldsValue({ ...preset, length: 1200, tone: 'Chuyên nghiệp', style: 'SEO', use_research: true });
+    }
+  }, [open, preset, form]);
+  function close(force = false) { if (saving && !force) return; form.resetFields(); setCustomerId(undefined); onClose(); }
   async function submit(values: any) {
     setSaving(true);
     try {
       const payload = { ...values, length: Number(values.length) };
+      if (values.locale) payload.languages = { source: values.locale, targets: [] };
       if (!ownKey) { delete payload.base_url; delete payload.keyAI; }
       await mutate(immediate ? '/jobs' : '/schedules', 'POST', immediate ? payload : { ...payload, scheduled_at: submitVietnamTime(values.scheduled_at) });
       message.success(immediate ? 'Đã đưa bài viết vào hàng đợi.' : 'Đã tạo lịch viết bài cho website.');
-      close();
+      close(true);
       onCreated();
     }
     catch (error) { message.error((error as Error).message); }
     finally { setSaving(false); }
   }
-  return <Modal className="schedule-modal" title={immediate ? 'Viết bài ngay' : 'Lên lịch viết bài'} open={open} onCancel={close} onOk={() => form.submit()} okText={immediate ? 'Viết bài ngay' : 'Tạo lịch viết'} cancelText="Hủy" confirmLoading={saving} destroyOnHidden>
-    <Form form={form} layout="vertical" initialValues={{ use_research: true }} onFinish={submit}>
+  return <Modal className="schedule-modal" title={immediate ? 'Viết bài ngay' : 'Lên lịch viết bài'} open={open} onCancel={() => close()} onOk={() => form.submit()} okText={immediate ? 'Viết bài ngay' : 'Tạo lịch viết'} cancelText="Hủy" confirmLoading={saving} destroyOnHidden>
+    <Form form={form} layout="vertical" initialValues={{ use_research: true }} onFinish={submit} onValuesChange={changed => {
+      if (preset && (changed.keyword !== undefined && changed.keyword !== preset.keyword || changed.customer_id !== undefined || changed.website_id !== undefined)) form.setFieldValue('keyword_selection', undefined);
+    }}>
+      {preset && <>
+        <Form.Item name="locale" hidden><Input /></Form.Item>
+        <Form.Item name={['keyword_selection', 'analysis_id']} hidden><Input /></Form.Item>
+        <Form.Item name={['keyword_selection', 'candidate_id']} hidden><Input /></Form.Item>
+        <Alert type="info" showIcon title={`Đã chọn đề xuất từ khóa · ngôn ngữ ${preset.locale}`} description="Tiêu chí đã chọn sẽ được đưa vào dàn ý. Nếu đổi từ khóa hoặc website, liên kết đề xuất sẽ được bỏ." />
+      </>}
       <Form.Item name="customer_id" label="Khách hàng" rules={[{ required: true, message: 'Chọn khách hàng.' }]}><Select showSearch {...customers.searchConfig} loading={customers.loading} options={customers.options} placeholder="Chọn khách hàng" onChange={value => { setCustomerId(value); form.setFieldsValue({ website_id: undefined, model: undefined, base_url: undefined, keyAI: undefined }); }} /></Form.Item>
       <Form.Item name="website_id" label="Website nhận bài" rules={[{ required: true, message: 'Chọn website.' }]}><Select showSearch {...websites.searchConfig} loading={websites.loading} options={websites.options} disabled={!customerId} placeholder="Chọn website" /></Form.Item>
       {ownKey && <>
@@ -335,7 +373,7 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
         { key: 'end', label: 'Giờ hoàn tất', children: datetime(job.completed_at) },
       ]} />
       {job.error_message && <Alert type="error" showIcon title={job.error_code} description={job.error_message} />}
-      <Tabs items={[
+      <Tabs tabBarGutter={16} items={[
         { key: 'input', label: 'Yêu cầu', children: <Descriptions column={1} size="small" items={[
           { key: 'id', label: 'Mã yêu cầu', children: <span className="mono">{jobId(job)}</span> },
           { key: 'client', label: 'Mã yêu cầu Laravel', children: job.idempotency_key ?? '—' },
@@ -352,6 +390,7 @@ function JobDrawer({ id, liveJob, revision, close, onRewritten, onDeleted, start
           { key: 'instructions', label: 'Hướng dẫn thêm', children: job.instructions ?? '—' },
         ]} /> },
         { key: 'outline', label: 'Dàn ý', children: <OutlineReview job={job} /> },
+        { key: 'research', label: 'Nguồn nghiên cứu', children: <ResearchReview job={job} /> },
         ...(job.translation_source ? [{ key: 'translation-source', label: 'Bản gốc dùng để dịch', children: <>
           <Alert type="info" showIcon title="Bản gốc đã duyệt trên website" description="Đây là nội dung được gửi khi tạo bản dịch, gồm cả các chỉnh sửa trên website sau lần viết AI gốc." />
           <article className="article-preview"><h2>{job.translation_source.Title}</h2><div dangerouslySetInnerHTML={{ __html: sanitizeArticleHtml(job.translation_source.Content) }} /></article>

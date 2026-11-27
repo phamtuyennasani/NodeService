@@ -38,12 +38,13 @@ Trong **Website → Kết nối API**, chọn **Cấp token** để lấy thông
 
 Để dùng nhiều API tương thích OpenAI, mở tab dạng kết nối **OpenAI Compatible** trong **Nhà cung cấp AI**, rồi bấm **Thêm provider**. Các provider nằm trong danh sách bên trong tab này; chọn một provider để quản lý cấu hình và model của nó. Mỗi kết nối có tên, Base URL, API key mã hóa và danh sách model riêng; **Kiểm tra kết nối** và ping model dùng đúng kết nối đang chọn. Hai provider có thể dùng cùng mã model API: CRM lưu mã nội bộ riêng để cấp quyền khách hàng, lên lịch và tính giá chính xác, rồi gửi mã model API thực khi gọi upstream. Widget hiển thị thêm tên kết nối để phân biệt. Cấu hình OpenAI Compatible cũ được hiển thị là **Kết nối mặc định** nếu chưa đổi tên; các lịch/model đã có được giữ nguyên. Các giới hạn OpenAI Compatible trong **Cài đặt** áp dụng riêng cho từng kết nối, với cửa sổ đồng thời/phút độc lập.
 
-`npm start` chạy CRM, API, worker viết và worker giao bài trong cùng tiến trình. Khi triển khai thành các tiến trình độc lập, khởi chạy các lệnh sau và dùng chung `.env`. Chạy từ thư mục dự án để dịch vụ tìm được bản build và các migration.
+`npm start` chạy CRM, API, worker viết, worker giao bài và worker phân tích từ khóa trong cùng tiến trình. Khi triển khai thành các tiến trình độc lập, khởi chạy các lệnh sau và dùng chung `.env`. Chạy từ thư mục dự án để dịch vụ tìm được bản build và các migration.
 
 ```sh
 npm start -- api
 npm start -- writer
 npm start -- webhook
+npm start -- keyword
 ```
 
 Khi nâng cấp từ bản cũ, dừng các tiến trình NodeService bản cũ trước khi chạy `npm run migrate` và khởi động bản mới. Migration thay chỉ mục token website và xóa trường `keyAI` dạng rõ khỏi các job cũ, đồng thời giữ các khóa đã mã hóa.
@@ -54,9 +55,19 @@ Xem [hướng dẫn bảo vệ CRM và triển khai reverse proxy](docs/security
 
 Khi thử với Laravel trên máy cục bộ, đặt `ALLOW_LOCAL_WEBHOOKS=true` để gửi webhook đến địa chỉ nội bộ.
 
-Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu khi được bật, lập dàn ý, viết bản nháp và kiểm tra SEO. Trường `use_research` cho phép chọn có dùng dữ liệu tìm kiếm web làm tư liệu hay không. Mặc định là `true` để giữ nguyên hành vi hiện có; đặt `false` để bỏ qua lượt tìm kiếm cho yêu cầu đó. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Với cảnh báo tiêu đề, mô tả, slug, vị trí từ khóa, độ dài và khả năng đọc có thể sửa, hệ thống thử chỉnh tối đa hai lượt; chỉ tiếp tục lượt thứ hai nếu lượt đầu đã sửa được tiêu chí nhưng vẫn còn lỗi có thể sửa. Chỉ nhận bản chỉnh khi có tiêu chí tốt hơn và không làm mất tiêu chí đã đạt. Độ dài dùng ngân sách yêu cầu ±15%, trong giới hạn 600–2.500 từ. Đây là checklist biên tập nội bộ; mật độ từ khóa và việc thiếu liên kết nội bộ không tự kích hoạt lượt AI để tăng điểm. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
+Mỗi yêu cầu viết ngay, viết lại hoặc theo lịch tự chạy qua nghiên cứu khi được bật, lập dàn ý, viết bản nháp và kiểm tra SEO. Trường `use_research` cho phép chọn có dùng dữ liệu tìm kiếm web làm tư liệu hay không. Mặc định là `true` để giữ nguyên hành vi hiện có; đặt `false` để bỏ qua lượt tìm kiếm cho yêu cầu đó. Nếu dàn ý lỗi hoặc vượt ngân sách prompt, worker tiếp tục viết từ yêu cầu và tư liệu nghiên cứu. Với lỗi hình thức có thể sửa như thiếu tiêu đề/mô tả, cấu trúc đề mục, đoạn lặp, slug, độ dài theo yêu cầu và đoạn văn dài, hệ thống thử chỉnh tối đa hai lượt. Chỉ tiếp tục khi đã sửa được lỗi nhưng vẫn còn lỗi có thể sửa, và chỉ nhận bản chỉnh giữ các tiêu chí hình thức đã đạt. Độ dài dùng ngân sách yêu cầu ±15%, trong giới hạn 600–2.500 từ. Đây là checklist biên tập nội bộ; nguyên cụm từ khóa, vị trí từ khóa, mật độ, mốc ký tự metadata và việc thiếu liên kết nội bộ chỉ là tham khảo, không cộng/trừ điểm hoặc tự kích hoạt lượt AI để tăng điểm. Cảnh báo SEO không làm bài viết bị lỗi. Bản nháp hợp lệ được lưu trước lượt chỉnh để phục hồi và giao bài nếu tiến trình gián đoạn.
+
+### Phân tích từ khóa
+
+Mở **Vận hành → Phân tích từ khóa**, chọn website và nhập chủ đề/sản phẩm/dịch vụ. Mặc định dùng **Keyword Tool Guest MCP** miễn phí, không cần tài khoản hay API key. Website chưa có bài hoặc Search Console vẫn dùng được. Mỗi lượt lấy tối đa 100 gợi ý từ Google; tối đa 5 dòng có số liệu cache khi sẵn có. CRM ghi rõ Guest chưa xác nhận phạm vi và kỳ thống kê của cache; thiếu số liệu không phải là 0 và cạnh tranh Ads không phải độ khó SEO.
+
+Có thể xem kết quả nguồn miễn phí trước hoặc bật **Nhờ AI chọn và nhóm chủ đề**, chọn model có khóa dịch vụ trong nhóm quản lý. AI chỉ chọn ID từ khóa nguồn, nêu intent dự kiến, góc viết và lý do; không tự tạo metric. Lượt AI có trần dự tính chi phí, ghi usage và phí riêng trong `keyword_attempts`, không cộng vào chi phí/hạn mức bài viết. Nút **Viết bài / Dùng để viết bài** mở form hiện có; tiêu chí được backend xác minh theo website/khách hàng/ngôn ngữ rồi lưu trong job.
+
+**Cài đặt → Từ khóa** quản lý hạn mức riêng từng khách hàng, thời gian dùng lại kết quả, trần AI và kết nối Guest/Pro. Guest được giới hạn dùng chung qua database root để nhiều provider không tự nhân hạn mức 60 request/giờ, 120/ngày. Kết quả/lịch sử/cấu hình nằm riêng trong từng workspace. Xem lại cùng tiêu chí trong thời hạn dùng lại không gọi nguồn hoặc trừ thêm lượt. Khi có thuê bao, chủ động chọn Pro và nhập API key đã đăng ký; CRM mã hóa khóa và không tự mua/nâng cấp gói. Lưu cài đặt từ khóa yêu cầu nhập lại mật khẩu; phân tích/xem/chọn không yêu cầu. Xem [hướng dẫn và giới hạn](docs/keyword-discovery.md).
 
 ### Nội dung tạo với hỗ trợ AI
+
+Bộ kiểm tra SEO phiên bản 2 ưu tiên lỗi hình thức thay cho việc ép nguyên cụm từ khóa. Trong **Yêu cầu viết → Chi tiết → Nguồn nghiên cứu**, CRM lưu URL và trích đoạn dùng khi viết để người biên tập đối chiếu với dàn ý. Nghiên cứu DuckDuckGo chọn vùng theo ngôn ngữ bài viết khi có hỗ trợ. [Quy trình nội dung và giới hạn kiểm tra](docs/content-quality.md) · [Đồng bộ bộ chấm Laravel](docs/laravel-seo.md).
 
 Chính sách viết áp dụng cho cả dàn ý, bài mới/viết lại và lượt chỉnh sửa: giải đáp nhu cầu người đọc, có giá trị bổ sung từ cách giải thích và dữ liệu có thật; không tạo biến thể hàng loạt chỉ để lấy thứ hạng, không bịa tác giả/chuyên môn/trải nghiệm hay xác nhận đã được kiểm duyệt. Tiêu đề và mô tả phải khớp nội dung, không giật tít hoặc thêm lời hứa thiếu căn cứ. Độ dài là mục tiêu theo chủ đề, không ép lặp từ hoặc thêm nội dung đệm cho đủ điểm. Nghiên cứu hiện tại là trích đoạn tìm kiếm, chưa phải toàn văn hay kiểm chứng độc lập; không đủ căn cứ thì bỏ khẳng định, không giả vờ đã xác minh hoặc gọi thông tin là mới nhất.
 
@@ -301,6 +312,8 @@ Với `Slug: '[name="slug[$lang]"]'`, widget điền slug vào từng ô như `s
 
 ### Xem widget cục bộ với dữ liệu CRM thật
 
+Triển khai CRM và demo thành hai link Vercel riêng: xem [hướng dẫn Vercel](docs/vercel.md).
+
 Chạy CRM/API và worker bằng `npm start` (hoặc các tiến trình riêng như phần đầu), rồi mở terminal khác trong cùng dự án:
 
 ```sh
@@ -308,6 +321,8 @@ npm run dev:widget
 ```
 
 Trang xem thử chạy tại `http://127.0.0.1:3220`, dùng `.env` hiện có và website trong MongoDB. Đặt `WIDGET_SITE_ID` theo ID của website dùng hạn mức dịch vụ trước khi chạy. Adapter cục bộ tạo job thật, gọi nhà cung cấp AI và dùng hạn mức của website. Để thử chữ ký và key riêng trên trang biên tập, xem [hướng dẫn kiểm tra tích hợp trên website](docs/laravel-widget.md#kiểm-tra-tích-hợp-trên-website).
+
+`dev:widget` tự build widget và CKEditor 5 được phục vụ cục bộ cho demo. Ô **Nội dung HTML** hỗ trợ soạn trực quan và nút **Nguồn** để sửa HTML. Khi bấm **Áp dụng**, widget dùng `Content.getValue`/`Content.setValue` để đọc/ghi nội dung qua CKEditor, đồng thời đồng bộ textarea `name="body"` của form. CKEditor chỉ thuộc demo, không được thêm vào bundle widget nhúng trên website.
 
 Các worker dùng cùng MongoDB database sẽ cùng lấy việc từ một hàng đợi. Khi thử bản build local cạnh môi trường khác, dùng `MONGODB_DATABASE` riêng cho cả CRM/worker và widget preview để tránh worker cũ nhận bài. Nếu chủ ý chạy chung database, mọi worker cần cùng phiên bản và `ENCRYPTION_KEY`; chỉ khởi động lại API không cập nhật các worker bên ngoài.
 

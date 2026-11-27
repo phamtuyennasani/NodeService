@@ -11,6 +11,14 @@ export interface ResearchContext {
   researchedAt: string
 }
 
+export interface ResearchReview {
+  status: 'found' | 'unavailable' | 'disabled' | 'translation'
+  query: string
+  locale: string
+  checked_at: string
+  sources: ResearchSource[]
+}
+
 export interface ResearchConfig {
   enabled: boolean
   timeoutMs: number
@@ -18,6 +26,7 @@ export interface ResearchConfig {
   provider: 'duckduckgo' | 'tavily'
   endpoint?: string
   apiKey?: string
+  locale?: string
 }
 
 type Fetcher = typeof fetch
@@ -39,7 +48,10 @@ function decodeHtml(value: string): string {
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#(\d+);/g, (_, code: string) => {
+      const point = Number(code)
+      return point >= 0 && point <= 0x10ffff ? String.fromCodePoint(point) : ''
+    })
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -49,16 +61,32 @@ function sourceUrl(value: string): string | null {
   try {
     if (candidate.startsWith('//')) candidate = 'https:' + candidate
     const parsed = new URL(candidate)
-    if (parsed.hostname.endsWith('duckduckgo.com') && parsed.pathname === '/l/') {
+    if ((parsed.hostname === 'duckduckgo.com' || parsed.hostname.endsWith('.duckduckgo.com')) && parsed.pathname === '/l/') {
       const destination = parsed.searchParams.get('uddg')
       if (destination) candidate = destination
     }
     const url = new URL(candidate)
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.toString().length > 2048) return null
+    url.hash = ''
     return url.toString()
   } catch {
     return null
   }
+}
+
+/** Bounded public snippets shared by the writing prompt and the CRM review view. */
+export function normalizeResearch(context: ResearchContext | null): ResearchContext | null {
+  if (!context) return null
+  const sources: ResearchSource[] = []
+  for (const row of context.sources.slice(0, 20)) {
+    const url = sourceUrl(row.url)
+    const title = text(row.title, 300), snippet = text(row.snippet, 800)
+    if (!url || !title || !snippet || sources.some(source => source.url === url)) continue
+    const publishedAt = text(row.publishedAt, 80)
+    sources.push({ url, title, snippet, ...(publishedAt ? { publishedAt } : {}) })
+    if (sources.length === 10) break
+  }
+  return sources.length ? { query: text(context.query, 500), researchedAt: context.researchedAt, sources } : null
 }
 
 function parseDuckDuckGo(html: string, maxResults: number): ResearchSource[] {
@@ -70,7 +98,9 @@ function parseDuckDuckGo(html: string, maxResults: number): ResearchSource[] {
     const title = decodeHtml(match[2])
     if (!url || !title) continue
     const end = Math.min(html.length, pattern.lastIndex + 2_000)
-    const block = html.slice(pattern.lastIndex, end)
+    const tail = html.slice(pattern.lastIndex, end)
+    const nextResult = /<a[^>]*class=["'][^"']*result__a\b/i.exec(tail)
+    const block = tail.slice(0, nextResult?.index ?? tail.length)
     const snippetMatch = /class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/i.exec(block)
     const snippet = decodeHtml(snippetMatch?.[1] ?? '')
     if (!snippet) continue
@@ -108,7 +138,11 @@ async function tavily(query: string, config: ResearchConfig, fetcher: Fetcher): 
 }
 
 async function duckduckgo(query: string, config: ResearchConfig, fetcher: Fetcher): Promise<ResearchSource[]> {
-  const endpoint = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=vn-vi`
+  const regions: Record<string, string> = { vi: 'vn-vi', en: 'us-en', ja: 'jp-jp', ko: 'kr-kr', zh: 'cn-zh', ru: 'ru-ru', th: 'th-th', fr: 'fr-fr', de: 'de-de' }
+  const variants: Record<string, string> = { 'en-gb': 'uk-en', 'en-au': 'au-en', 'en-ca': 'ca-en', 'fr-ca': 'ca-fr', 'zh-tw': 'tw-tzh', 'zh-hant': 'tw-tzh', 'zh-hk': 'hk-tzh' }
+  const locale = (config.locale ?? 'vi').toLowerCase()
+  const region = variants[locale] ?? regions[locale.split('-')[0]]
+  const endpoint = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}${region ? '&kl=' + region : ''}`
   const response = await fetcher(endpoint, {
     method: 'GET',
     headers: { accept: 'text/html', 'user-agent': 'node-content-crm research/1.0' },
@@ -135,7 +169,7 @@ export async function researchTopic(keyword: string, config: ResearchConfig, fet
       ? await tavily(query, config, fetcher)
       : await duckduckgo(query, config, fetcher)
     if (!sources.length) return null
-    return { query, sources, researchedAt: new Date().toISOString() }
+    return normalizeResearch({ query, sources, researchedAt: new Date().toISOString() })
   } catch {
     return null
   }

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { cleanArticle, estimateGenerationTokens, generateArticle, generateOutline, repairArticle, WorkerError, type GenerateInput, type RepairInput } from '../src/worker/provider.js'
-import { researchTopic } from '../src/worker/research.js'
+import { normalizeResearch, researchTopic } from '../src/worker/research.js'
 
 function assertOriginalWritingPolicy(value: unknown) {
   const prompt = String(value)
@@ -32,18 +32,18 @@ function assertPeopleFirstSeoGuidance(value: unknown) {
   assert.match(prompt, /không viết chỉ để đạt điểm SEO hoặc thu hút lượt tìm kiếm/)
   assert.match(prompt, /Title mô tả trung thực nội dung/)
   assert.match(prompt, /không giật tít/)
-  assert.match(prompt, /Title dài 41–70 ký tự, Description dài 155–160 ký tự/)
-  assert.match(prompt, /không cắt giữa câu hoặc thêm lời hứa thiếu căn cứ/)
+  assert.match(prompt, /không phải điều kiện cần đạt/)
+  assert.match(prompt, /Không kéo dài hoặc cắt câu chỉ để khớp mốc ký tự/)
   assert.match(prompt, /Ngân sách TOÀN BỘ Content/)
   assert.match(prompt, /bao gồm mở bài, đề mục, bảng, danh sách và kết luận/)
   assert.match(prompt, /không nhân ngân sách cho từng H3/)
   assert.match(prompt, /Không thêm câu cho đủ số từ/)
-  assert.match(prompt, /Dùng nguyên cụm từ khóa chính một lần trong Title/)
-  assert.match(prompt, /trong đoạn mở thuộc 10% đầu Content/)
-  assert.match(prompt, /trong ít nhất một h2 hoặc h3/)
-  assert.match(prompt, /không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
+  assert.match(prompt, /không bắt buộc lặp nguyên cụm trong Title/)
+  assert.match(prompt, /Mở bài trả lời câu hỏi chính ngay/)
+  assert.match(prompt, /thay cho lời dẫn chung chung/)
+  assert.match(prompt, /Không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
   assert.match(prompt, /không tự tạo liên kết để lấy điểm/)
-  assert.match(prompt, /không phải yêu cầu của Google, kiểm chứng chất lượng hay bảo đảm thứ hạng/)
+  assert.match(prompt, /không đo mức hữu ích hoặc kiểm chứng sự thật/)
   assert.match(prompt, /người biên tập kiểm tra tính chính xác trước khi xuất bản/)
 }
 
@@ -661,6 +661,7 @@ test('metadata repair limits the JSON patch and keeps the original HTML', async 
   assertOriginalWritingPolicy(systemMessage)
   assertPeopleFirstSeoGuidance(systemMessage)
   assert.match(String(systemMessage), /chỉ diễn đạt lại thông tin đã có trong bản nháp và ngữ cảnh nội dung/)
+  assert.doesNotMatch(String(systemMessage), /Đạt khoảng ký tự/)
   assert.deepEqual(result.article, { ...draft, Title })
   await assert.rejects(repairArticle(repairInput, async () => compatibleStream({ Title, Content: '<p>Bị sửa ngoài phạm vi.</p>' })), { code: 'AI_REPAIR' })
 })
@@ -721,21 +722,21 @@ test('SEO repair receives measured draft length, requested word budget and crite
     recommendedChangeWords: 502,
     recommendedChangePercent: 26,
   })
-  assert.ok(inspection.tiêu_chí_đã_đạt.includes('keywordInTitle'))
-  assert.ok(inspection.tiêu_chí_đã_đạt.includes('lengthTitle'))
-  assert.ok(inspection.tiêu_chí_đã_đạt.includes('keywordInMetaDescription'))
-  assert.ok(inspection.tiêu_chí_đã_đạt.includes('lengthMetaDescription'))
+  assert.ok(inspection.tiêu_chí_đã_đạt.includes('titlePresent'))
+  assert.ok(inspection.tiêu_chí_đã_đạt.includes('descriptionPresent'))
+  assert.equal(inspection.tiêu_chí_đã_đạt.includes('keywordInTitle'), false)
+  assert.equal(inspection.tiêu_chí_đã_đạt.includes('lengthMetaDescription'), false)
   assert.equal(inspection.tiêu_chí_đã_đạt.includes('lengthContent'), false)
   assert.deepEqual(inspection.điều_kiện_cần_giữ.map((condition: { key: string }) => condition.key), inspection.tiêu_chí_đã_đạt)
   assert.ok(inspection.điều_kiện_cần_giữ.every((condition: { message: unknown }) => typeof condition.message === 'string' && condition.message.length > 0))
-  assert.match(inspection.điều_kiện_cần_giữ.find((condition: { key: string }) => condition.key === 'keywordInSubheadings').message, /h2|h3/)
+  assert.match(inspection.điều_kiện_cần_giữ.find((condition: { key: string }) => condition.key === 'headingStructure').message, /H2|H3/)
   assert.deepEqual(prompt.trường_được_phép_sửa, ['Content'])
   assert.deepEqual(prompt.cảnh_báo, repairInput.issues)
-  assert.match(request.messages[0].content, /tiêu chí đã đạt/iu)
+  assert.match(request.messages[0].content, /tiêu chí kiểm tra hình thức đã đạt/iu)
   assert.match(request.messages[0].content, /1275–1725 từ/)
-  assert.match(request.messages[0].content, /không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
-  assert.match(request.messages[0].content, /Giữ nguyên cụm từ khóa trong đoạn mở và trong ít nhất một h2\/h3 đã có/)
-  assert.match(request.messages[0].content, /mỗi đoạn p sau chỉnh sửa vẫn tối đa 90 từ/)
+  assert.match(request.messages[0].content, /Không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
+  assert.match(request.messages[0].content, /Giữ câu trả lời chính ở đầu/)
+  assert.match(request.messages[0].content, /mỗi đoạn p sau chỉnh sửa ưu tiên tối đa 90 từ/)
   assert.match(request.messages[0].content, /không chỉ xóa phần cuối/)
 })
 
@@ -800,4 +801,30 @@ test('researchTopic parses search results and fails open on search errors', asyn
 
   const unavailable = await researchTopic('cà phê', { enabled: true, provider: 'duckduckgo', timeoutMs: 1_000, maxResults: 5 }, async () => { throw new Error('offline') })
   assert.equal(unavailable, null)
+})
+
+test('research uses the content language and normalizes public snippets without inventing sources', async () => {
+  const regions: (string | null)[] = []
+  for (const locale of ['vi', 'ja-JP', 'ko', 'ru', 'lo', 'en-GB', 'zh-TW']) {
+    await researchTopic('a topic', { enabled: true, provider: 'duckduckgo', timeoutMs: 1000, maxResults: 2, locale }, async url => {
+      regions.push(new URL(String(url)).searchParams.get('kl'))
+      return new Response('<a class="result__a" href="https://example.com/a">Primary source</a><div class="result__snippet">A bounded search snippet.</div>')
+    })
+  }
+  assert.deepEqual(regions, ['vn-vi', 'jp-jp', 'kr-kr', 'ru-ru', null, 'uk-en', 'tw-tzh'])
+  const normalized = normalizeResearch({ query: 'Topic', researchedAt: '2026-11-27T00:00:00Z', sources: [
+    { title: 'Public source', url: 'https://example.com/a#part', snippet: 'A fact to check.' },
+    { title: 'Duplicate', url: 'https://example.com/a', snippet: 'Not a second independent source.' },
+    { title: 'Unsafe', url: 'javascript:alert(1)', snippet: 'Untrusted content.' },
+    { title: 'Credentials', url: 'https://user:password@example.com/a', snippet: 'Do not expose credentials.' },
+    { title: 'Too long', url: 'https://example.com/' + 'x'.repeat(2050), snippet: 'Invalid URL.' },
+  ] })
+  assert.deepEqual(normalized?.sources, [{ title: 'Public source', url: 'https://example.com/a', snippet: 'A fact to check.' }])
+})
+
+test('research never assigns the following search result snippet to a source without one', async () => {
+  const html = '<a class="result__a" href="https://example.com/without-snippet">No evidence</a>'
+    + '<a class="result__a" href="https://example.com/with-snippet">Actual source</a><div class="result__snippet">Only this source supports the snippet.</div>'
+  const result = await researchTopic('a topic', { enabled: true, provider: 'duckduckgo', timeoutMs: 1000, maxResults: 5 }, async () => new Response(html))
+  assert.deepEqual(result?.sources, [{ title: 'Actual source', url: 'https://example.com/with-snippet', snippet: 'Only this source supports the snippet.' }])
 })

@@ -51,6 +51,7 @@ export async function runPartnerServices(root: Database, config: Config, signal:
               tasks.push((deps.maintenance ?? runMaintenance)(db, isolatedConfig, controller.signal))
               if (role === 'all' || role === 'writer') tasks.push((deps.workers ?? runWorkers)(db, isolatedConfig, controller.signal, 'writer'))
               if (role === 'all' || role === 'webhook') tasks.push((deps.workers ?? runWorkers)(db, isolatedConfig, controller.signal, 'webhook'))
+              if (role === 'all' || role === 'keyword') tasks.push((deps.workers ?? runWorkers)(db, isolatedConfig, controller.signal, 'keyword'))
               await Promise.race(tasks)
             } catch {
               console.error('Partner services could not run', partner._id)

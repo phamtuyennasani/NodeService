@@ -12,6 +12,7 @@ import { effectiveConfig } from '../runtime-settings.js'
 import { registerIntegrations } from './crm-integrations.js'
 import { createWorkspaceAccess } from '../workspaces.js'
 import { registerPartners } from './crm-partners.js'
+import { registerKeywords } from './crm-keywords.js'
 
 export function registerCrm(app: FastifyInstance, root: Database, base: Config, workspaces?: ReturnType<typeof createWorkspaceAccess>) {
   const access = workspaces ?? createWorkspaceAccess(root, base)
@@ -27,4 +28,5 @@ export function registerCrm(app: FastifyInstance, root: Database, base: Config, 
   registerProviders(app, db, config)
   registerPrices(app, db, config, () => effectiveConfig(db, config))
   registerSettings(app, db, config)
+  registerKeywords(app, db, config)
 }

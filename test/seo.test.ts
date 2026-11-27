@@ -89,7 +89,7 @@ test('SEO validates normalized slugs and recognizes only same-site web links', (
 
 test('deferred images are excluded and missing site context cannot force an internal link', () => {
   const report = evaluateSeoFields({ ...article, siteUrl: null })
-  assert.equal(report.applicable, 14)
+  assert.equal(report.applicable, 6)
   assert.equal(finding(report, 'linksHasInternal').applicable, false)
   for (const key of ['keywordInImageAlt', 'contentHasAssets'] as const) {
     assert.equal(finding(report, key).applicable, false)
@@ -105,20 +105,20 @@ test('SEO guidance aligns the CRM checklist with the requested budget without ke
   assert.match(guidance, /1200 từ/)
   assert.match(guidance, /1020–1380 từ/)
   assert.match(guidance, /Không thêm câu cho đủ số từ hoặc cắt mất ý chính/)
-  assert.match(guidance, /không cắt giữa câu hoặc thêm lời hứa thiếu căn cứ/)
+  assert.match(guidance, /Không kéo dài hoặc cắt câu chỉ để khớp mốc ký tự/)
   assert.match(guidance, /không giật tít/)
-  assert.match(guidance, /Dùng nguyên cụm từ khóa chính một lần trong Title/)
-  assert.match(guidance, /trong đoạn mở thuộc 10% đầu Content/)
-  assert.match(guidance, /trong ít nhất một h2 hoặc h3/)
-  assert.match(guidance, /không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
-  assert.match(guidance, /không phải yêu cầu của Google/)
+  assert.match(guidance, /không bắt buộc lặp nguyên cụm trong Title/)
+  assert.match(guidance, /Mở bài trả lời câu hỏi chính ngay/)
+  assert.match(guidance, /thay cho lời dẫn chung chung/)
+  assert.match(guidance, /Không nhồi từ khóa hoặc viết để đạt mật độ cố định/)
+  assert.match(guidance, /không phải số từ Google ưu tiên/)
   assert.match(guidance, /người biên tập kiểm tra tính chính xác trước khi xuất bản/)
-  assert.match(guidance, /Title dài 41–70/)
-  assert.match(guidance, /Description dài 155–160/)
+  assert.match(guidance, /Title 41–70/)
+  assert.match(guidance, /Description 155–160/)
   assert.doesNotMatch(guidance, /mật độ từ khóa chính khoảng 1%/)
 })
 
-test('failed CRM metadata and keyword placement checks trigger targeted repair', () => {
+test('exact-match placement and legacy character counts are advisory and never trigger repair', () => {
   const report = evaluateSeoFields({
     ...article,
     title: 'Hướng dẫn',
@@ -126,24 +126,47 @@ test('failed CRM metadata and keyword placement checks trigger targeted repair',
     slug: 'huong-dan',
     contentHtml: '<h2>Chọn thức uống</h2><p>Chọn hương vị theo sở thích.</p><p>Ưu tiên nguyên liệu có thông tin rõ ràng.</p>',
   })
-  const repairKeys = [
+  const advisoryKeys = [
     'keywordInTitle', 'titleStartWithKeyword', 'lengthTitle', 'keywordInMetaDescription',
     'lengthMetaDescription', 'keywordInPermalink', 'keywordIn10Percent', 'keywordInContent',
-    'lengthContent', 'keywordInSubheadings',
+    'keywordInSubheadings',
   ] as const
-  for (const key of repairKeys) {
+  for (const key of advisoryKeys) {
     const item = finding(report, key)
-    assert.equal(item.applicable, true, key)
+    assert.equal(item.applicable, false, key)
     assert.equal(item.passed, false, key)
-    assert.equal(item.repairable, true, key)
-    assert.ok(report.warnings.some(warning => warning.key === key), key)
+    assert.equal(item.repairable, false, key)
+    assert.equal(item.advisory, true, key)
+    assert.ok(!report.warnings.some(warning => warning.key === key), key)
   }
+  assert.equal(finding(report, 'lengthContent').repairable, true)
   assert.equal(report.metrics.titleCharacters, Array.from('Hướng dẫn').length)
   assert.equal(report.metrics.keywordOccurrences, 0)
   assert.equal(report.metrics.keywordDensity, 0)
   assert.equal(report.score, Math.ceil(report.passed / report.applicable * 100))
   assert.equal(finding(report, 'keywordDensity').repairable, false)
   assert.equal(finding(report, 'linksHasInternal').repairable, false)
+})
+
+test('natural metadata and synonyms receive the same score as exact-match wording', () => {
+  const exact = evaluateSeoFields(article)
+  const natural = evaluateSeoFields({ ...article, title: 'Chọn hương vị cho cốc uống buổi sáng', description: 'Tìm loại hạt và phương pháp pha phù hợp với sở thích.', slug: 'chon-huong-vi' })
+  assert.equal(exact.score, natural.score)
+  assert.equal(exact.applicable, natural.applicable)
+  assert.equal(natural.version, 2)
+  assert.equal(finding(natural, 'keywordInTitle').passed, false)
+  assert.equal(finding(natural, 'keywordInTitle').advisory, true)
+})
+
+test('the checklist catches repeated paragraphs and skipped or duplicate heading levels', () => {
+  const paragraph = '<p>Kiểm tra nguồn nước và chọn loại hạt phù hợp trước khi pha.</p>'
+  const repeated = evaluateSeoFields({ ...article, contentHtml: paragraph.repeat(2) })
+  assert.equal(finding(repeated, 'distinctParagraphs').passed, false)
+  assert.equal(finding(repeated, 'distinctParagraphs').repairable, true)
+  for (const headings of ['<h1>Tiêu đề lặp</h1>', '<h4>Bước đầu</h4>', '<h2> </h2>', '<h2>Bước đầu</h2><h4>Bước cuối</h4>', '<h2>Bước đầu</h2><h2>Bước đầu</h2>']) {
+    assert.equal(finding(evaluateSeoFields({ ...article, contentHtml: headings + paragraph }), 'headingStructure').passed, false)
+  }
+  assert.equal(finding(evaluateSeoFields({ ...article, contentHtml: '<h2>Chuẩn bị</h2><h3>Chọn hạt</h3>' + paragraph }), 'headingStructure').passed, true)
 })
 
 test('slug length and readability can be repaired without forcing impossible keyword slugs', () => {

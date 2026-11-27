@@ -69,21 +69,21 @@ test('partner supervisor discovers groups, drains disabled work and never overla
     await tick()
   }
   try {
-    await eventually(() => tasks.length === 3 && pauses.length === 1)
-    assert.deepEqual(tasks.map(task => task.role), ['maintenance', 'writer', 'webhook'])
+    await eventually(() => tasks.length === 4 && pauses.length === 1)
+    assert.deepEqual(tasks.map(task => task.role), ['maintenance', 'writer', 'webhook', 'keyword'])
     enabled = [b]
     await refresh()
-    assert.equal(tasks.length, 6)
+    assert.equal(tasks.length, 8)
     assert.ok(tasks.filter(task => task.id === a).every(task => task.signal.aborted))
     assert.ok(tasks.filter(task => task.id === b).every(task => !task.signal.aborted))
     enabled = [a, b]
     await refresh()
-    assert.equal(tasks.length, 6, 're-enable must wait until old work has drained')
+    assert.equal(tasks.length, 8, 're-enable must wait until old work has drained')
     tasks.filter(task => task.id === a).forEach(task => task.finish.resolve())
     await tick()
     await refresh()
-    assert.equal(tasks.length, 9)
-    assert.ok(tasks.slice(6).every(task => task.id === a && !task.signal.aborted))
+    assert.equal(tasks.length, 12)
+    assert.ok(tasks.slice(8).every(task => task.id === a && !task.signal.aborted))
     unavailable = true
     await refresh()
     assert.ok(tasks.every(task => task.signal.aborted), 'unknown access must stop new claims in every group')
@@ -99,8 +99,8 @@ test('partner supervisor discovers groups, drains disabled work and never overla
   assert.equal(stopped, true)
 })
 
-test('separate API, writer and webhook roles only start their matching partner services', { timeout: 5_000 }, async t => {
-  for (const role of ['api', 'writer', 'webhook']) await t.test(role, async () => {
+test('separate API, writer, webhook and keyword roles only start matching partner services', { timeout: 5_000 }, async t => {
+  for (const role of ['api', 'writer', 'webhook', 'keyword']) await t.test(role, async () => {
     const root = controlDatabase(() => [{ _id: randomUUID() }])
     const controller = new AbortController()
     const roles: string[] = []

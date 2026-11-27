@@ -27,6 +27,7 @@ test('site job status exposes CRM writing stages and final SEO metadata while pr
     _id: jobId, site_id: siteId, customer_id: randomUUID(), status: 'writing', mode: 'preview',
     keyword, length: 1500, use_research: true, version: 1, result: [article], created_at: now,
     seo_report: report, seo_repair_status: 'kept_draft',
+    research_review: { status: 'found', sources: [{ snippet: 'CRM_ONLY_RESEARCH_CONTEXT' }] },
     encrypted_key: 'must-not-be-exposed', instructions: 'private writing instructions',
   }
   const tables: Record<string, Record<string, any>[]> = {
@@ -66,6 +67,7 @@ test('site job status exposes CRM writing stages and final SEO metadata while pr
     assert.equal(processing.json().seo_report, null, 'stage progress must not expose an unfinished article or report')
     assert.equal('result' in processing.json(), false)
     assert.doesNotMatch(processing.body, /must-not-be-exposed|private writing instructions/)
+    assert.equal('research_review' in processing.json(), false)
   }
 
   for (const state of ['queued', 'scheduled', 'failed', 'canceled']) {
@@ -84,6 +86,8 @@ test('site job status exposes CRM writing stages and final SEO metadata while pr
   assert.equal(ready.json().writing_stage, null, 'completed jobs no longer have an active checkpoint')
   assert.equal('result' in ready.json(), false)
   assert.doesNotMatch(ready.body, /must-not-be-exposed|private writing instructions/)
+  assert.doesNotMatch(ready.body, /CRM_ONLY_RESEARCH_CONTEXT/)
+  assert.equal('research_review' in ready.json(), false)
   const result = await read('/result')
   assert.equal(result.statusCode, 200, result.body)
   assert.deepEqual(result.json(), [article])

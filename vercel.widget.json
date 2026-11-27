@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm ci --include=dev",
+  "buildCommand": "node scripts/build-vercel.mjs widget",
+  "outputDirectory": "dist/vercel-static",
+  "regions": ["sin1"],
+  "functions": {
+    "api/index.mjs": { "maxDuration": 300, "includeFiles": "{dist/widget/**,dist/widget-preview/**}" }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}

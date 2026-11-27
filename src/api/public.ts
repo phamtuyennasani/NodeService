@@ -20,8 +20,10 @@ import { sameWidgetToken, widgetGrantSeconds, widgetOrigin, widgetReadToken, wid
 import { admitSiteProof, installSiteProofParser, siteProofRequired, siteSecurityFilter, verifySiteRequest, type SiteSecurity } from '../site-proof.js'
 import { languageConfigSchema, languageMetadata, languageSummary, localeSchema, translationSourceSchema, validateWritingLanguage, type LanguageWriting } from '../article-language.js'
 import { articleIdentity, articleIdentityFields, resolveArticleIdentity, type ArticleIdentity } from '../article-group.js'
+import { loadKeywordBrief, type KeywordSelection, type KeywordBrief } from '../keywords/brief.js'
 
 export interface Site extends SiteSecurity { customer_id: string; webhook_url: string | null; webhook_secret: string | null; widget_origin?: string; widget_domain?: string }
+interface JobDoc { keyword_brief?: KeywordBrief }
 interface CustomerDoc extends Package { _id: string; name: string; email: string | null; phone: string | null; notes: string | null; updated_at: Date; created_at: Date }
 interface JobDoc extends LanguageWriting, ArticleIdentity { _id: string; site_id: string; customer_id: string; client_request_id: string; request_hash: string; mode: 'scheduled' | 'preview' | 'rewrite'; widget_origin?: string; source_article_id: string | null; retry_of_job_id: string | null; version: number; provider: Provider; model: string; keyword: string; tone: string; style: string; length: number; instructions: string | null; use_research?: boolean; exclude_content_ids?: string[]; key_mode: 'own' | 'service'; encrypted_key: string | null; status: string; writing_stage?: WritingStage | null; scheduled_at: Date | null; available_at: Date; attempt_count: number; lease_token: string | null; lease_expires_at: Date | null; started_at: Date | null; completed_at: Date | null; result: unknown[] | null; seo_report?: SeoReport | null; seo_repair_status?: 'not_needed' | 'applied' | 'kept_draft' | 'skipped' | null; error_code: string | null; error_message: string | null; created_at: Date; updated_at: Date }
 
@@ -129,11 +131,11 @@ async function providerFor(source: TransactionContext, writing: Writing, custome
 
 function summary(job: JobDoc) { return { ...languageSummary(job), ...articleIdentity(job), job_id: job._id, status: job.status, scheduled_at: job.scheduled_at, version: job.version, source_article_id: job.source_article_id, retry_of_job_id: job.retry_of_job_id ?? null, use_research: job.use_research ?? true } }
 
-export async function createJob(db: Database, config: Config, site: Site, clientId: string, writing: Writing, mode: Mode, scheduled: string | undefined, sourceId?: string, retryOfJobId?: string) {
+export async function createJob(db: Database, config: Config, site: Site, clientId: string, writing: Writing, mode: Mode, scheduled: string | undefined, sourceId?: string, retryOfJobId?: string, keywordSelection?: KeywordSelection) {
   try { validateWritingLanguage(writing, Boolean(sourceId)) }
   catch (error) { throw new ApiError(400, 'invalid_language_config', (error as Error).message) }
   const scheduledAt = scheduled ? new Date(scheduled) : null
-  const fingerprint = requestFingerprint({ writing, mode, scheduledAt, sourceId, retryOfJobId }, config)
+  const fingerprint = requestFingerprint({ writing, mode, scheduledAt, sourceId, retryOfJobId, ...(keywordSelection ? { keywordSelection } : {}) }, config)
   const created = await transaction(db, async client => {
     const session = sessionOf(client)
     const currentSite = await lockedSite(client, site)
@@ -170,11 +172,14 @@ export async function createJob(db: Database, config: Config, site: Site, client
       if (keyState === 'missing') throw new ApiError(422, 'service_key_unavailable', 'Nhà cung cấp này chưa được cấu hình key dịch vụ.')
     }
     const jobId = randomUUID()
+    const keywordBrief = keywordSelection ? await loadKeywordBrief(client, site.id, customer.id, keywordSelection,
+      writing.keyword, writing.locale ?? writing.languages?.source ?? 'vi') : undefined
     const identity = await resolveArticleIdentity(client, site, jobId, writing, sourceId, retryOfJobId)
     const job: JobDoc = {
       _id: jobId, ...identity, site_id: site.id, customer_id: customer.id, client_request_id: clientId, request_hash: fingerprint, mode, source_article_id: sourceId ?? null, retry_of_job_id: retryOfJobId ?? null,
       ...(site.widget_origin ? { widget_origin: site.widget_origin } : {}),
       version: 1, provider, model: writing.model, keyword: writing.keyword, tone: writing.tone, style: writing.style, length: writing.length, instructions: writing.instructions ?? null, use_research: writing.use_research,
+      ...(keywordBrief ? { keyword_brief: keywordBrief } : {}),
       ...languageMetadata(writing),
       exclude_content_ids: [...new Set(writing.exclude_content_ids ?? [])],
       key_mode: pkg.key_mode, encrypted_key: encryptedKeyFor(writing, pkg, config), status: mode === 'scheduled' ? 'scheduled' : 'queued', scheduled_at: scheduledAt, available_at: availableAt,

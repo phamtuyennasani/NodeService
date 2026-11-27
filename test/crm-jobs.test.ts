@@ -68,6 +68,8 @@ async function mockCrm(browser: Browser, bundle: string, rewriteKeyMode: 'own' |
       used: [{ url: 'https://example.vn/huong-dan-chon-website', anchor: 'hướng dẫn chọn website phù hợp' }],
       removed: 1, checked_at: '2026-11-23T03:00:00Z',
     },
+    research_review: { status: 'found', query: 'thiết kế website', locale: 'vi', checked_at: '2026-11-27T03:00:00Z',
+      sources: [{ title: 'Tài liệu kiểm thử', url: 'https://example.org/research', snippet: 'Ưu tiên nhu cầu đã xác minh.' }] },
   };
   completed.seo_report = evaluateSeo(completed.result![0], { keyword: completed.keyword });
   completed.seo_repair_status = 'kept_draft';
@@ -229,6 +231,7 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
         const button = page.locator('.ant-drawer').getByRole('button', { name: 'Xuất PDF', exact: true });
         const requested = page.waitForRequest(`**/api/crm/jobs/${completedId}/pdf`);
         await button.click(); await requested;
+        await page.waitForFunction(element => element!.classList.contains('ant-btn-loading'), await button.elementHandle());
         assert.equal(await button.evaluate(element => element.classList.contains('ant-btn-loading')), true);
         await button.evaluate(element => { (element as HTMLButtonElement).click(); (element as HTMLButtonElement).click(); });
         assert.equal(calls, 1);
@@ -568,7 +571,7 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
         await drawer.getByText('Bài viết được chấp nhận và còn gợi ý SEO', { exact: true }).waitFor();
         await drawer.getByText('Lượt chỉnh sửa SEO chưa tạo được bản tốt hơn. Bản nháp đã lưu được giữ lại để bạn chỉnh sửa.', { exact: true }).waitFor();
         await drawer.getByText(/không xác nhận bài đã đáp ứng chính sách Google hoặc được kiểm chứng sự thật/).waitFor();
-        assert.equal(await drawer.locator('.seo-findings [data-state="excluded"]').count(), 3);
+        assert.ok(await drawer.getByText('Tham khảo', { exact: true }).count() > 0);
         assert.ok(await drawer.locator('.seo-findings [data-state="warning"]').count() > 0);
         assert.equal(await drawer.locator('.ant-alert-error').count(), 0);
         await drawer.getByRole('tab', { name: 'Lần gọi AI (1)', exact: true }).click();
@@ -583,7 +586,7 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
       try {
         await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
         const drawer = page.locator('.ant-drawer');
-        assert.deepEqual((await drawer.getByRole('tab').allTextContents()).slice(0, 3), ['Yêu cầu', 'Dàn ý', 'Bài viết']);
+        assert.deepEqual((await drawer.getByRole('tab').allTextContents()).slice(0, 4), ['Yêu cầu', 'Dàn ý', 'Nguồn nghiên cứu', 'Bài viết']);
         await drawer.getByRole('tab', { name: 'Dàn ý', exact: true }).click();
         const outline = drawer.getByRole('region', { name: 'Dàn ý bài viết' });
         await outline.getByRole('heading', { name: 'Thiết kế website phù hợp với doanh nghiệp' }).waitFor();
@@ -598,12 +601,32 @@ test('CRM exposes and submits rewrites for failed jobs without generated content
       } finally { await page.close(); }
     });
 
+    await t.test('research sources can be opened for checking against the outline', async () => {
+      const { page, row, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
+      try {
+        await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
+        const drawer = page.locator('.ant-drawer');
+        await drawer.getByRole('tab', { name: 'Nguồn nghiên cứu', exact: true }).click();
+        const review = drawer.getByRole('region', { name: 'Nguồn nghiên cứu', exact: true });
+        await review.getByRole('heading', { name: 'Nguồn 1: Tài liệu kiểm thử', exact: true }).waitFor();
+        await review.getByText('Ưu tiên nhu cầu đã xác minh.', { exact: true }).waitFor();
+        await review.getByText(/chưa phải toàn văn hoặc xác minh sự thật/).waitFor();
+        const source = review.getByRole('link', { name: 'https://example.org/research', exact: true });
+        assert.equal(await source.getAttribute('href'), 'https://example.org/research');
+        assert.equal(await source.getAttribute('rel'), 'noopener noreferrer');
+        await page.setViewportSize({ width: 375, height: 900 });
+        assert.ok(await review.evaluate(element => element.scrollWidth <= element.clientWidth + 1));
+        assert.deepEqual(unexpected, []);
+        assert.deepEqual(pageErrors, []);
+      } finally { await page.close(); }
+    });
+
     await t.test('internal link tab shows catalog diagnostics and makes verification limits clear', async () => {
       const { page, row, unexpected, pageErrors } = await mockCrm(browser, outputFiles[0].text);
       try {
         await row('bài đã hoàn tất').getByRole('button', { name: /bài đã hoàn tất/ }).click();
         const drawer = page.locator('.ant-drawer');
-        assert.deepEqual((await drawer.getByRole('tab').allTextContents()).slice(0, 3), ['Yêu cầu', 'Dàn ý', 'Bài viết']);
+        assert.deepEqual((await drawer.getByRole('tab').allTextContents()).slice(0, 4), ['Yêu cầu', 'Dàn ý', 'Nguồn nghiên cứu', 'Bài viết']);
         await drawer.getByRole('tab', { name: 'Liên kết nội bộ', exact: true }).click();
         const report = drawer.getByRole('region', { name: 'Liên kết nội bộ', exact: true });
         await report.getByText('Đã kiểm tra theo danh mục website', { exact: true }).waitFor();

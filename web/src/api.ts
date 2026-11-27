@@ -246,6 +246,7 @@ export function useCatalog(path: '/customers' | '/websites', selected?: string |
     selected: data.find((item) => item.id === selected),
     loading: list.loading || exact.loading,
     error: list.error ?? exact.error,
+    reload: () => { list.reload(); exact.reload(); },
     searchConfig: { onSearch: setSearch, filterOption: false },
   };
 }

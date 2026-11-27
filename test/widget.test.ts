@@ -115,20 +115,21 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     const seo = dialog.getByRole('region', { name: 'Kết quả kiểm tra SEO từ CRM' });
     const assertSeoCounts = async () => {
-      const excluded = report.findings.filter(finding => !finding.applicable).length;
+      const excluded = report.findings.filter(finding => !finding.applicable && !finding.advisory).length;
+      const advisory = report.findings.filter(finding => finding.advisory).length;
       assert.equal(await seo.locator('.seo-summary').textContent(), `${report.score}/100 điểm tiêu chí nội bộ · ${report.passed}/${report.applicable} tiêu chí đạt · ${report.warnings.length} tiêu chí cần xem lại.`);
-      assert.equal(await seo.locator('summary').textContent(), `Xem ${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng)`);
+      assert.equal(await seo.locator('summary').textContent(), `Xem ${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng${advisory ? `, ${advisory} tham khảo` : ''})`);
       await seo.locator('summary').click();
       assert.equal(await seo.locator('li').count(), report.findings.length);
       assert.equal(await seo.locator('li[data-state="passed"]').count(), report.passed);
       assert.equal(await seo.locator('li[data-state="warning"]').count(), report.warnings.length);
-      assert.equal(await seo.locator('li[data-state="excluded"]').count(), excluded);
-      assert.equal(report.findings.length, report.applicable + excluded);
+      assert.equal(await seo.locator('li[data-state="excluded"]').count(), excluded + advisory);
+      assert.equal(report.findings.length, report.applicable + excluded + advisory);
       assert.equal(report.applicable, report.passed + report.warnings.length);
       assert.match(await seo.innerText(), /Tiêu chí chưa áp dụng không tính vào điểm\./);
     };
     await seo.waitFor();
-    assert.equal(report.applicable, 15);
+    assert.equal(report.applicable, 6);
     await assertSeoCounts();
     assert.match(await seo.locator('.seo-repair').innerText(), /CRM giữ lại bản nháp/);
     const warningRow = seo.locator('li').filter({ hasText: warning.message });
@@ -146,7 +147,7 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
     await dialog.getByLabel('Từ khóa', { exact: true }).fill(typedKeyword);
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     await seo.waitFor();
-    assert.equal(report.applicable, 14, 'missing website context excludes the internal-link check too');
+    assert.equal(report.applicable, 6, 'internal-link presence remains advisory with or without website context');
     if (await seo.locator('details').getAttribute('open') !== null) await seo.locator('summary').click();
     await assertSeoCounts();
     await dialog.getByRole('button', { name: 'Áp dụng' }).click();

@@ -28,7 +28,7 @@ test('browser SEO script preserves the Laravel API and uses the same report as C
   assert.equal(seo.normalize('  CÀ PHÊ  ', 'vi'), 'cà phê')
   assert.equal(seo.slugify('Cà phê đen'), 'ca-phe-den')
   assert.equal(seo.visibleText('<p>Cà phê</p><p>và&nbsp;trà</p>'), 'Cà phê và trà')
-  assert.equal(seo.criteria.length, 17)
+  assert.equal(seo.criteria.length, 21)
   assert.equal(seo.criteria[0].key, 'keywordNotUsed')
   assert.equal(seo.limits.metaDescription.min, 155)
   assert.equal(seo.evaluate().keywordPresent, false)

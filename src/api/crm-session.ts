@@ -47,7 +47,7 @@ const accountDisplayName = (user: { username: string, display_name?: unknown }) 
 /** Only saving CRM settings requires a separate, one-use password confirmation. */
 export function crmRequiresActionAuthorization(method: string, target: string) {
   const path = target.split('?')[0]
-  return method === 'PUT' && (path === '/api/crm/settings' || path === '/api/crm/settings/smtp')
+  return method === 'PUT' && (path === '/api/crm/settings' || path === '/api/crm/settings/smtp' || path === '/api/crm/settings/keywords')
 }
 
 /** Production rollout intentionally requires signing in again: never trust the legacy cookie. */

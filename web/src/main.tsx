@@ -9,7 +9,7 @@ import 'dayjs/locale/vi';
 import {
   AppstoreOutlined, ArrowRightOutlined, BookOutlined, CalendarOutlined, ClusterOutlined,
   DollarOutlined, DownOutlined, FileTextOutlined, GlobalOutlined, LockOutlined, LogoutOutlined,
-  MenuOutlined, RightOutlined, SendOutlined, SettingOutlined, TeamOutlined, UserOutlined,
+  MenuOutlined, RightOutlined, SearchOutlined, SendOutlined, SettingOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-500.css';
@@ -38,11 +38,13 @@ const Pricing = lazy(() => import('./Pricing').then((page) => ({ default: page.P
 const Settings = lazy(() => import('./Settings').then((page) => ({ default: page.Settings })));
 const Account = lazy(() => import('./Account').then((page) => ({ default: page.Account })));
 const Partners = lazy(() => import('./Partners').then((page) => ({ default: page.Partners })));
+const Keywords = lazy(() => import('./Keywords').then((page) => ({ default: page.Keywords })));
 
 const navigationGroups = [
   { label: 'Vận hành', items: [
     { key: 'overview', label: 'Tổng quan', icon: AppstoreOutlined },
     { key: 'jobs', label: 'Yêu cầu viết', icon: FileTextOutlined },
+    { key: 'keywords', label: 'Phân tích từ khóa', icon: SearchOutlined },
     { key: 'deliveries', label: 'Giao bài', icon: SendOutlined },
   ] },
   { label: 'Khách hàng & website', items: [
@@ -350,10 +352,11 @@ function Workspace({ session, onSession, onSignOut }: { session: Session; onSess
             {location.key === 'customers' && <Customers query={location.query} />}
             {location.key === 'websites' && <Websites query={location.query} />}
             {location.key === 'jobs' && <Jobs query={location.query} />}
+            {location.key === 'keywords' && <Keywords query={location.query} />}
             {location.key === 'deliveries' && <Deliveries query={location.query} />}
             {location.key === 'providers' && <Providers />}
             {location.key === 'prices' && <Pricing />}
-            {location.key === 'settings' && <Settings />}
+            {location.key === 'settings' && <Settings query={location.query} />}
             {location.key === 'partners' && (isRoot ? <Partners onOpen={changeWorkspace} onChanged={partners.reload} /> : <Alert type="error" title="Chỉ root được quản lý tài khoản đối tác." />)}
             {location.key === 'account' && <Account onProfile={(profile) => onSession({ ...session, username: profile.username, display_name: profile.display_name, email: profile.email, email_verified: profile.email_verified })} onPasswordChange={() => setPasswordOpen(true)} />}
           </Suspense>

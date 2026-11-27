@@ -7,10 +7,11 @@ import { runMaintenance } from './worker/maintenance.js';
 import { effectiveConfig } from './runtime-settings.js';
 import { assertEncryptionContext } from './encryption-context.js';
 import { initializeExistingPartners, runPartnerServices } from './partner-runtime.js';
+import { startWorkerHealthServer } from './worker/health-server.js';
 
 const role = process.argv[2] || 'all';
-if (!['all', 'api', 'writer', 'webhook'].includes(role)) {
-  throw new Error('Role must be all, api, writer or webhook');
+if (!['all', 'api', 'workers', 'writer', 'webhook', 'keyword'].includes(role)) {
+  throw new Error('Role must be all, api, workers, writer, webhook or keyword');
 }
 
 const config = loadConfig();
@@ -33,15 +34,22 @@ try {
   await initializeExistingPartners(db, config);
   // Validate persisted operational settings before starting any role.
   await effectiveConfig(db, config);
+  if (role === 'workers') {
+    const healthPort = Number(process.env.WORKER_HEALTH_PORT ?? 8080);
+    if (!Number.isSafeInteger(healthPort) || healthPort < 1 || healthPort > 65_535) throw new Error('Invalid WORKER_HEALTH_PORT');
+    const health = await startWorkerHealthServer(() => db.db.command({ ping: 1 }, { timeoutMS: 1_000 }), healthPort, config.host);
+    closeApp = health.close;
+  }
   components.push(runMaintenance(db, config, controller.signal));
-  components.push(runPartnerServices(db, config, controller.signal, role));
+  components.push(runPartnerServices(db, config, controller.signal, role === 'workers' ? 'all' : role));
   if (role === 'api' || role === 'all') {
     const app = await buildApp(db, config);
     closeApp = () => app.close();
     await app.listen({ host: config.host, port: config.port });
   }
-  if (role === 'writer' || role === 'all') components.push(runWorkers(db, config, controller.signal, 'writer'));
-  if (role === 'webhook' || role === 'all') components.push(runWorkers(db, config, controller.signal, 'webhook'));
+  if (role === 'writer' || role === 'all' || role === 'workers') components.push(runWorkers(db, config, controller.signal, 'writer'));
+  if (role === 'webhook' || role === 'all' || role === 'workers') components.push(runWorkers(db, config, controller.signal, 'webhook'));
+  if (role === 'keyword' || role === 'all' || role === 'workers') components.push(runWorkers(db, config, controller.signal, 'keyword'));
   if (!controller.signal.aborted) {
     await Promise.race([
       new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true })),

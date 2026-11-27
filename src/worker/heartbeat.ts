@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { collection, type Database } from '../db.js'
 
-export type WorkerRole = 'writer' | 'webhook'
+export type WorkerRole = 'writer' | 'webhook' | 'keyword'
 
 export interface WorkerHeartbeatState {
   concurrency: number

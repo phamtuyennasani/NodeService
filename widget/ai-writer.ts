@@ -632,18 +632,19 @@ function mount(config: Config) {
         : job.seo_repair_status === 'skipped'
           ? 'CRM đã lưu bài. Các tiêu chí còn thiếu cần được biên tập viên xem lại.'
           : 'Đây là kết quả kiểm tra của bài viết được lưu trong CRM.';
-    const excluded = report.findings.filter(finding => !finding.applicable).length;
-    select('.seo-details-label').textContent = `Xem ${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng)`;
+    const excluded = report.findings.filter(finding => !finding.applicable && !finding.advisory).length;
+    const advisory = report.findings.filter(finding => finding.advisory).length;
+    select('.seo-details-label').textContent = `Xem ${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng${advisory ? `, ${advisory} tham khảo` : ''})`;
     const findings = select('.seo-findings');
     findings.replaceChildren();
     for (const finding of report.findings) {
       const row = document.createElement('li');
-      const state = !finding.applicable ? 'Chưa áp dụng' : finding.passed ? 'Đạt' : 'Cần xem lại';
+      const state = finding.advisory ? 'Tham khảo' : !finding.applicable ? 'Chưa áp dụng' : finding.passed ? 'Đạt' : 'Cần xem lại';
       row.dataset.state = !finding.applicable ? 'excluded' : finding.passed ? 'passed' : 'warning';
       const label = document.createElement('strong');
       label.textContent = `${finding.label}: ${state}`;
       row.append(label);
-      if (!finding.passed && finding.message) {
+      if ((!finding.passed || finding.advisory) && finding.message) {
         const message = document.createElement('p');
         message.textContent = finding.message;
         row.append(message);

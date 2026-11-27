@@ -502,7 +502,8 @@ test('CRM job details expose the saved outline with final content and SEO result
     sections: [{ heading: 'Xác định nhu cầu', purpose: 'Chọn chức năng phục vụ khách hàng', estimatedWords: 400, subheadings: ['Chức năng cần thiết'], evidence: [{ sourceIndex: 1, fact: 'Ưu tiên nhu cầu đã xác minh.' }] }],
   }
   const internalLinkReport = { status: 'checked', candidates: 2, used: [{ url: 'https://example.vn/chi-phi', anchor: 'chi phí thiết kế website' }], removed: 1, checked_at: new Date().toISOString() }
-  Object.assign(tables.jobs[0], { status: 'writing', writing_stage: 'seo_repair', seo_report: report, seo_repair_status: 'kept_draft', outline, internal_link_report: internalLinkReport })
+  const researchReview = { status: 'found', query: 'thiết kế website', locale: 'vi', checked_at: new Date().toISOString(), sources: [{ title: 'Tài liệu đối chiếu', url: 'https://example.org/research', snippet: 'Dữ kiện tham khảo.' }] }
+  Object.assign(tables.jobs[0], { status: 'writing', writing_stage: 'seo_repair', seo_report: report, seo_repair_status: 'kept_draft', outline, internal_link_report: internalLinkReport, research_review: researchReview })
   tables.ai_attempts = [{ _id: randomUUID(), job_id: sourceId, provider: 'openai', model: 'gpt-test', stage: 'seo_repair', status: 'running', requested_at: new Date() }]
   const pending = await app.inject({ method: 'GET', url: `/jobs/${sourceId}` })
   assert.equal(pending.statusCode, 200, pending.body)
@@ -514,9 +515,11 @@ test('CRM job details expose the saved outline with final content and SEO result
   assert.equal(pending.json().attempts[0].stage, 'seo_repair')
   assert.equal(pending.json().outline, null)
   assert.equal(pending.json().internal_link_report, null)
+  assert.equal(pending.json().research_review, null)
   assert.equal(pending.json().encrypted_key, undefined)
   const list = await app.inject({ method: 'GET', url: '/jobs' })
   assert.equal(list.json().data[0].outline, undefined)
+  assert.equal(list.json().data[0].research_review, undefined)
 
   tables.jobs[0].status = 'ready'
   const ready = await app.inject({ method: 'GET', url: `/jobs/${sourceId}` })
@@ -526,6 +529,7 @@ test('CRM job details expose the saved outline with final content and SEO result
   assert.deepEqual(ready.json().result, [article])
   assert.deepEqual(ready.json().outline, outline)
   assert.deepEqual(ready.json().internal_link_report, internalLinkReport)
+  assert.deepEqual(ready.json().research_review, researchReview)
   assert.deepEqual(ready.json().seo_report, report)
   assert.equal(ready.json().seo_repair_status, 'kept_draft')
   assert.equal(ready.json().error_code, null)

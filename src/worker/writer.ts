@@ -12,7 +12,7 @@ import {
   type Article, type GenerateInput, type GenerateResult, type GenerationMetadata,
   type OutlineResult, type RepairInput,
 } from './provider.js'
-import { researchTopic, type ResearchContext, type ResearchConfig } from './research.js'
+import { normalizeResearch, researchTopic, type ResearchContext, type ResearchConfig, type ResearchReview } from './research.js'
 import { evaluateSeo, type SeoReport } from './seo.js'
 import { publishJobEvent } from '../job-events.js'
 import { foldSearchText, refreshInternalLinkCandidates, selectInternalLinkCandidates, type InternalLinkCandidate } from '../site-content.js'
@@ -43,6 +43,7 @@ interface Job extends LanguageWriting {
   style: string
   length: number
   instructions: string | null
+  keyword_brief?: GenerateInput['keywordBrief']
   use_research?: boolean
   exclude_content_ids?: string[]
   key_mode: 'own' | 'service'
@@ -56,6 +57,7 @@ interface Job extends LanguageWriting {
   result?: unknown[] | null
   seo_repair_status?: RepairStatus | null
   internal_link_report?: InternalLinkReport | null
+  research_review?: ResearchReview | null
 }
 interface Claim { job: Job; lease: string }
 export interface WriterDependencies {
@@ -423,11 +425,14 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
       catch { throw new WorkerError('AI_SOURCE_INVALID', 'Không đọc được bài viết nguồn.', false) }
     }
     preservedLinks = job.translation_source ? extractArticleLinks(job.translation_source.Content) : source ? extractArticleLinks(source.Content) : []
-    const researchConfig = config.research ?? { enabled: false, timeoutMs: 8_000, maxResults: 5, provider: 'duckduckgo' }
-    let research: ResearchContext | null = null
+    const researchConfig: ResearchConfig = { ...(config.research ?? { enabled: false, timeoutMs: 8_000, maxResults: 5, provider: 'duckduckgo' }), locale: articleLocale(job) }
+    const previousReview = job.capacity_deferred && job.outline && job.research_review?.query === job.keyword && job.research_review.locale === articleLocale(job)
+      ? job.research_review : null
+    let research: ResearchContext | null = previousReview?.status === 'found'
+      ? { query: previousReview.query, researchedAt: previousReview.checked_at, sources: previousReview.sources } : null
     // Jobs created before this option existed have no field and retain the
     // previous behavior of researching whenever the provider is enabled.
-    if (!job.translation_source && job.use_research !== false && researchConfig.enabled) {
+    if (!previousReview && !job.translation_source && job.use_research !== false && researchConfig.enabled) {
       try {
         research = await withLease(db, config, 'jobs', job._id, claim.lease, researchConfig.timeoutMs + 1_000,
           signal => bounded(signal, researchConfig.timeoutMs,
@@ -435,9 +440,16 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
             () => (deps.research ?? researchTopic)(job.keyword, researchConfig)))
       } catch { /* Search outages do not fail scheduled articles. */ }
     }
+    research = normalizeResearch(research)
+    const researchReview: ResearchReview = previousReview ?? {
+      status: job.translation_source ? 'translation' : job.use_research === false || !researchConfig.enabled ? 'disabled' : research ? 'found' : 'unavailable',
+      query: job.keyword, locale: articleLocale(job), checked_at: new Date().toISOString(), sources: research?.sources ?? [],
+    }
+    await checkpoint(db, claim, job.translation_source ? 'draft' : 'outline', { research_review: researchReview })
     const input: Input = {
       provider: ownEndpoint ? 'openai-compatible' : providerKind(job.provider), key: connection.apiKey, model: model?.upstream_model ?? job.model, keyword: job.keyword, tone: job.tone, style: job.style,
       length: job.length, instructions: job.instructions, source, research, siteDomain,
+      ...(job.keyword_brief?.locale === articleLocale(job) && job.keyword_brief.keyword === job.keyword && !job.translation_source ? { keywordBrief: job.keyword_brief } : {}),
       languages: job.languages, locale: articleLocale(job), translationSource: job.translation_source,
       baseUrl: connection.baseUrl ?? settings?.base_url ?? undefined,
     }
@@ -482,7 +494,10 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
     }
 
     if (job.translation_source) input.outline = null
-    else if (job.capacity_deferred) input.outline = job.outline ?? null
+    else if (job.capacity_deferred) input.outline = job.outline ? {
+      ...job.outline,
+      sections: job.outline.sections.map(section => ({ ...section, evidence: previousReview ? section.evidence : [] })),
+    } : null
     else try {
       const planned = await callAi(db, config, claim, 'outline', estimateGenerationTokens(input, 'outline'),
         config.outlineTimeoutMs ?? Math.min(300_000, config.aiTimeoutMs),

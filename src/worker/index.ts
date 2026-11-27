@@ -6,6 +6,7 @@ import { assertEncryptionContext } from '../encryption-context.js'
 import { runWebhookOnce } from './delivery.js'
 import { startWorkerHeartbeat, type WorkerHeartbeat, type WorkerHeartbeatState, type WorkerRole } from './heartbeat.js'
 import { runWriterOnce } from './writer.js'
+import { runKeywordOnce } from '../keywords/worker.js'
 
 export { runWebhookOnce } from './delivery.js'
 export { runWriterOnce } from './writer.js'
@@ -18,14 +19,14 @@ export interface WorkerPoolDependencies {
 }
 
 export async function runWorkers(
-  db: Database, config: Config, signal: AbortSignal, role: 'writer' | 'webhook', deps: WorkerPoolDependencies = {},
+  db: Database, config: Config, signal: AbortSignal, role: WorkerRole, deps: WorkerPoolDependencies = {},
 ) {
   if (signal.aborted) return
   // Validate before publishing capacity or claiming a job. A wrong local key
   // must not turn a healthy shared queue into permanent credential failures.
   await (deps.checkEncryption ?? assertEncryptionContext)(db, config)
   if (signal.aborted) return
-  const runOnce = deps.runOnce ?? (role === 'writer' ? runWriterOnce : runWebhookOnce)
+  const runOnce = deps.runOnce ?? (role === 'writer' ? runWriterOnce : role === 'keyword' ? runKeywordOnce : runWebhookOnce)
   const getConfig = deps.getConfig ?? effectiveConfig
   const active = new Set<Promise<void>>()
   const idle = new Set<AbortController>()
@@ -79,7 +80,7 @@ export async function runWorkers(
         for (const controller of idle) controller.abort()
       }
       previousPollMs = snapshot.workerPollMs
-      const nextConcurrency = role === 'writer' ? snapshot.workerConcurrency : snapshot.webhookConcurrency
+      const nextConcurrency = role === 'writer' ? snapshot.workerConcurrency : role === 'keyword' ? 1 : snapshot.webhookConcurrency
       const stateChanged = !acceptingWork || concurrency !== nextConcurrency
       concurrency = nextConcurrency
       acceptingWork = true
