@@ -3,6 +3,8 @@ import { sanitizeArticleStyle } from '../src/article-styles';
 import type { SeoReport } from '../src/worker/seo';
 import { isWritingStage, writingStageLabel } from '../src/writing-stage';
 import { writingVisual } from './writing-visual';
+import { WIDGET_REQUEST_BODY_LIMIT } from '../src/widget-limits';
+import { searchableSelect } from './searchable-select';
 import styles from './styles.css';
 import { languageConfig, languageTag, type LanguageConfig } from '../src/language-config';
 
@@ -318,11 +320,11 @@ function mount(config: Config) {
             <div class="language-target-detail"><span class="language-label">Dịch sang</span><span class="target-languages"></span></div>
           </div>
         </div>
-        <label class="model-label field">Model<input name="model" placeholder="gpt-4.1" maxlength="160" required></label>
+        <div class="model-label field">Model<input name="model" aria-label="Model" placeholder="gpt-4.1" maxlength="160" required></div>
         <label class="field">Từ khóa<input name="keyword" maxlength="500" placeholder="Ví dụ: máy lọc nước gia đình" required></label>
         <div class="grid">
-          <label class="field">Giọng văn<select name="tone" required>${toneOptions.map(value => `<option value="${value}">${value}</option>`).join('')}</select></label>
-          <label class="field">Phong cách viết<select name="style" required>${styleOptions.map(value => `<option value="${value}">${value}</option>`).join('')}</select></label>
+          <div class="field">Giọng văn<select name="tone" required>${toneOptions.map(value => `<option value="${value}">${value}</option>`).join('')}</select></div>
+          <div class="field">Phong cách viết<select name="style" required>${styleOptions.map(value => `<option value="${value}">${value}</option>`).join('')}</select></div>
         </div>
         <label class="field length-field">Độ dài <span>(600–2500 từ)</span><input name="length" type="number" min="600" max="2500" step="1" required></label>
         <label class="field">Hướng dẫn thêm <span>(không bắt buộc)</span><textarea name="instructions" maxlength="4000" rows="3" placeholder="Yêu cầu bổ sung cho bài viết"></textarea></label>
@@ -456,6 +458,7 @@ function mount(config: Config) {
   select<HTMLInputElement>('[name="length"]').value = String(config.defaults?.length ?? 800);
   select<HTMLTextAreaElement>('[name="instructions"]').value = config.defaults?.instructions ?? '';
   useResearch.checked = config.defaults?.use_research ?? true;
+  const searchable = Array.from(form.querySelectorAll('select'), searchableSelect);
 
   let pending: { body: string; id: string; jobId?: string; readToken?: string } | undefined;
   let controller: AbortController | undefined;
@@ -478,6 +481,7 @@ function mount(config: Config) {
   }
 
   function updateSubmit() {
+    searchable.forEach(control => control.sync());
     const busy = Boolean(controller || translating || applying);
     submit.disabled = Boolean(busy || catalogRequest || !catalogReady ||
       (keyMode === 'own' ? !personalAvailable : model instanceof HTMLSelectElement && model.disabled));
@@ -815,7 +819,7 @@ function mount(config: Config) {
           translation_source: { Title, Content, Desc, Description, Keywords },
           translation_of_job_id: original.job.job_id,
         });
-        if (new TextEncoder().encode(body).length > 524288) throw new Error('Nội dung yêu cầu vượt giới hạn chuyển ngữ.');
+        if (new TextEncoder().encode(body).length > WIDGET_REQUEST_BODY_LIMIT) throw new Error('Nội dung yêu cầu vượt giới hạn chuyển ngữ.');
         if (!await run(body)) break;
       }
     } catch (error) {
@@ -919,7 +923,7 @@ function mount(config: Config) {
         use_research: useResearch.checked,
       };
       const body = JSON.stringify(originalRequest);
-      if (new TextEncoder().encode(body).length > 524288) throw new Error('Nội dung yêu cầu vượt giới hạn chuyển ngữ.');
+      if (new TextEncoder().encode(body).length > WIDGET_REQUEST_BODY_LIMIT) throw new Error('Nội dung yêu cầu vượt giới hạn chuyển ngữ.');
       void run(body);
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Không đọc được bản gốc.', true); }
   };
@@ -956,7 +960,7 @@ function mount(config: Config) {
     }
   };
   if (grant && modelsEndpoint && model instanceof HTMLSelectElement) void refreshModels(modelsEndpoint, model);
-  return { destroy() { controller?.abort(); catalogRequest?.abort(); clearWritingTimer(); launch.remove(); host.remove(); } };
+  return { destroy() { controller?.abort(); catalogRequest?.abort(); clearWritingTimer(); searchable.forEach(control => control.destroy()); launch.remove(); host.remove(); } };
 }
 
 declare global {

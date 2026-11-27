@@ -11,6 +11,7 @@ import { collection, type Database } from './db.js'
 import { digest } from './security.js'
 import { normalizeArticleFields } from './worker/provider.js'
 import { widgetPreviewPage } from './widget-preview-page.js'
+import { WIDGET_REQUEST_BODY_LIMIT } from './widget-limits.js'
 
 const writingSchema = writingFields.omit({ provider: true, base_url: true, api_key: true, keyAI: true }).strict()
 const idempotencySchema = z.string().min(1).max(160).regex(/^[\x21-\x7E]+$/)
@@ -132,7 +133,7 @@ export async function buildWidgetPreviewApp(db: Database, config: Config, option
     const { customer } = await customerContext()
     return { data: await listModelsForCustomer(db, config, customer) }
   })
-  app.post('/admin/ai/previews', async (request, reply) => {
+  app.post('/admin/ai/previews', { bodyLimit: WIDGET_REQUEST_BODY_LIMIT }, async (request, reply) => {
     const writing = writingSchema.parse(request.body)
     const requestId = idempotencySchema.parse(request.headers['idempotency-key'])
     const { site } = await customerContext()

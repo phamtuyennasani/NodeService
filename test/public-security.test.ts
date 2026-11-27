@@ -10,6 +10,8 @@ import type { Database } from '../src/db.js'
 import { digest, seal } from '../src/security.js'
 import { decodeOwnConnection } from '../src/own-connection.js'
 import { siteProofMessage } from '../src/site-proof.js'
+import { buildWidgetPreviewApp } from '../src/widget-preview-app.js'
+import { WIDGET_REQUEST_BODY_LIMIT } from '../src/widget-limits.js'
 
 type Row = Record<string, any>
 type Tables = Record<string, Row[]>
@@ -108,7 +110,8 @@ async function fixture(t: test.TestContext, limit = 2, keyMode: 'own' | 'service
   t.after(() => app.close())
   if (limited) await app.register(rateLimit, { global: false })
   installErrorHandler(app)
-  registerPublic(app, db, { maxPendingJobsPerCustomer: limit, encryptionKey: Buffer.alloc(32, 17), serviceKeys: { openai: 'fixture-service-key' } } as unknown as Config)
+  const config = { maxPendingJobsPerCustomer: limit, encryptionKey: Buffer.alloc(32, 17), serviceKeys: { openai: 'fixture-service-key' } } as unknown as Config
+  registerPublic(app, db, config)
   await app.ready()
   const headers = { authorization: 'Bearer ' + token }
   const writing = { model: 'test-model', keyword: 'Thiết kế website', tone: 'Chuyên nghiệp', style: 'Hướng dẫn', length: 1500, ...(keyMode === 'own' ? { base_url: 'https://personal-ai.example.com/v1', api_key: 'fixture-own-key' } : {}) }
@@ -117,8 +120,61 @@ async function fixture(t: test.TestContext, limit = 2, keyMode: 'own' | 'service
     origin, 'x-widget-expires': String(expires),
     'x-widget-signature': createHmac('sha256', digest(token)).update(`widget\n${id}\n${origin}\n${expires}`).digest('hex'),
   })
-  return { app, tables, calls, headers, create, writing, customerId, siteId, secondSiteId, grant, beforeTransaction(fn: () => void) { beforeTransaction = fn } }
+  return { app, db, config, tables, calls, headers, create, writing, customerId, siteId, secondSiteId, grant, beforeTransaction(fn: () => void) { beforeTransaction = fn } }
 }
+
+test('signed widgets and the demo accept long UTF-8 translation snapshots while enforcing the shared byte limit', async t => {
+  const f = await fixture(t, 10, 'service')
+  const site = f.tables.sites[0]
+  const keys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+  site.proof_required = true
+  site.signing_public_key = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
+  const origin = 'https://example.com'
+  const widgetUrl = `/v1/widget/${f.siteId}/previews`
+  const widgetHeaders = (body: string, id: string) => {
+    const created = String(Math.floor(Date.now() / 1000))
+    const nonce = randomBytes(16).toString('hex')
+    const message = siteProofMessage({ id: f.siteId, token_hash: site.token_hash }, 'POST', widgetUrl, origin, body, id, '', created, nonce)
+    const proof = `${created}.${nonce}.${sign('sha256', Buffer.from(message), keys.privateKey).toString('base64url')}`
+    return { origin, 'content-type': 'application/json', 'idempotency-key': id, 'x-site-proof': proof }
+  }
+  const csrfToken = 'c'.repeat(43)
+  const password = 'demo:body-limit-test'
+  const demo = await buildWidgetPreviewApp(f.db, f.config, { origin, siteId: f.siteId, csrfToken, passwordHash: digest(password) })
+  t.after(() => demo.close())
+  const demoHeaders = (_body: string, id: string) => ({
+    host: 'example.com', origin, 'x-csrf-token': csrfToken, 'idempotency-key': id,
+    authorization: 'Basic ' + Buffer.from(password).toString('base64'), 'content-type': 'application/json',
+  })
+  const source = { Title: 'Bản gốc tiếng Việt đã duyệt', Content: '<p>Nội dung tiếng Việt, tiếng Nhật 日本語 và HTML đầy đủ.</p>'.repeat(1700) }
+  const payload = JSON.stringify({ ...f.writing, languages: { source: 'vi', targets: ['en'] }, locale: 'en', translation_source: source, use_research: false })
+  assert.ok(Buffer.byteLength(payload) > 16 * 1024)
+  assert.ok(Buffer.byteLength(payload) < WIDGET_REQUEST_BODY_LIMIT)
+  for (const { app, url, headers, prefix } of [
+    { app: f.app, url: widgetUrl, headers: widgetHeaders, prefix: 'signed' },
+    { app: demo, url: '/admin/ai/previews', headers: demoHeaders, prefix: 'demo' },
+  ]) {
+    const accepted = await app.inject({ method: 'POST', url, headers: headers(payload, prefix), payload })
+    assert.equal(accepted.statusCode, 202, accepted.body)
+    const job = f.tables.jobs.find(row => row._id === accepted.json().job_id)!
+    assert.deepEqual(job.translation_source, source, 'keep the complete approved UTF-8 HTML snapshot')
+    assert.equal(job.locale, 'en')
+    const jobsBeforeInvalid = f.tables.jobs.length
+    const reservationsBeforeInvalid = f.tables.quota_reservations.length
+    const atLimit = '{"padding":"' + 'x'.repeat(WIDGET_REQUEST_BODY_LIMIT - 14) + '"}'
+    assert.equal(Buffer.byteLength(atLimit), WIDGET_REQUEST_BODY_LIMIT)
+    const parsed = await app.inject({ method: 'POST', url, headers: headers(atLimit, prefix + '-at-limit'), payload: atLimit })
+    assert.equal(parsed.statusCode, 400, parsed.body)
+    assert.equal(parsed.json().error.code, 'invalid_request', 'the inclusive limit still reaches schema validation')
+    const tooLarge = atLimit.replace('"}', 'x"}')
+    assert.equal(Buffer.byteLength(tooLarge), WIDGET_REQUEST_BODY_LIMIT + 1)
+    const rejected = await app.inject({ method: 'POST', url, headers: headers(tooLarge, prefix + '-over-limit'), payload: tooLarge })
+    assert.equal(rejected.statusCode, 413, rejected.body)
+    assert.equal(f.tables.jobs.length, jobsBeforeInvalid, 'rejected requests never create jobs or reserve quota')
+    assert.equal(f.tables.quota_reservations.length, reservationsBeforeInvalid)
+  }
+  assert.equal(f.tables.jobs.length, 2)
+})
 
 test('language jobs preserve source and target configuration, validate translation snapshots and reserve each request once', async t => {
   const f = await fixture(t, 10, 'service')

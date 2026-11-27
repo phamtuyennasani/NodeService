@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
+import { WIDGET_REQUEST_BODY_LIMIT } from '../widget-limits.js'
 import { isCompatibleProvider, type Config, type Provider } from '../config.js'
 import { collection, sessionOf, transaction, type Database, type TransactionContext, type MongoSource } from '../db.js'
 import { digest } from '../security.js'
@@ -294,7 +295,7 @@ function registerDirectWidget(app: FastifyInstance, db: Database, config: Config
     return { key_mode: customer.key_mode, data: await listModelsForCustomer(db, config, customer), grant_expires_at: expiry, ...(siteProofRequired(site) ? { proof_required: true } : {}) }
   })
   app.post('/v1/widget/:site_id/previews', {
-    onRequest: cors, bodyLimit: 16 * 1024,
+    onRequest: cors, bodyLimit: WIDGET_REQUEST_BODY_LIMIT,
     config: { rateLimit: { max: 12, timeWindow: '1 minute', keyGenerator: rateKey } },
   }, async (request, reply) => {
     const site = siteFor(request)

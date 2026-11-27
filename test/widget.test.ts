@@ -56,7 +56,8 @@ test('the Laravel upload example mounts the remote widget, signs its request and
     await page.goto(origin);
     await page.getByRole('button', { name: 'Viết bài AI' }).click();
     const dialog = page.getByRole('dialog');
-    await dialog.getByRole('combobox', { name: 'Model' }).getByText('Model thử').waitFor({ state: 'attached' });
+    await dialog.locator('select[name="model"] option').filter({ hasText: 'Model thử' }).waitFor({ state: 'attached' });
+    assert.equal(await dialog.getByRole('combobox', { name: 'Model' }).inputValue(), 'Model thử');
     await dialog.getByLabel('Từ khóa', { exact: true }).fill('nội dung');
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     await dialog.getByRole('heading', { name: article.Title }).waitFor();
@@ -356,14 +357,16 @@ test('Laravel widget previews, validates selectors, and applies fields with edit
     const close = dialog.getByRole('button', { name: 'Đóng', exact: true }).first();
     for (const text of ['Website chưa có model được cấp.', 'Tải model thất bại. Đóng rồi mở lại để thử.']) {
       await launch.click();
-      await modelMenu.getByText(text).waitFor({ state: 'attached' });
+      await dialog.locator('select[name="model"] option').filter({ hasText: text }).waitFor({ state: 'attached' });
+      assert.equal(await modelMenu.inputValue(), text);
+      assert.equal(await modelMenu.isDisabled(), true);
       assert.equal(await write.isDisabled(), true);
       assert.equal(await dialog.locator('input[name="model"]').count(), 0);
       await close.click();
     }
     await launch.click();
-    await modelMenu.getByText('Claude biên tập').waitFor({ state: 'attached' });
-    assert.equal(await modelMenu.inputValue(), 'claude-test');
+    await dialog.locator('select[name="model"] option').filter({ hasText: 'Claude biên tập' }).waitFor({ state: 'attached' });
+    assert.equal(await modelMenu.inputValue(), 'Claude biên tập');
     await dialog.getByLabel('Từ khóa').fill('Cà phê');
     await write.click();
     await dialog.getByText('Yêu cầu đang chờ xử lý…').waitFor();
@@ -709,7 +712,7 @@ test('remote widget verifies the site before launch and sends only the selected 
     const apply = () => dialog.getByRole('button', { name: 'Áp dụng' }).click();
     const openModels = async () => {
       await launch.click();
-      await model.getByText('Model được cấp').waitFor({ state: 'attached' });
+      await dialog.locator('select[name="model"] option').filter({ hasText: 'Model được cấp' }).waitFor({ state: 'attached' });
     };
 
     await page.goto(siteOrigin);
@@ -727,11 +730,12 @@ test('remote widget verifies the site before launch and sends only the selected 
     await page.goto(siteOrigin + '/?own=1');
     await openModels();
     assert.equal(await toggle.isChecked(), false);
-    await model.selectOption('second-model');
+    await model.fill('thu hai');
+    await dialog.getByRole('option', { name: 'Model thứ hai', exact: true }).click();
     await toggle.check();
     assert.equal(await model.isVisible(), false);
     await toggle.uncheck();
-    assert.equal(await model.inputValue(), 'second-model');
+    assert.equal(await model.inputValue(), 'Model thứ hai');
     await toggle.check();
     await dialog.getByLabel('Từ khóa', { exact: true }).fill('nội dung');
     await write.click();
