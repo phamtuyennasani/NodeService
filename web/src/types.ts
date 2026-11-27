@@ -6,6 +6,8 @@ export type { WritingStage } from '../../src/writing-stage.js';
 export type SeoRepairStatus = 'not_needed' | 'applied' | 'kept_draft' | 'skipped';
 
 export interface Session {
+  role?: 'root' | 'provider';
+  partner?: { id: string; name: string } | null;
   username: string;
   csrf_token: string;
   browser_binding?: string;
@@ -14,6 +16,17 @@ export interface Session {
   email?: string | null;
   email_verified?: boolean;
   remember_me?: boolean;
+}
+
+export interface PartnerAccount {
+  id: string;
+  name: string;
+  username: string;
+  email: string;
+  enabled: boolean;
+  customer_count: number;
+  website_count: number;
+  article_count: number;
 }
 
 export interface LoginChallenge {

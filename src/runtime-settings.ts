@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { providers, type Config } from './config.js'
-import { collection, type Database } from './db.js'
+import { collection, resolveDatabase, type Database } from './db.js'
 
 const integer = (min: number, max: number) => z.number().int().min(min).max(max)
 const providerLimit = z.object({
@@ -90,9 +90,10 @@ export async function readSettings(db: Database, config: Config) {
 type Cache = { expiresAt: number, values: RuntimeSettings | null, pending?: Promise<RuntimeSettings | null> }
 const cache = new WeakMap<Database, Cache>()
 
-export function invalidateSettings(db: Database) { cache.delete(db) }
+export function invalidateSettings(db: Database) { cache.delete(resolveDatabase(db)) }
 
 async function cachedSettings(db: Database): Promise<RuntimeSettings | null> {
+  db = resolveDatabase(db)
   const previous = cache.get(db)
   if (previous?.pending) return previous.pending
   if (previous && previous.expiresAt > Date.now()) return previous.values

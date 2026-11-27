@@ -10,7 +10,7 @@ import { listModelsForCustomer, modelIdSchema, providerIdSchema, requireAvailabl
 import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { assertPackage, reserveQuota, usage, type Package } from './quota.js'
 import { normalizeArticleFields } from '../worker/provider.js'
-import { jobEvents } from '../job-events.js'
+import { publishJobEvent } from '../job-events.js'
 import { registerSiteContent } from './site-content.js'
 import { excludedContentIdsSchema } from '../site-content.js'
 import type { SeoReport } from '../worker/seo.js'
@@ -186,7 +186,7 @@ export async function createJob(db: Database, config: Config, site: Site, client
   })
   const createdJob = created.job
   if (created.created && createdJob) {
-    jobEvents.publish({
+    publishJobEvent(db, {
       type: 'job.created', job_id: createdJob._id, status: createdJob.status,
       writing_stage: null, updated_at: createdJob.updated_at.toISOString(),
       created_at: createdJob.created_at.toISOString(),
@@ -458,7 +458,7 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
       await reserveQuota(client, pkg, job_id, when, reservation ?? undefined)
       return { ...languageSummary(next), job_id, status: job.status, version: next.version, scheduled_at: when, model: next.model, keyword: next.keyword, tone: next.tone, style: next.style, length: next.length, instructions: next.instructions, use_research: next.use_research, exclude_content_ids: next.exclude_content_ids }
     })
-    jobEvents.publish({ type: 'job.updated', job_id: updated.job_id, status: updated.status, writing_stage: null, scheduled_at: updated.scheduled_at?.toISOString?.() ?? updated.scheduled_at, updated_at: new Date().toISOString() })
+    publishJobEvent(db, { type: 'job.updated', job_id: updated.job_id, status: updated.status, writing_stage: null, scheduled_at: updated.scheduled_at?.toISOString?.() ?? updated.scheduled_at, updated_at: new Date().toISOString() })
     return reply.header('ETag', `"${updated.version}"`).send(updated)
   })
   app.delete('/v1/schedules/:job_id', async (request, reply) => {
@@ -484,7 +484,7 @@ export function registerPublic(app: FastifyInstance, db: Database, config: Confi
       }
       await collection(client, 'quota_reservations').updateOne({ job_id, status: 'reserved' }, { $set: { status: 'released' } }, { session })
     })
-    jobEvents.publish({ type: 'job.updated', job_id, status: 'canceled', writing_stage: null, updated_at: new Date().toISOString() })
+    publishJobEvent(db, { type: 'job.updated', job_id, status: 'canceled', writing_stage: null, updated_at: new Date().toISOString() })
     return reply.code(204).send()
   })
   app.post('/v1/articles/:article_id/rewrites', async (request, reply) => {

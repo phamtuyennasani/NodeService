@@ -10,9 +10,16 @@ import { registerSessions } from './crm-session.js'
 import { registerSettings } from './crm-settings.js'
 import { effectiveConfig } from '../runtime-settings.js'
 import { registerIntegrations } from './crm-integrations.js'
+import { createWorkspaceAccess } from '../workspaces.js'
+import { registerPartners } from './crm-partners.js'
 
-export function registerCrm(app: FastifyInstance, db: Database, config: Config) {
-  registerSessions(app, db, config)
+export function registerCrm(app: FastifyInstance, root: Database, base: Config, workspaces?: ReturnType<typeof createWorkspaceAccess>) {
+  const access = workspaces ?? createWorkspaceAccess(root, base)
+  if (!workspaces) access.install(app)
+  const sessions = registerSessions(app, root, base, access)
+  registerPartners(app, root, base, sessions)
+  const db = access.database
+  const config = access.config
   registerIntegrations(app)
   registerCustomers(app, db, config)
   registerReports(app, db, config, () => effectiveConfig(db, config))

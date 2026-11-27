@@ -13,7 +13,7 @@ cp .env.example .env
 openssl rand -base64 32
 ```
 
-Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ MongoDB vào `MONGODB_URI` và URL CRM vào `APP_ORIGIN`. Với cấu hình mẫu cục bộ, khởi động MongoDB với `--replSet rs0`, chạy `rs.initiate()` trong `mongosh` một lần và đợi nút trở thành PRIMARY. Tài khoản MongoDB cần quyền tạo collection và quản lý chỉ mục trong cơ sở dữ liệu của ứng dụng. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Có thể đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho cấu hình cũ. Cách quản lý mới là mở **Nhà cung cấp AI** trong CRM, chọn **Cấu hình key** hoặc **Cấu hình kết nối**, rồi nhập key. NodeService mã hóa key bằng `ENCRYPTION_KEY` trước khi ghi vào MongoDB và chỉ hiển thị trạng thái đã cấu hình.
+Điền chuỗi vừa tạo vào `ENCRYPTION_KEY`, địa chỉ MongoDB vào `MONGODB_URI` và URL CRM vào `APP_ORIGIN`. Với cấu hình mẫu cục bộ, khởi động MongoDB với `--replSet rs0`, chạy `rs.initiate()` trong `mongosh` một lần và đợi nút trở thành PRIMARY. Tài khoản MongoDB cần quyền tạo collection và quản lý chỉ mục trong cơ sở dữ liệu của ứng dụng. Khi dùng tài khoản đối tác, cấp thêm quyền cho các database của từng nhóm theo mục **Tài khoản đối tác** bên dưới. Giữ cùng một khóa mã hóa cho các tiến trình dùng chung cơ sở dữ liệu. Có thể đặt `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` hoặc `XAI_API_KEY` cho cấu hình cũ. Cách quản lý mới là mở **Nhà cung cấp AI** trong CRM, chọn **Cấu hình key** hoặc **Cấu hình kết nối**, rồi nhập key. NodeService mã hóa key bằng `ENCRYPTION_KEY` trước khi ghi vào MongoDB và chỉ hiển thị trạng thái đã cấu hình.
 
 Đặt `CRM_ADMIN_EMAIL` trong `.env` thành địa chỉ đã xác minh của quản trị viên trước khi tạo tài khoản. Khai báo cấu hình SMTP trong `.env` để CRM gửi OTP tới địa chỉ này khi đăng nhập lần đầu.
 
@@ -34,6 +34,8 @@ Mở CRM và đăng nhập. Trong **Nhà cung cấp AI**, chọn OpenAI, Anthrop
 
 Trong **Website → Kết nối API**, chọn **Cấp token** để lấy thông tin kết nối, rồi chọn **Đăng ký khóa ký** để dán khóa công khai do backend website tạo. Nếu website nhận bài theo lịch, dùng **Cấp khóa webhook** để lấy khóa xác minh webhook.
 
+**URL webhook nhận bài** là tùy chọn khi thêm hoặc sửa website. Có thể để trống khi chỉ viết bài xem trước bằng API/widget. Để nhận bài tự động theo lịch, website cần cấu hình cả URL webhook và khóa webhook.
+
 Để dùng nhiều API tương thích OpenAI, mở tab dạng kết nối **OpenAI Compatible** trong **Nhà cung cấp AI**, rồi bấm **Thêm provider**. Các provider nằm trong danh sách bên trong tab này; chọn một provider để quản lý cấu hình và model của nó. Mỗi kết nối có tên, Base URL, API key mã hóa và danh sách model riêng; **Kiểm tra kết nối** và ping model dùng đúng kết nối đang chọn. Hai provider có thể dùng cùng mã model API: CRM lưu mã nội bộ riêng để cấp quyền khách hàng, lên lịch và tính giá chính xác, rồi gửi mã model API thực khi gọi upstream. Widget hiển thị thêm tên kết nối để phân biệt. Cấu hình OpenAI Compatible cũ được hiển thị là **Kết nối mặc định** nếu chưa đổi tên; các lịch/model đã có được giữ nguyên. Các giới hạn OpenAI Compatible trong **Cài đặt** áp dụng riêng cho từng kết nối, với cửa sổ đồng thời/phút độc lập.
 
 `npm start` chạy CRM, API, worker viết và worker giao bài trong cùng tiến trình. Khi triển khai thành các tiến trình độc lập, khởi chạy các lệnh sau và dùng chung `.env`. Chạy từ thư mục dự án để dịch vụ tìm được bản build và các migration.
@@ -48,7 +50,7 @@ Khi nâng cấp từ bản cũ, dừng các tiến trình NodeService bản cũ 
 
 Khi vận hành qua HTTPS, đặt `NODE_ENV=production` và `APP_ORIGIN` bằng URL HTTPS thực tế của CRM. `GET /health` kiểm tra kết nối MongoDB. Mở **Hệ thống → Cài đặt** để điều chỉnh số luồng viết/giao, thời gian chờ, số lần thử, nghiên cứu và giới hạn theo nhà cung cấp mà không cần sửa code hoặc khởi động lại. Các giá trị `.env` như `WORKER_CONCURRENCY`, `WEBHOOK_CONCURRENCY` và các biến `*_CONCURRENCY`, `*_REQUESTS_PER_MINUTE`, `*_TOKENS_PER_MINUTE` là mặc định khi chưa lưu cấu hình CRM. Giới hạn nhà cung cấp được phối hợp qua MongoDB; số luồng viết/giao tính trên mỗi tiến trình đang chạy.
 
-Xem [hướng dẫn bảo vệ CRM và triển khai reverse proxy](docs/security.md) trước khi mở dịch vụ ra Internet. Bản này bổ sung giới hạn lưu lượng/kết nối, chống dò mật khẩu dùng chung MongoDB, kiểm tra origin/CSRF và bảo vệ nội dung HTML. Phiên CRM yêu cầu cả cookie và chữ ký từ private key WebCrypto không cho xuất của trình duyệt; sao chép cookie đơn thuần không đủ truy cập. Thao tác nhạy cảm cần nhập lại mật khẩu cho từng lần thực hiện. Nâng cấp đồng bộ API/CRM và chạy migration; phiên cũ chưa gắn khóa phải đăng nhập lại, còn phiên đã gắn khóa hợp lệ có thể hoàn tất thiết lập email như hướng dẫn ở trên. Production cần HTTPS, WebCrypto và IndexedDB. Cơ chế này không bảo vệ tuyệt đối khi mã độc điều khiển chính trình duyệt. Giới hạn trong Node.js không thay thế CDN/WAF hoặc bảo vệ DDoS của hạ tầng.
+Xem [hướng dẫn bảo vệ CRM và triển khai reverse proxy](docs/security.md) trước khi mở dịch vụ ra Internet. Bản này bổ sung giới hạn lưu lượng/kết nối, chống dò mật khẩu dùng chung MongoDB, kiểm tra origin/CSRF và bảo vệ nội dung HTML. Phiên CRM yêu cầu cả cookie và chữ ký từ private key WebCrypto không cho xuất của trình duyệt; sao chép cookie đơn thuần không đủ truy cập. Chỉ lưu thay đổi trong **Cài đặt** (vận hành, giới hạn, lưu trữ và SMTP) cần nhập lại mật khẩu cho từng lần lưu. Các mục khác thao tác trực tiếp bằng phiên đăng nhập có chữ ký và CSRF. Đổi mật khẩu tài khoản vẫn cần mật khẩu hiện tại trong biểu mẫu. Nâng cấp đồng bộ API/CRM và chạy migration; phiên cũ chưa gắn khóa phải đăng nhập lại, còn phiên đã gắn khóa hợp lệ có thể hoàn tất thiết lập email như hướng dẫn ở trên. Production cần HTTPS, WebCrypto và IndexedDB. Cơ chế này không bảo vệ tuyệt đối khi mã độc điều khiển chính trình duyệt. Giới hạn trong Node.js không thay thế CDN/WAF hoặc bảo vệ DDoS của hạ tầng.
 
 Khi thử với Laravel trên máy cục bộ, đặt `ALLOW_LOCAL_WEBHOOKS=true` để gửi webhook đến địa chỉ nội bộ.
 
@@ -76,13 +78,34 @@ CRM chỉ ghi nhận chi phí AI cho các bài dùng **key dịch vụ theo hạ
 
 Cấu hình CRM được lưu trong collection `runtime_settings`, dùng chung cho các máy kết nối cùng database, kiểm tra lại tối đa mỗi 5 giây. Lưu cấu hình có kiểm tra phiên bản để tránh hai quản trị viên ghi đè thay đổi của nhau. Tác vụ đang chạy giữ cấu hình lúc nhận việc; giảm số luồng không hủy tác vụ đó. Số lần thử gồm lần đầu tiên và được xét khi kết thúc lần chạy hoặc phục hồi lease; một lần thử đã chờ trong hàng đợi vẫn có thể được xử lý sau khi giảm giới hạn. Nút **Điền mặc định** chỉ điền biểu mẫu từ cấu hình khởi động của máy API hiện tại, cần bấm **Lưu cài đặt** để áp dụng.
 
-Tab **Email / SMTP** có nút lưu riêng và **Kiểm tra kết nối** cho cấu hình đã lưu. Kiểm tra chỉ kết nối/TLS/xác thực SMTP, không gửi email và không xác nhận email sẽ vào hộp thư. Cấu hình lưu riêng tại `crm_mail_settings`, ưu tiên hơn biến môi trường, áp dụng ngay cho lượt gửi OTP tiếp theo. Mật khẩu được mã hóa bằng `ENCRYPTION_KEY` và không trả lại qua API; để trống giữ mật khẩu cũ khi máy chủ, cổng, chế độ bảo mật và tài khoản SMTP không đổi. Thay một trong các thông tin này cần nhập lại mật khẩu nếu có dùng xác thực. Để trống tài khoản SMTP sẽ bỏ thông tin đăng nhập, chỉ dùng cho máy chủ chuyển tiếp cho phép gửi không cần xác thực. Lưu và kiểm tra SMTP đều yêu cầu xác nhận mật khẩu tài khoản CRM. Sau khi lưu SMTP, mở **Tài khoản** để xác minh email nhận OTP.
+Tab **Email / SMTP** có nút lưu riêng và **Kiểm tra kết nối** cho cấu hình đã lưu. Kiểm tra chỉ kết nối/TLS/xác thực SMTP, không gửi email và không xác nhận email sẽ vào hộp thư. Cấu hình lưu riêng tại `crm_mail_settings`, ưu tiên hơn biến môi trường, áp dụng ngay cho lượt gửi OTP tiếp theo. Mật khẩu được mã hóa bằng `ENCRYPTION_KEY` và không trả lại qua API; để trống giữ mật khẩu cũ khi máy chủ, cổng, chế độ bảo mật và tài khoản SMTP không đổi. Thay một trong các thông tin này cần nhập lại mật khẩu nếu có dùng xác thực. Để trống tài khoản SMTP sẽ bỏ thông tin đăng nhập, chỉ dùng cho máy chủ chuyển tiếp cho phép gửi không cần xác thực. Lưu SMTP yêu cầu xác nhận mật khẩu tài khoản CRM. Kiểm tra kết nối SMTP chạy trực tiếp với cấu hình đã lưu. Sau khi lưu SMTP, mở **Tài khoản** để xác minh email nhận OTP.
 
 **Lưu trữ dữ liệu** mặc định tắt tự xóa (`0` ngày). Có thể đặt riêng thời gian lưu yêu cầu viết và lịch sử giao bài. Dọn dẹp chỉ chọn yêu cầu hoàn thành/thất bại/đã hủy, bỏ qua lượt giao đang chờ/đang gửi và bài nguồn còn được yêu cầu viết lại đang chờ/đang viết sử dụng. Xóa yêu cầu sẽ xóa nội dung bài, lịch sử AI, lượt giao và chi phí liên quan, ảnh hưởng báo cáo lịch sử; hạn mức đã tiêu thụ vẫn giữ nguyên. Chỉ xóa lịch sử giao không xóa bài viết. Bật hoặc rút ngắn thời gian lưu cần xác nhận trong giao diện.
 
 Các tiến trình `api`, `writer`, `webhook` đều có thể dọn dẹp với lịch và lease phối hợp qua MongoDB. Đợt đầu chờ hết chu kỳ sau khi lưu; mỗi đợt xử lý tối đa 50 yêu cầu và 100 lượt giao độc lập để tránh giao dịch quá lớn. Backlog lớn cần nhiều chu kỳ. Kết nối database, `ENCRYPTION_KEY`, tên miền/cổng, cấu hình bảo mật và khóa bí mật vẫn ở biến môi trường; API key nhà cung cấp được quản lý tại **Nhà cung cấp AI**. Không đổi `ENCRYPTION_KEY` khi thay các cài đặt vận hành.
 
 Xóa bài đã hoàn tất không hoàn lại lượt viết đã dùng trong kỳ. Xóa yêu cầu còn chờ sẽ giải phóng lượt giữ tương ứng.
+
+## Tài khoản đối tác
+
+CRM có hai vai trò. **Root** cấp tài khoản và quản lý các nhóm đối tác. **Provider** là tài khoản quản trị của một nhóm đối tác, có khách hàng, website, hạn mức, bài viết, lịch giao và báo cáo riêng. Mục **Nhà cung cấp AI** tiếp tục dùng để cấu hình các dịch vụ AI trong nhóm đang quản lý.
+
+1. Root vào **Hệ thống → Đối tác → Thêm đối tác**, nhập tên nhóm, tên đăng nhập, email nhận OTP và mật khẩu ban đầu từ 12 ký tự. Root cần xác nhận đúng email của đối tác trước khi cấp tài khoản.
+2. Đối tác đăng nhập tại cùng địa chỉ CRM bằng tài khoản được cấp và OTP gửi tới email đó. CRM tự đưa tài khoản vào nhóm của mình.
+3. Đối tác cấu hình **Nhà cung cấp AI**, **Bảng giá model**, **Cài đặt**, rồi tạo khách hàng và website. Các cài đặt vận hành, tỷ giá, giới hạn AI, lưu trữ và SMTP chỉ áp dụng trong nhóm đó.
+4. Root chọn **Quản lý** ở danh sách đối tác hoặc dùng bộ chọn **Nhóm quản lý** trên đầu trang để xem và quản lý dữ liệu của nhóm. Chọn **Nhóm root** để trở lại dữ liệu hiện có. Lựa chọn được nhớ riêng cho từng tab.
+
+Mỗi đối tác bắt đầu với danh mục model và thông số vận hành mặc định của dịch vụ, tự nhập API key của mình. Key AI trong `.env` hoặc key đã lưu của root không được cấp cho đối tác. SMTP cũng được cấu hình riêng trong nhóm. Khi đối tác chưa có SMTP riêng, hệ thống dùng SMTP của root để gửi OTP đăng nhập và xác minh email, giúp tài khoản mới vào được CRM. Thông tin SMTP của root không được trả về giao diện đối tác. Nếu SMTP riêng đã được cấu hình nhưng gửi lỗi, cần sửa cấu hình đó.
+
+Root có thể đổi tên nhóm, khóa/mở khóa và đặt lại mật khẩu đối tác. Khóa nhóm thu hồi phiên đăng nhập, thiết bị tin cậy và OTP đang chờ, đồng thời chặn API/widget của website thuộc nhóm. Worker ngừng nhận việc mới khi cập nhật trạng thái trong tối đa khoảng 4 giây và chờ lượt đang xử lý kết thúc. Mở lại nhóm cho phép đăng nhập lại và tiếp tục hàng đợi. Đặt lại mật khẩu cũng thu hồi các phiên và OTP cũ. Nhà cung cấp không được tạo tài khoản đối tác khác hay chuyển sang nhóm khác bằng API.
+
+### Lưu trữ và vận hành nhiều nhóm
+
+Tài khoản, phiên đăng nhập, danh sách đối tác và bảng định tuyến website nằm trong database `MONGODB_DATABASE`. Dữ liệu nghiệp vụ của mỗi đối tác nằm trong một database riêng cùng MongoDB deployment, tên `crm_p_` cộng 32 ký tự hash từ tên database gốc và ID đối tác. Dữ liệu cũ tiếp tục thuộc nhóm root. Tạo website hoặc đổi/thu hồi token cập nhật bảng định tuyến cùng transaction, nên API và widget hiện có tự chọn đúng nhóm theo website/token, không cần bổ sung ID đối tác vào bộ tích hợp.
+
+Tài khoản MongoDB của dịch vụ cần quyền tạo database, collection, index và đọc/ghi trên database gốc cùng các database `crm_p_*`, bao gồm transaction xuyên các database này. Sao lưu và khôi phục phải bao gồm database gốc, tất cả database đối tác và khóa `ENCRYPTION_KEY`. Giữ nguyên tên database gốc khi khôi phục vì nó tham gia cách xác định database đối tác.
+
+Các vai trò `all`, `api`, `writer`, `webhook` tự phát hiện nhóm mới hoặc bị khóa theo chu kỳ khoảng 4 giây. Số luồng viết/giao tính riêng cho mỗi nhóm trên mỗi tiến trình, nên tổng tải tăng theo số nhóm hoạt động. Giới hạn nhà cung cấp và lịch dọn dữ liệu được phối hợp qua MongoDB của đúng nhóm. Khi nâng cấp, cập nhật đồng bộ tất cả tiến trình để worker và API cùng hỗ trợ nhóm đối tác.
 
 ## Tích hợp Laravel và PHP thuần
 
@@ -301,7 +324,7 @@ npx playwright install chromium --only-shell
 npm test
 ```
 
-Kiểm thử dùng MongoDB tạm, phản hồi AI giả lập và trình duyệt Chromium.
+Kiểm thử thường dùng dữ liệu MongoDB giả lập, phản hồi AI giả lập và trình duyệt Chromium. Bộ kiểm thử phân quyền đối tác có thêm kiểm tra trên MongoDB thật, bật bằng `CRM_TEST_MONGODB_URI` trỏ tới replica set hoặc cluster dành cho kiểm thử. Chạy `node --env-file-if-exists=.env --import tsx --test test/partners.test.ts` khi biến này đã được đặt trong môi trường. Bộ kiểm thử tạo database tạm `crm_partner_test_*` cùng database đối tác tương ứng và dọn chúng sau khi chạy, không gọi dịch vụ AI hay gửi email thật. Các kiểm tra còn lại xác nhận đăng nhập/OTP, thu hồi phiên, chuyển nhóm trên trình duyệt, cách ly sự kiện và vòng đời worker.
 
 
 

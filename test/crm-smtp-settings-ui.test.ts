@@ -66,14 +66,15 @@ async function fixture(browser: Browser, bundle: string, conflict = false) {
     }
     if ((path === '/api/crm/settings/smtp' && method === 'PUT') || (path === '/api/crm/settings/smtp/test' && method === 'POST')) {
       const captured = { method, path, raw, body, headers }; attempts.push(captured);
+      if (path.endsWith('/test')) {
+        assert.deepEqual(body, { revision }, 'connection tests use the saved revision without resending a password or unsaved draft');
+        assert.equal(headers['x-crm-action-token'], undefined);
+        saved.push(captured); return route.fulfill({ json: { ok: true } });
+      }
       if (!authorization || headers['x-crm-action-token'] !== actionToken || authorization.method !== method || authorization.target !== path || authorization.body_hash !== bodyHash(raw)) {
         return route.fulfill({ status: 403, json: { error: { code: 'reauthentication_required', message: 'Vui lòng xác nhận mật khẩu.' } } });
       }
       authorization = undefined;
-      if (path.endsWith('/test')) {
-        assert.deepEqual(body, { revision }, 'connection tests use the saved revision without resending a password or unsaved draft');
-        saved.push(captured); return route.fulfill({ json: { ok: true } });
-      }
       if (rejectNextSave) {
         rejectNextSave = false; revision++;
         smtp = { ...smtp, from: 'other@example.test' };
@@ -115,7 +116,7 @@ test('SMTP settings keep secrets write-only, isolate drafts and protect saved co
   });
   const browser = await chromium.launch();
   try {
-    await t.test('password is blank, unchanged credentials omit it, and test verifies only clean saved settings after reauthentication', async () => {
+    await t.test('saving asks for a password and checking the saved SMTP connection runs directly', async () => {
       const f = await fixture(browser, bundle.outputFiles[0].text);
       try {
         await f.page.getByLabel('VND cho 1 USD', { exact: true }).fill('27000');
@@ -136,10 +137,11 @@ test('SMTP settings keep secrets write-only, isolate drafts and protect saved co
         assert.equal(f.saved.length, 1);
         assert.deepEqual(f.saved[0].body, { revision: 3, values: { ...initialSmtp, from: 'changed@example.test' } });
         assert.equal('password' in f.saved[0].body.values, false, 'empty password preserves stored secret without echoing it');
-        await testConnection.click(); await f.approve();
+        await testConnection.click();
+        await f.page.getByText('Kết nối SMTP thành công. Không có email nào được gửi.', { exact: true }).waitFor();
         assert.equal(f.saved.length, 2);
         assert.deepEqual(f.saved[1].body, { revision: 4 });
-        assert.equal(f.authorizations.length, 2, 'saving and testing require separate one-use authorizations');
+        assert.equal(f.authorizations.length, 1, 'only saving settings requires password confirmation');
         assert.ok(f.attempts.every(attempt => !attempt.raw.includes(syntheticPassword)));
         assert.equal(await secret.inputValue(), '');
         await f.page.getByRole('tab', { name: 'Vận hành', exact: true }).click();

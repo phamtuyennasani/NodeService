@@ -13,6 +13,7 @@ type Row = Record<string, any>
 export type CrmAccountContext = {
   sessions: WeakMap<object, CrmSession>
   sendOtp: (message: CrmOtpMessage) => Promise<void>
+  mailConfig?: () => Promise<Config['mail']>
   consumeAttempt: (action: string, account: string, max: number, reply: FastifyReply) => Promise<void>
 }
 const challengeId = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
@@ -65,7 +66,7 @@ export function registerCrmAccount(app: FastifyInstance, db: Database, config: C
     const thumbprint = browserKeyThumbprint(session.browser_public_key)
     return { username: user.username, display_name: user.display_name || user.username,
       email: typeof user.email === 'string' ? user.email : null, email_verified: Boolean(verifiedEmail(user)),
-      mail_configured: isCrmMailConfigured({ ...config, mail: await resolveCrmMailConfig(db, config) }), remember_me: Boolean(session.remember_me),
+      mail_configured: isCrmMailConfigured({ ...config, mail: await (context.mailConfig?.() ?? resolveCrmMailConfig(db, config)) }), remember_me: Boolean(session.remember_me),
       devices: devices.map(device => ({ id: device._id, label: String(device.label || 'Trình duyệt').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 120),
         created_at: iso(device.created_at), last_used_at: iso(device.last_used_at), expires_at: iso(device.expires_at), current: device.key_thumbprint === thumbprint })),
     }

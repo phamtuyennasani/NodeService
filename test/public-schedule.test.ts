@@ -115,6 +115,22 @@ test('editing an unrelated schedule field preserves disabled research and reject
   assert.equal(tables.jobs[0].use_research, true)
 })
 
+test('a website without a webhook can create previews and needs a webhook before scheduling', async t => {
+  const { app, tables, headers } = await fixture(t)
+  tables.sites[0].webhook_url = null
+  const payload = { model: 'test-model', keyword: 'cà phê', tone: 'thân thiện', style: 'hướng dẫn', length: 800, use_research: false }
+  const preview = await app.inject({ method: 'POST', url: '/v1/article-jobs', headers: { ...headers, 'idempotency-key': 'preview-without-webhook' }, payload })
+  assert.equal(preview.statusCode, 202, preview.body)
+  const jobs = structuredClone(tables.jobs)
+  const quota = structuredClone(tables.quota_reservations)
+  const schedule = await app.inject({ method: 'POST', url: '/v1/article-jobs', headers: { ...headers, 'idempotency-key': 'schedule-without-webhook' },
+    payload: { ...payload, scheduled_at: new Date(Date.now() + 3_600_000).toISOString() } })
+  assert.equal(schedule.statusCode, 422, schedule.body)
+  assert.equal(schedule.json().error.code, 'webhook_not_configured')
+  assert.deepEqual(tables.jobs, jobs)
+  assert.deepEqual(tables.quota_reservations, quota)
+})
+
 test('schedule cancellation updates the job and its reservation in one session', async t => {
   const { app, tables, jobId, headers } = await fixture(t)
   const canceled = await app.inject({ method: 'DELETE', url: `/v1/schedules/${jobId}`, headers })

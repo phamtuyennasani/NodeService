@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import type { ChangeStream, ChangeStreamDocument, ResumeToken } from 'mongodb'
-import { collection, type Database } from './db.js'
+import { collection, workspaceId, type Database } from './db.js'
 
 /**
  * Process-local event broker for live CRM job updates.
@@ -23,20 +23,22 @@ export interface JobEvent {
 
 type Subscriber = {
   jobId?: string
+  workspace?: string
   receive: (event: JobEvent) => void
 }
 
 export class JobEventBroker {
   private readonly subscribers = new Set<Subscriber>()
 
-  subscribe(receive: Subscriber['receive'], jobId?: string) {
-    const subscriber = { jobId, receive }
+  subscribe(receive: Subscriber['receive'], jobId?: string, workspace?: string) {
+    const subscriber = { jobId, receive, workspace }
     this.subscribers.add(subscriber)
     return () => this.subscribers.delete(subscriber)
   }
 
-  publish(event: JobEvent) {
+  publish(event: JobEvent, workspace?: string) {
     for (const subscriber of this.subscribers) {
+      if (subscriber.workspace !== workspace) continue
       if (event.type !== 'ready' && subscriber.jobId && subscriber.jobId !== event.job_id) continue
       try {
         subscriber.receive(event)
@@ -54,6 +56,10 @@ export class JobEventBroker {
 }
 
 export const jobEvents = new JobEventBroker()
+
+export function publishJobEvent(db: Database, event: JobEvent) {
+  jobEvents.publish(event, workspaceId(db))
+}
 
 // Lease renewals only extend ownership; sending them to browsers would bring
 // back periodic redraws. All other externally visible job changes invalidate
@@ -76,7 +82,7 @@ const visibleChanges = (fields: string[]) => ({ $or: [
   { operationType: 'update', $expr: { $gt: [{ $size: { $setIntersection: [fields, changedField] } }, 0] } },
 ] })
 
-/** One shared MongoDB stream per API, including updates from separate workers. */
+/** One MongoDB stream per active group and API, including updates from separate workers. */
 export class DatabaseJobEvents {
   private readonly subscribers = new JobEventBroker()
   private readonly stopped = new AbortController()
@@ -91,7 +97,7 @@ export class DatabaseJobEvents {
       // Keep same-process updates available while MongoDB reconnects. In the
       // healthy case the database stream is the single source of updates.
       if (!this.connected) this.subscribers.publish(event)
-    })
+    }, undefined, workspaceId(db))
   }
 
   start() {

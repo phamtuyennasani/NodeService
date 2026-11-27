@@ -44,6 +44,14 @@ async function removeLegacyJobKeys(db: Database) {
 export async function migrate(db: Database) {
   await db.client.connect()
   const database = db.db
+  if (!db.partnerId) {
+    await database.createCollection('partners').catch(() => undefined)
+    await database.createCollection('partner_sites').catch(() => undefined)
+    await collection(db, 'partner_sites').createIndex({ token_hash: 1 }, {
+      unique: true, partialFilterExpression: { token_hash: { $type: 'string' } },
+    })
+    await collection(db, 'partner_sites').createIndex({ partner_id: 1 })
+  }
   await Promise.all([
     database.createCollection('schema_migrations').catch(() => undefined),
     database.createCollection('users').catch(() => undefined),

@@ -6,6 +6,7 @@ import { runWorkers } from './worker/index.js';
 import { runMaintenance } from './worker/maintenance.js';
 import { effectiveConfig } from './runtime-settings.js';
 import { assertEncryptionContext } from './encryption-context.js';
+import { initializeExistingPartners, runPartnerServices } from './partner-runtime.js';
 
 const role = process.argv[2] || 'all';
 if (!['all', 'api', 'writer', 'webhook'].includes(role)) {
@@ -29,9 +30,11 @@ try {
   await assertTransactionSupport(db);
   await assertEncryptionContext(db, config, role === 'api' || role === 'all');
   await migrate(db);
+  await initializeExistingPartners(db, config);
   // Validate persisted operational settings before starting any role.
   await effectiveConfig(db, config);
   components.push(runMaintenance(db, config, controller.signal));
+  components.push(runPartnerServices(db, config, controller.signal, role));
   if (role === 'api' || role === 'all') {
     const app = await buildApp(db, config);
     closeApp = () => app.close();

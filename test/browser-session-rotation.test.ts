@@ -50,6 +50,64 @@ const errorResponse = (status: number, code: string) => Response.json({ error: {
 const sessionResponse = () => Response.json({ username: 'synthetic-admin', csrf_token: 'rotated-csrf', browser_binding: 'b'.repeat(43), server_time: Date.now() });
 const changed = (error: any) => error.code === 'browser_session_changed' && error.status === 409;
 
+test('workspace selection is included in the signed URL and a pending write cannot move to a different group', async () => {
+  const prompts = deferred<string>();
+  const prompted = deferred<void>();
+  const targets: string[] = [];
+  let authorizations = 0;
+  const f = await fixture(async (target, options) => {
+    targets.push(target);
+    const proof = new Headers(options.headers).get('X-CRM-Proof')!;
+    const claims = JSON.parse(Buffer.from(proof.split('.')[1], 'base64url').toString());
+    assert.equal(claims.htu, target);
+    if (target === '/api/crm/session/authorize') { authorizations++; return Response.json({ action_token: 'fixture' }); }
+    return errorResponse(403, 'reauthentication_required');
+  });
+  f.api.setWorkspace('partner-a');
+  f.api.setReauthenticationHandler(() => { prompted.resolve(); return prompts.promise; });
+  const write = f.api.mutate('/settings', 'PUT', { revision: 0, values: {} });
+  const rejected = assert.rejects(write, (error: any) => error.code === 'workspace_changed');
+  await prompted.promise;
+  assert.deepEqual(targets, ['/api/crm/settings?workspace=partner-a']);
+  f.api.setWorkspace('partner-b');
+  prompts.resolve('fixture-password');
+  await rejected;
+  assert.equal(authorizations, 0);
+  assert.equal(targets.length, 1);
+});
+
+test('changing workspace discards a delayed response without expiring the session', async () => {
+  const response = deferred<Response>();
+  const started = deferred<void>();
+  const f = await fixture(async () => { started.resolve(); return response.promise; });
+  f.api.setWorkspace('partner-a');
+  const pending = f.api.request('/customers');
+  const rejected = assert.rejects(pending, (error: any) => error.code === 'workspace_changed');
+  await started.promise;
+  f.api.setWorkspace('partner-b');
+  response.resolve(errorResponse(401, 'session_required'));
+  await rejected;
+  assert.equal(f.expired(), 0);
+});
+
+test('changing workspace while parsing a response discards both data and stale session errors', async t => {
+  for (const status of [200, 401]) await t.test(String(status), async () => {
+    const body = deferred<unknown>();
+    const reading = deferred<void>();
+    const f = await fixture(async () => ({ status, ok: status === 200,
+      json() { reading.resolve(); return body.promise; },
+    } as Response));
+    f.api.setWorkspace('partner-a');
+    const pending = f.api.request('/customers');
+    const rejected = assert.rejects(pending, (error: any) => error.code === 'workspace_changed');
+    await reading.promise;
+    f.api.setWorkspace('partner-b');
+    body.resolve(status === 200 ? { data: ['private-to-a'] } : { error: { code: 'session_required' } });
+    await rejected;
+    assert.equal(f.expired(), 0);
+  });
+});
+
 test('late GET/SSE 401 cannot expire a newer login or password session', async t => {
   for (const rotation of ['/login', '/password']) {
     for (const path of ['/jobs', '/jobs/synthetic/events']) {
@@ -126,7 +184,7 @@ test('late old 403 does not prompt for a sensitive action in a new session', asy
   let prompts = 0;
   const f = await fixture(async () => { started.resolve(); return oldResponse.promise; });
   f.api.setReauthenticationHandler(async () => { prompts++; return 'synthetic-password'; });
-  const pending = f.api.mutate('/providers/synthetic', 'PATCH', { name: 'Synthetic' });
+  const pending = f.api.mutate('/settings', 'PUT', { revision: 0, values: {} });
   const rejected = assert.rejects(pending, changed);
   await started.promise;
   f.api.setBrowserSession({ browser_binding: 'b'.repeat(43), server_time: Date.now() });
@@ -143,14 +201,14 @@ test('a sensitive action waiting in the prompt queue is canceled after rotation'
   let authorizations = 0;
   const f = await fixture(async target => {
     if (target === '/api/crm/session/authorize') authorizations++;
-    if (target === '/api/crm/providers/second') secondResponse.resolve();
+    if (target === '/api/crm/settings/smtp') secondResponse.resolve();
     return errorResponse(403, 'reauthentication_required');
   });
   f.api.setReauthenticationHandler(() => { prompts++; prompted.resolve(); return password.promise; });
-  const first = f.api.mutate('/providers/first', 'PATCH', { name: 'First' });
+  const first = f.api.mutate('/settings', 'PUT', { revision: 0, values: {} });
   const firstRejected = assert.rejects(first, changed);
   await prompted.promise;
-  const second = f.api.mutate('/providers/second', 'PATCH', { name: 'Second' });
+  const second = f.api.mutate('/settings/smtp', 'PUT', { revision: 0, values: {} });
   const secondRejected = assert.rejects(second, changed);
   await secondResponse.promise;
   // Let its 403 finish parsing so the second action waits behind the first prompt.

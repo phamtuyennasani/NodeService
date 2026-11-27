@@ -5,6 +5,8 @@ import { z } from 'zod'
 import type { Config } from '../config.js'
 import { isCompatibleProvider, providers } from '../config.js'
 import { collection, sessionOf, transaction, type Database } from '../db.js'
+import { resolveDatabase, rootDatabase } from '../db.js'
+import { accountAccess } from '../workspaces.js'
 import { createJob, writingFields, type Site } from './public.js'
 import { languageMetadata } from '../article-language.js'
 import { articleIdentity, articleIdentityFields } from '../article-group.js'
@@ -13,7 +15,7 @@ import { modelIdSchema, providerIdSchema } from './catalog.js'
 import { ApiError, articleLengthSchema, idSchema, notFound, periodSchema, timestampSchema } from './errors.js'
 import { pageOf, readCursor } from './public.js'
 import { cleanArticle, normalizeArticleFields } from '../worker/provider.js'
-import { DatabaseJobEvents, jobEvents } from '../job-events.js'
+import { DatabaseJobEvents, publishJobEvent } from '../job-events.js'
 import { excludedContentIdsSchema } from '../site-content.js'
 import { digest } from '../security.js'
 import { crmSessionCookieName } from './crm-session.js'
@@ -199,13 +201,35 @@ function runtimeJob(row: any) {
 
 export function registerReports(app: FastifyInstance, db: Database, config: Config, getRuntimeConfig: () => Promise<Config> = async () => config) {
   registerJobPdfRoute(app, db)
-  const liveJobs = new DatabaseJobEvents(db, error => app.log.warn({ err: error }, 'CRM job event stream reconnecting'))
+  const eventSources = new Map<Database, { events: DatabaseJobEvents, subscribers: number }>()
+  const closingSources = new Set<Promise<void>>()
+  function subscribeWorkspaceEvents(receive: Parameters<DatabaseJobEvents['subscribe']>[0], jobId?: string) {
+    const current = resolveDatabase(db)
+    let entry = eventSources.get(current)
+    if (!entry) {
+      entry = { events: new DatabaseJobEvents(current, error => app.log.warn({ err: error }, 'CRM job event stream reconnecting')), subscribers: 0 }
+      eventSources.set(current, entry)
+      entry.events.start()
+    }
+    entry.subscribers++
+    const unsubscribe = entry.events.subscribe(receive, jobId)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      unsubscribe()
+      if (--entry!.subscribers > 0) return
+      // Switching through groups must not retain a MongoDB stream for every group visited.
+      eventSources.delete(current)
+      const closing = entry!.events.close().finally(() => closingSources.delete(closing))
+      closingSources.add(closing)
+    }
+  }
   const closeStreams = new Set<() => void>()
   const streamsBySession = new Map<string, number>()
-  app.addHook('onReady', async () => { liveJobs.start() })
   app.addHook('preClose', async () => {
     for (const close of closeStreams) close()
-    await liveJobs.close()
+    await Promise.all([...closingSources, ...[...eventSources.values()].map(entry => entry.events.close())])
   })
   app.get('/jobs/events', async (request, reply) => {
     const query = z.object({ job_id: idSchema.optional() }).parse(request.query)
@@ -236,7 +260,8 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       // EventSource reconnects and the ready event reconciles missed changes.
       if (!response.write(`event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`)) response.destroy()
     }
-    const unsubscribe = liveJobs.subscribe(send, query.job_id)
+    const unsubscribe = subscribeWorkspaceEvents(send, query.job_id)
+    const control = rootDatabase(db)
     let checkingSession = false
     const heartbeat = setInterval(async () => {
       if (response.destroyed || response.writableEnded) return
@@ -246,10 +271,11 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
         // Revoke an already-open stream after logout/password change rather
         // than trusting the cookie only at connection establishment.
         if (token) {
-          const session = await collection(db, 'sessions').findOne({ _id: sessionId, expires_at: { $gt: new Date() } }, { projection: { user_id: 1, credential_version: 1 }, maxTimeMS: 5_000 })
+          const session = await collection(control, 'sessions').findOne({ _id: sessionId, expires_at: { $gt: new Date() } }, { projection: { user_id: 1, credential_version: 1 }, maxTimeMS: 5_000 })
           if (!session) return close()
-          const user = await collection(db, 'users').findOne({ _id: session.user_id }, { projection: { _id: 1, password_hash: 1 }, maxTimeMS: 5_000 })
+          const user = await collection(control, 'users').findOne({ _id: session.user_id }, { projection: { _id: 1, password_hash: 1, role: 1, partner_id: 1, enabled: 1 }, maxTimeMS: 5_000 })
           if (!user || (session.credential_version && (!user.password_hash || session.credential_version !== digest(user.password_hash)))) return close()
+          await accountAccess(control, user)
         }
         if (!response.destroyed && !response.writableEnded && !response.write(': heartbeat\n\n')) response.destroy()
       } catch { close() }
@@ -698,7 +724,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       await collection(client, 'jobs').updateMany({ retry_of_job_id: id }, { $set: { retry_of_job_id: null, updated_at: new Date() } }, { session })
       await collection(client, 'jobs').deleteOne({ _id: id }, { session })
     })
-    jobEvents.publish({ type: 'job.deleted', job_id: id, deleted: true })
+    publishJobEvent(db, { type: 'job.deleted', job_id: id, deleted: true })
     return reply.code(204).send()
   })
   app.get('/jobs/:id', async (request, reply) => {
@@ -791,7 +817,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       if (!result.matchedCount) throw new ApiError(409, 'delivery_changed', 'Trạng thái giao bài đã thay đổi. Hãy tải lại rồi thử lại.')
       return delivery.job_id
     })
-    jobEvents.publish({ type: 'job.updated', job_id: jobId })
+    publishJobEvent(db, { type: 'job.updated', job_id: jobId })
     return { id, status: 'pending' }
   })
   app.delete('/deliveries/:id', async (request, reply) => {
@@ -813,7 +839,7 @@ export function registerReports(app: FastifyInstance, db: Database, config: Conf
       if (!removed.deletedCount) throw new ApiError(409, 'delivery_changed', 'Trạng thái giao bài đã thay đổi. Hãy tải lại rồi thử lại.')
       return delivery.job_id
     })
-    jobEvents.publish({ type: 'job.updated', job_id: jobId })
+    publishJobEvent(db, { type: 'job.updated', job_id: jobId })
     return reply.code(204).send()
   })
 }

@@ -280,7 +280,7 @@ test('CRM website catalog URL settings and manual sync', async t => {
       } finally { await busy.page.close(); }
     });
 
-    await t.test('adds an optional URL on create and validates URL syntax before saving', async () => {
+    await t.test('creates without a webhook URL and validates an optional catalog URL before saving', async () => {
       const f = await fixture(browser, bundle.outputFiles[0].text, { configured: false });
       try {
         await f.drawer.getByRole('button', { name: 'Close', exact: true }).click();
@@ -290,7 +290,7 @@ test('CRM website catalog URL settings and manual sync', async t => {
         await f.page.locator('.ant-select-item-option').filter({ hasText: 'Khách kiểm thử' }).click();
         await dialog.getByLabel('Tên hiển thị', { exact: true }).fill('Website mới');
         await dialog.getByLabel('Tên miền', { exact: true }).fill('example.vn');
-        await dialog.getByLabel('URL webhook nhận bài', { exact: true }).fill('https://example.vn/webhook');
+        assert.equal(await dialog.getByLabel('URL webhook nhận bài', { exact: true }).getAttribute('aria-required'), null);
         const input = dialog.getByLabel('URL danh mục liên kết', { exact: true });
         await input.fill('file:///etc/passwd');
         await dialog.getByRole('button', { name: 'Lưu website', exact: true }).click();
@@ -300,8 +300,29 @@ test('CRM website catalog URL settings and manual sync', async t => {
         await dialog.getByRole('button', { name: 'Lưu website', exact: true }).click();
         await dialog.waitFor({ state: 'hidden' });
         assert.equal(f.mutations[0].method, 'POST');
+        assert.equal(f.mutations[0].body.webhook_url, null);
         assert.equal(f.mutations[0].body.content_catalog_url, catalogUrl);
         assert.equal(f.checkCount(), 0);
+        assert.deepEqual(f.errors, []);
+      } finally { await f.page.close(); }
+    });
+
+    await t.test('clears a saved webhook URL while still rejecting an invalid nonempty value', async () => {
+      const f = await fixture(browser, bundle.outputFiles[0].text);
+      try {
+        await f.drawer.getByRole('button', { name: 'Chỉnh sửa', exact: true }).click();
+        const dialog = f.page.locator('.ant-modal');
+        const webhook = dialog.getByLabel('URL webhook nhận bài', { exact: true });
+        await webhook.fill('file:///etc/passwd');
+        await dialog.getByRole('button', { name: 'Lưu website', exact: true }).click();
+        await dialog.getByText('Nhập URL hợp lệ.', { exact: true }).waitFor();
+        assert.equal(f.mutations.length, 0);
+        await webhook.fill('   ');
+        await dialog.getByRole('button', { name: 'Lưu website', exact: true }).click();
+        await dialog.waitFor({ state: 'hidden' });
+        assert.equal(f.mutations[0].method, 'PATCH');
+        assert.equal(f.mutations[0].body.webhook_url, null);
+        assert.equal(f.website.webhook_url, null);
         assert.deepEqual(f.errors, []);
       } finally { await f.page.close(); }
     });

@@ -7,7 +7,7 @@ import { crmMailConfigAtRevision, readCrmMailSettings, saveCrmMailSettings, smtp
 
 const testSchema = z.object({ revision: z.number().int().nonnegative() }).strict();
 
-/** Register under the existing signed CRM settings/CSRF/action-password boundary. */
+/** Signed CRM requests use CSRF, with password confirmation when saving settings. */
 export function registerCrmMailSettings(app: FastifyInstance, db: Database, config: Config) {
   app.get('/settings/smtp', async () => readCrmMailSettings(db, config));
   app.put('/settings/smtp', { bodyLimit: 8 * 1024 }, async request =>

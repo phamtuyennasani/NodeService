@@ -142,6 +142,9 @@
 .crm-crumb strong { font-weight: 600; color: #343d33; }
 .crm-today { flex: none; gap: 8px; font-size: 12px; }
 .crm-today .anticon { font-size: 15px; }
+.crm-topbar-context { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.crm-workspace-select { width: 220px; max-width: 100%; }
+.crm-workspace-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .crm-crumb .crm-menu-toggle { display: none; }
 .crm-page {
   width: 100%;
@@ -259,6 +262,9 @@
   .crm-topbar { min-height: 57px; }
 }
 @media (max-width: 660px) {
+  .crm-topbar { flex-wrap: wrap; gap: 12px; }
+  .crm-topbar-context { justify-content: flex-start; width: 100%; }
+  .crm-workspace-select { flex: 1; min-width: 160px; }
   .crm-workspace { --shell-inset: 16px; }
   .crm-page { padding-block: 22px 32px; }
   .crm-login { display: flex; flex-direction: column; min-height: 100svh; padding: 10px; }

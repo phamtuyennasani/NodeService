@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Alert, App, Button, Checkbox, ConfigProvider, Drawer, Dropdown, Form, Input, Modal, Skeleton, Spin, theme as antdTheme,
+  Alert, App, Button, Checkbox, ConfigProvider, Drawer, Dropdown, Form, Input, Modal, Select, Skeleton, Spin, theme as antdTheme,
 } from 'antd';
 import viVN from 'antd/locale/vi_VN';
 import dayjs from 'dayjs';
@@ -19,9 +19,9 @@ import '@fontsource/inter/vietnamese-400.css';
 import '@fontsource/inter/vietnamese-500.css';
 import '@fontsource/inter/vietnamese-600.css';
 import '@fontsource/inter/vietnamese-700.css';
-import { cancelLoginChallenge, mutate, request, setCsrfToken, setReauthenticationHandler } from './api';
+import { cancelLoginChallenge, mutate, request, setCsrfToken, setReauthenticationHandler, setWorkspace, useResource } from './api';
 import { setBrowserSession } from './browser-proof';
-import type { LoginChallenge, Session } from './types';
+import type { LoginChallenge, PartnerAccount, Session } from './types';
 import { crmTheme } from './theme.js';
 import './styles.css';
 import './shell.css';
@@ -37,6 +37,7 @@ const Providers = lazy(() => import('./Providers').then((page) => ({ default: pa
 const Pricing = lazy(() => import('./Pricing').then((page) => ({ default: page.Pricing })));
 const Settings = lazy(() => import('./Settings').then((page) => ({ default: page.Settings })));
 const Account = lazy(() => import('./Account').then((page) => ({ default: page.Account })));
+const Partners = lazy(() => import('./Partners').then((page) => ({ default: page.Partners })));
 
 const navigationGroups = [
   { label: 'Vận hành', items: [
@@ -53,6 +54,7 @@ const navigationGroups = [
     { key: 'prices', label: 'Bảng giá model', icon: DollarOutlined },
   ] },
   { label: 'Hệ thống', items: [
+    { key: 'partners', label: 'Đối tác', icon: TeamOutlined },
     { key: 'settings', label: 'Cài đặt', icon: SettingOutlined },
     { key: 'account', label: 'Tài khoản', icon: UserOutlined },
   ] },
@@ -206,7 +208,22 @@ function getLocation() {
   return { key: navigation.some((item) => item.key === key) ? key : 'overview', query: new URLSearchParams(search) };
 }
 
+function savedWorkspace(session: Session) {
+  if (session.role !== 'root') return 'root';
+  try { return window.sessionStorage.getItem(`crm-workspace:${session.username}`) || 'root'; }
+  catch { return 'root'; }
+}
+
 function Workspace({ session, onSession, onSignOut }: { session: Session; onSession: (session: Session) => void; onSignOut: () => void }) {
+  const isRoot = session.role === 'root';
+  const [selectedWorkspace, selectWorkspace] = useState(() => savedWorkspace(session));
+  const partners = useResource<{ data: PartnerAccount[] }>(isRoot ? '/partners' : null);
+  function changeWorkspace(id: string) {
+    setWorkspace(id === 'root' ? undefined : id);
+    selectWorkspace(id);
+    try { window.sessionStorage.setItem(`crm-workspace:${session.username}`, id); } catch { /* In-memory selection still works. */ }
+    window.location.hash = '#overview';
+  }
   const accountName = session.display_name?.trim() || session.username;
   const nameParts = accountName.split(/\s+/);
   const avatarText = (nameParts.length > 1 ? `${Array.from(nameParts[0])[0] ?? ''}${Array.from(nameParts.at(-1)!)[0] ?? ''}` : Array.from(accountName).slice(0, 2).join('')).toUpperCase();
@@ -269,7 +286,7 @@ function Workspace({ session, onSession, onSignOut }: { session: Session; onSess
         {navigationGroups.map((group) => (
           <div key={group.label} className="crm-nav-group">
             <div className="crm-nav-label">{group.label}</div>
-            {group.items.map(({ key, label, icon: Icon }) => (
+            {group.items.filter(item => item.key !== 'partners' || isRoot).map(({ key, label, icon: Icon }) => (
               <a key={key} href={`#${key}`} className="crm-nav-link" aria-current={location.key === key ? 'page' : undefined} onClick={() => setMobileMenu(false)}>
                 <Icon aria-hidden="true" /><span>{label}</span>
               </a>
@@ -293,7 +310,7 @@ function Workspace({ session, onSession, onSignOut }: { session: Session; onSess
         }}>
           <button type="button" className="crm-account-button" aria-label={`Tài khoản ${accountName}`} aria-haspopup="menu">
             <span className="crm-avatar" aria-hidden="true">{avatarText}</span>
-            <span className="crm-identity"><strong>{accountName}</strong><span>Quản trị viên</span></span>
+            <span className="crm-identity"><strong>{accountName}</strong><span>{session.role === 'provider' ? 'Quản trị đối tác' : isRoot ? 'Root' : 'Quản trị viên'}</span></span>
             <DownOutlined className="crm-account-caret" aria-hidden="true" />
           </button>
         </Dropdown>
@@ -318,9 +335,16 @@ function Workspace({ session, onSession, onSignOut }: { session: Session; onSess
             <RightOutlined className="crm-crumb-chevron" aria-hidden="true" />
             <strong>{active.label}</strong>
           </div>
-          <Today />
+          <div className="crm-topbar-context">
+            {isRoot && <Select className="crm-workspace-select" aria-label="Nhóm quản lý" value={selectedWorkspace}
+              loading={partners.loading} onChange={changeWorkspace} showSearch optionFilterProp="label"
+              options={[{ value: 'root', label: 'Nhóm root' }, ...(partners.data?.data ?? []).map(partner => ({ value: partner.id, label: partner.name + (partner.enabled ? '' : ' (đã khóa)') }))]} />}
+            {session.partner && <span className="crm-workspace-name">{session.partner.name}</span>}
+            <Today />
+          </div>
         </header>
-        <main id="crm-main" tabIndex={-1} className="crm-page" key={`${location.key}?${location.query}`}>
+        <main id="crm-main" tabIndex={-1} className="crm-page" key={`${selectedWorkspace}:${location.key}?${location.query}`}>
+          {partners.error && <Alert type="error" title={partners.error.message} action={<Button onClick={partners.reload}>Thử lại</Button>} />}
           <Suspense fallback={<div role="status" aria-label="Đang tải"><Skeleton active paragraph={{ rows: 4 }} /></div>}>
             {location.key === 'overview' && <Dashboard query={location.query} />}
             {location.key === 'customers' && <Customers query={location.query} />}
@@ -330,6 +354,7 @@ function Workspace({ session, onSession, onSignOut }: { session: Session; onSess
             {location.key === 'providers' && <Providers />}
             {location.key === 'prices' && <Pricing />}
             {location.key === 'settings' && <Settings />}
+            {location.key === 'partners' && (isRoot ? <Partners onOpen={changeWorkspace} onChanged={partners.reload} /> : <Alert type="error" title="Chỉ root được quản lý tài khoản đối tác." />)}
             {location.key === 'account' && <Account onProfile={(profile) => onSession({ ...session, username: profile.username, display_name: profile.display_name, email: profile.email, email_verified: profile.email_verified })} onPasswordChange={() => setPasswordOpen(true)} />}
           </Suspense>
         </main>
@@ -353,6 +378,8 @@ function Root() {
   const [sessionError, setSessionError] = useState<string>();
   function applySession(next: Session | null) {
     setCsrfToken(next?.csrf_token ?? '');
+    const workspace = next ? savedWorkspace(next) : 'root';
+    setWorkspace(workspace === 'root' ? undefined : workspace);
     if (!next) setBrowserSession(null);
     setSession(next);
   }
@@ -414,7 +441,7 @@ function ReauthenticationDialog() {
   // Confirm dialogs use the popup base + 1000; security prompts must appear above them.
   return <Modal title="Xác nhận bảo mật" open={open} zIndex={token.zIndexPopupBase + 1100} onCancel={() => finish(null)}
     onOk={() => form.submit()} okText="Xác nhận thao tác" cancelText="Hủy" destroyOnHidden>
-    <p>Nhập lại mật khẩu để xác nhận thao tác quản trị nhạy cảm. Xác nhận chỉ có hiệu lực cho một thao tác này.</p>
+    <p>Nhập lại mật khẩu để lưu thay đổi cài đặt. Xác nhận chỉ có hiệu lực cho lần lưu này.</p>
     <Form form={form} layout="vertical" preserve={false} onFinish={values => finish(values.current_password)}>
       <Form.Item name="current_password" label="Mật khẩu hiện tại" rules={[{ required: true, message: 'Nhập mật khẩu hiện tại.' }]}>
         <Input.Password autoComplete="current-password" autoFocus />

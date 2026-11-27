@@ -181,6 +181,7 @@ test('SSE authenticates real HTTP clients, remains live and closes on app shutdo
 })
 
 test('SSE caps each session and releases closed connections for a reconnect', async t => {
+  const before = jobEvents.size
   const token = 'b'.repeat(43)
   const auth = authenticatedStreamStore(token, 'stream-admin')
   const { db, config } = auth
@@ -207,6 +208,14 @@ test('SSE caps each session and releases closed connections for a reconnect', as
     controllers[0].abort()
     await new Promise(resolve => setTimeout(resolve, 30))
     assert.equal((await open()).status, 200)
+    assert.equal(jobEvents.size, before + 1, 'concurrent tabs share a single group feed')
+    for (const controller of controllers) controller.abort()
+    for (let attempt = 0; attempt < 200 && jobEvents.size !== before; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    assert.equal(jobEvents.size, before, 'leaving the group releases its feed before app shutdown')
+    assert.equal((await open()).status, 200)
+    assert.equal(jobEvents.size, before + 1, 'returning to the group opens a new feed')
   } finally {
     for (const controller of controllers) controller.abort()
     await app.close()

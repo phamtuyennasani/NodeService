@@ -11,14 +11,15 @@ import { pageOf, readCursor } from './public.js'
 import { usage, type Package } from './quota.js'
 import { ContentCatalogError, syncSiteContentCatalog, validateContentCatalogUrl, type CatalogSyncOptions } from '../site-content-pull.js'
 import { normalizeSitePublicKey, siteProofRequired } from '../site-proof.js'
+import { writePartnerSiteRoute, deletePartnerSiteRoute } from '../workspaces.js'
 
 const nullableString = (max: number) => z.string().trim().max(max).nullable().optional()
 const customerFields = z.object({ name: z.string().trim().min(1).max(160), email: nullableString(320), phone: nullableString(80), notes: nullableString(4000), key_mode: z.enum(['own', 'service']).optional(), daily_limit: z.number().int().nonnegative().max(1_000_000).nullable().optional(), monthly_limit: z.number().int().nonnegative().max(1_000_000).nullable().optional(), allowed_models: z.array(modelIdSchema).max(100).nullable().optional(), max_length: quantitySchema.nullable().optional(), active_from: timestampSchema.nullable().optional(), active_until: timestampSchema.nullable().optional() }).strict()
-const websiteFields = z.object({ customer_id: idSchema, name: z.string().trim().min(1).max(160), domain: z.string().trim().min(1).max(253), webhook_url: z.string().trim().min(1).max(2048), content_catalog_url: z.string().trim().max(2048).nullable().optional() }).strict()
+const websiteFields = z.object({ customer_id: idSchema, name: z.string().trim().min(1).max(160), domain: z.string().trim().min(1).max(253), webhook_url: nullableString(2048), content_catalog_url: z.string().trim().max(2048).nullable().optional() }).strict()
 const listQuery = z.object({ q: z.string().trim().max(160).optional(), cursor: z.string().max(2048).optional(), id: idSchema.optional(), limit: z.coerce.number().int().min(1).max(500).default(250), customer_id: idSchema.optional() })
 const idParams = z.object({ id: idSchema }); const nameCursor = z.string().min(1).max(160)
 type CustomerDoc = Package & { _id: string, name: string, email: string | null, phone: string | null, notes: string | null, starts_at: Date | null, ends_at: Date | null, created_at: Date, updated_at: Date }
-type SiteDoc = { _id: string, customer_id: string, name: string, domain: string, webhook_url: string, proof_required?: boolean, signing_public_key?: string | null, content_catalog_url?: string | null, content_catalog_checked_at?: Date | null, site_content_synced_at?: Date | null, content_catalog_error?: string | null, content_catalog_count?: number, webhook_secret: string | null, token_hash?: string | null, token_prefix?: string | null, last_used_at?: Date | null, created_at: Date, updated_at: Date }
+type SiteDoc = { _id: string, customer_id: string, name: string, domain: string, webhook_url: string | null, proof_required?: boolean, signing_public_key?: string | null, content_catalog_url?: string | null, content_catalog_checked_at?: Date | null, site_content_synced_at?: Date | null, content_catalog_error?: string | null, content_catalog_count?: number, webhook_secret: string | null, token_hash?: string | null, token_prefix?: string | null, last_used_at?: Date | null, created_at: Date, updated_at: Date }
 const toPackage = (row: CustomerDoc): Package => ({ id: row._id, key_mode: row.key_mode, daily_limit: row.daily_limit, monthly_limit: row.monthly_limit, allowed_models: row.allowed_models ?? [], max_length: row.max_length, starts_at: row.starts_at, ends_at: row.ends_at })
 function normalizeDomain(domain: string) { try { const parsed = new URL(domain.includes('://') ? domain : 'https://' + domain); if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || !parsed.hostname) throw new Error(); return parsed.host } catch { throw new ApiError(400, 'invalid_domain', 'Vui lòng nhập tên miền hoặc địa chỉ gốc của website.') } }
 async function customerArguments(source: MongoSource, fields: z.infer<typeof customerFields>) {
@@ -42,14 +43,17 @@ async function customerArguments(source: MongoSource, fields: z.infer<typeof cus
 }
 async function websiteArguments(fields: z.infer<typeof websiteFields>, config: Config) {
   const domain = normalizeDomain(fields.domain)
-  try { validateWebhookUrl(fields.webhook_url, config.allowLocalWebhooks) } catch { throw new ApiError(400, 'invalid_webhook_url', 'URL nhận bài không hợp lệ hoặc không thể truy cập.') }
+  const webhook_url = fields.webhook_url || null
+  if (webhook_url) {
+    try { validateWebhookUrl(webhook_url, config.allowLocalWebhooks) } catch { throw new ApiError(400, 'invalid_webhook_url', 'URL nhận bài không hợp lệ hoặc không thể truy cập.') }
+  }
   const catalogUrl = fields.content_catalog_url?.trim() || null
   let content_catalog_url: string | null = null
   if (catalogUrl) {
     try { content_catalog_url = validateContentCatalogUrl(catalogUrl, domain).toString() }
     catch { throw new ApiError(400, 'invalid_content_catalog_url', 'URL danh mục cần là HTTPS thuộc đúng tên miền website, không có tài khoản hoặc fragment.') }
   }
-  return { customer_id: fields.customer_id, name: fields.name, domain, webhook_url: fields.webhook_url, content_catalog_url }
+  return { customer_id: fields.customer_id, name: fields.name, domain, webhook_url, content_catalog_url }
 }
 
 export function registerCustomers(app: FastifyInstance, db: Database, config: Config, catalogDependencies: Pick<CatalogSyncOptions, 'fetchCatalog'> = {}) {
@@ -83,6 +87,7 @@ export function registerCustomers(app: FastifyInstance, db: Database, config: Co
       const customer = await collection(client, 'customers').updateOne({ _id: fields.customer_id }, { $inc: { relation_version: 1 } }, { session })
       if (!customer.matchedCount) throw notFound()
       await collection(client, 'sites').insertOne(doc, { session })
+      await writePartnerSiteRoute(client, doc._id)
     })
     return reply.code(201).send({ id: doc._id })
   })
@@ -135,10 +140,22 @@ export function registerCustomers(app: FastifyInstance, db: Database, config: Co
       }
       await collection(client, 'site_content').deleteMany({ site_id: id }, { session })
       await collection(client, 'sites').deleteOne({ _id: id }, { session })
+      await deletePartnerSiteRoute(client, id)
     })
     return reply.code(204).send()
   })
-  app.post('/websites/:id/token', async request => { const { id } = idParams.parse(request.params); const token = issueToken(); const result = await collection(db, 'sites').updateOne({ _id: id }, { $set: { token_hash: digest(token), token_prefix: token.slice(0, 9), last_used_at: null, updated_at: new Date() } }); if (!result.matchedCount) throw notFound(); return { token } })
+  app.post('/websites/:id/token', async request => {
+    const { id } = idParams.parse(request.params)
+    const token = issueToken()
+    await transaction(db, async source => {
+      const result = await collection(source, 'sites').updateOne({ _id: id }, {
+        $set: { token_hash: digest(token), token_prefix: token.slice(0, 9), last_used_at: null, updated_at: new Date() },
+      }, { session: source.session })
+      if (!result.matchedCount) throw notFound()
+      await writePartnerSiteRoute(source, id, digest(token))
+    })
+    return { token }
+  })
   app.put('/websites/:id/signing-key', async request => {
     const { id } = idParams.parse(request.params)
     const { public_key, expected_fingerprint } = z.object({
@@ -157,7 +174,17 @@ export function registerCustomers(app: FastifyInstance, db: Database, config: Co
       return { proof_required: true, signing_key_fingerprint: digest(key) }
     })
   })
-  app.delete('/websites/:id/token', async (request, reply) => { const { id } = idParams.parse(request.params); const result = await collection(db, 'sites').updateOne({ _id: id }, { $unset: { token_hash: '', token_prefix: '' }, $set: { updated_at: new Date() } }); if (!result.matchedCount) throw notFound(); return reply.code(204).send() })
+  app.delete('/websites/:id/token', async (request, reply) => {
+    const { id } = idParams.parse(request.params)
+    await transaction(db, async source => {
+      const result = await collection(source, 'sites').updateOne({ _id: id }, {
+        $unset: { token_hash: '', token_prefix: '' }, $set: { updated_at: new Date() },
+      }, { session: source.session })
+      if (!result.matchedCount) throw notFound()
+      await writePartnerSiteRoute(source, id, null)
+    })
+    return reply.code(204).send()
+  })
   app.post('/websites/:id/webhook-secret', async request => { const { id } = idParams.parse(request.params); const secret = issueToken(); const result = await collection(db, 'sites').updateOne({ _id: id }, { $set: { webhook_secret: seal(secret, config.encryptionKey), updated_at: new Date() } }); if (!result.matchedCount) throw notFound(); return { secret } })
 }
 // @ts-nocheck

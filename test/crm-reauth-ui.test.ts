@@ -84,11 +84,9 @@ async function fixture(browser: Browser, bundle: string, css: string, options: {
       const raw = request.postData() ?? '';
       const headers = request.headers();
       deleteAttempts.push({ raw, headers });
-      if (headers['x-crm-action-token'] !== actionToken || !authorization || authorization.method !== request.method()
-        || authorization.target !== url.pathname + url.search || authorization.body_hash !== bodyHash(raw)) {
-        return route.fulfill({ status: 403, json: { error: { code: 'reauthentication_required', message: 'Vui lòng xác nhận mật khẩu cho thao tác này.' } } });
-      }
-      authorization = undefined;
+      assert.equal(headers['x-crm-action-token'], undefined);
+      assert.equal(headers['x-csrf-token'], csrf);
+      assert.ok(headers['x-crm-proof']);
       if (options.modelInUse) return route.fulfill({ status: 409, json: { error: {
         code: 'model_in_use', message: 'Không thể xóa model đã được dùng trong gói khách hàng, yêu cầu viết hoặc bảng giá.',
       } } });
@@ -125,7 +123,7 @@ async function fixture(browser: Browser, bundle: string, css: string, options: {
     getMutations: () => mutations, getDeletions: () => deletions };
 }
 
-test('real CRM entry prompts for one-use password authorization through its actual dialog', async t => {
+test('real CRM only prompts for a password when saving settings', async t => {
   const { outputFiles } = await build({
     stdin: { contents: `import {prepareBrowserLogin} from './web/src/browser-proof';
       void prepareBrowserLogin().then(() => import('./web/src/main'));`, resolveDir: process.cwd(), loader: 'ts' },
@@ -137,58 +135,36 @@ test('real CRM entry prompts for one-use password authorization through its actu
   const css = outputFiles.find(file => file.path.endsWith('.css'))!.text;
   const browser = await chromium.launch();
   try {
-    await t.test('model deletion keeps its security dialog in front and editable, then deletes exactly once', async () => {
+    await t.test('model deletion asks for confirmation and deletes once without asking for a password', async () => {
       const f = await fixture(browser, bundle, css, { page: 'providers' });
       try {
         await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click();
         const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Xóa model này?' });
         await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
-        await f.dialog.waitFor();
-        const password = f.dialog.getByLabel('Mật khẩu hiện tại', { exact: true });
-        await password.click({ trial: true, timeout: 1500 });
-        await password.fill(syntheticPassword);
-        for (let index = 0; index < 8; index++) {
-          await f.page.keyboard.press('Tab');
-          // Chromium may move focus to its address bar when tabbing past the last control.
-          assert.equal(await f.dialog.evaluate(dialog => (document.activeElement === document.body && !document.hasFocus())
-            || dialog.contains(document.activeElement)), true,
-            'tabbing must not focus controls in the underlying confirmation or CRM');
-        }
-        assert.equal(await f.dialog.evaluate(dialog => dialog.contains(document.activeElement)), true,
-          'tabbing back into the page must return to the security dialog');
-        await f.dialog.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
         await f.page.getByText('Đã xóa model.', { exact: true }).waitFor();
         await confirmation.waitFor({ state: 'hidden' });
         await f.dialog.waitFor({ state: 'hidden' });
         await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).waitFor({ state: 'hidden' });
         assert.equal(f.getDeletions(), 1);
-        assert.equal(f.authorizations.length, 1);
-        assert.equal(f.deleteAttempts.length, 2);
-        assert.deepEqual(f.authorizations[0].body, {
-          current_password: syntheticPassword, method: 'DELETE', target: deleteTarget, body_hash: bodyHash(''),
-        });
+        assert.equal(f.authorizations.length, 0);
+        assert.equal(f.deleteAttempts.length, 1);
         assert.equal(f.deleteAttempts[0].headers['x-crm-action-token'], undefined);
-        assert.equal(f.deleteAttempts[1].headers['x-crm-action-token'], actionToken);
-        assert.notEqual(f.deleteAttempts[0].headers['x-crm-proof'], f.deleteAttempts[1].headers['x-crm-proof']);
-        assert.equal(f.deleteAttempts[1].raw, '');
+        assert.equal(f.deleteAttempts[0].raw, '');
         assert.deepEqual(f.errors, []);
       } finally { await f.context.close(); }
     });
 
-    await t.test('canceling password confirmation leaves the model and lets the deletion dialog close', async () => {
+    await t.test('canceling ordinary deletion confirmation leaves the model without making a request', async () => {
       const f = await fixture(browser, bundle, css, { page: 'providers' });
       try {
         await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click();
         const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Xóa model này?' });
-        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
-        await f.dialog.getByRole('button', { name: 'Hủy', exact: true }).click();
-        await f.dialog.waitFor({ state: 'hidden' });
-        await f.page.getByText('Đã hủy thao tác.', { exact: true }).waitFor();
-        assert.equal(f.getDeletions(), 0);
-        assert.equal(f.authorizations.length, 0);
-        assert.equal(f.deleteAttempts.length, 1);
         await confirmation.getByRole('button', { name: 'Hủy', exact: true }).click();
         await confirmation.waitFor({ state: 'hidden' });
+        assert.equal(f.getDeletions(), 0);
+        assert.equal(f.authorizations.length, 0);
+        assert.equal(f.deleteAttempts.length, 0);
+        assert.equal(await f.dialog.count(), 0);
         await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click({ trial: true });
         assert.deepEqual(f.errors, []);
       } finally { await f.context.close(); }
@@ -200,11 +176,10 @@ test('real CRM entry prompts for one-use password authorization through its actu
         await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click();
         const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Xóa model này?' });
         await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
-        await f.dialog.getByLabel('Mật khẩu hiện tại', { exact: true }).fill(syntheticPassword);
-        await f.dialog.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
         await f.page.getByText('Không thể xóa model đã được dùng trong gói khách hàng, yêu cầu viết hoặc bảng giá.', { exact: true }).waitFor();
         assert.equal(f.getDeletions(), 0);
-        assert.equal(f.deleteAttempts.length, 2);
+        assert.equal(f.deleteAttempts.length, 1);
+        assert.equal(f.authorizations.length, 0);
         await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click({ trial: true });
         await confirmation.getByRole('button', { name: 'Hủy', exact: true }).click();
         await confirmation.waitFor({ state: 'hidden' });
@@ -213,28 +188,30 @@ test('real CRM entry prompts for one-use password authorization through its actu
       } finally { await f.context.close(); }
     });
 
-    await t.test('wrong deletion password allows a fresh confirmation and successful retry', async () => {
-      const f = await fixture(browser, bundle, css, { page: 'providers' });
+    await t.test('retention settings keep the password dialog above the confirmation and save once', async () => {
+      const f = await fixture(browser, bundle, css);
       try {
-        await f.page.getByRole('button', { name: 'Xóa synthetic/model', exact: true }).click();
-        const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Xóa model này?' });
-        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
-        await f.dialog.getByLabel('Mật khẩu hiện tại', { exact: true }).fill('incorrect-synthetic-password');
-        await f.dialog.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
-        await f.page.getByText('Mật khẩu hiện tại không đúng.', { exact: true }).waitFor();
-        assert.equal(f.getDeletions(), 0);
-        assert.equal(f.deleteAttempts.length, 1);
-        await confirmation.getByRole('button', { name: 'Xóa model', exact: true }).click();
+        await f.page.getByRole('tab', { name: 'Lưu trữ dữ liệu', exact: true }).click();
+        await f.page.getByLabel('Lưu yêu cầu viết bài (ngày)', { exact: true }).fill('30');
+        await f.save.click();
+        const confirmation = f.page.getByRole('dialog').filter({ hasText: 'Bật hoặc rút ngắn thời gian lưu dữ liệu?' });
+        await confirmation.getByRole('button', { name: 'Xác nhận và lưu', exact: true }).click();
+        await f.dialog.waitFor();
         const password = f.dialog.getByLabel('Mật khẩu hiện tại', { exact: true });
-        await password.click({ trial: true });
-        assert.equal(await password.inputValue(), '');
+        await password.click({ trial: true, timeout: 1500 });
         await password.fill(syntheticPassword);
+        for (let index = 0; index < 8; index++) {
+          await f.page.keyboard.press('Tab');
+          assert.equal(await f.dialog.evaluate(dialog => (document.activeElement === document.body && !document.hasFocus())
+            || dialog.contains(document.activeElement)), true);
+        }
         await f.dialog.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
-        await f.page.getByText('Đã xóa model.', { exact: true }).waitFor();
         await confirmation.waitFor({ state: 'hidden' });
-        assert.equal(f.getDeletions(), 1);
-        assert.equal(f.authorizations.length, 2);
-        assert.equal(f.deleteAttempts.length, 3);
+        await f.page.getByText('Đã lưu cài đặt. Hệ thống sẽ áp dụng trong tối đa 5 giây.', { exact: true }).waitFor();
+        assert.equal(f.getMutations(), 1);
+        assert.equal(f.authorizations.length, 1);
+        assert.equal(f.attempts.length, 2);
+        assert.equal(JSON.parse(f.attempts[1].raw).values.job_retention_days, 30);
         assert.deepEqual(f.errors, []);
       } finally { await f.context.close(); }
     });
@@ -245,7 +222,7 @@ test('real CRM entry prompts for one-use password authorization through its actu
         await f.page.getByLabel('VND cho 1 USD', { exact: true }).fill('27000');
         await f.save.click();
         await f.dialog.waitFor();
-        await f.dialog.getByText('Nhập lại mật khẩu để xác nhận thao tác quản trị nhạy cảm. Xác nhận chỉ có hiệu lực cho một thao tác này.', { exact: true }).waitFor();
+        await f.dialog.getByText('Nhập lại mật khẩu để lưu thay đổi cài đặt. Xác nhận chỉ có hiệu lực cho lần lưu này.', { exact: true }).waitFor();
         assert.equal(f.attempts.length, 1);
         assert.equal(f.authorizations.length, 0);
         assert.equal(f.getMutations(), 0);

@@ -10,6 +10,7 @@ import { sendCrmOtp, type CrmOtpMessage } from '../mail.js'
 import { resolveCrmMailConfig } from '../smtp-settings.js'
 import { browserKeyThumbprint, createOtp, maskEmail, otpHash, otpMatches, otpLifetimeMs, otpResendMs, otpAttemptLimit, trustedDeviceLifetimeMs, verifiedAccountEmail } from '../crm-otp.js'
 import { registerCrmAccount } from './crm-account.js'
+import { accountAccess, type AccountAccess } from '../workspaces.js'
 
 const sessionMaxAge = 60 * 60 * 12
 const sessionIdleMs = 30 * 60_000
@@ -35,6 +36,7 @@ export type CrmSession = {
   user_id: string, username: string, display_name: string, csrf_token: string, id: string,
   browser_public_key: BrowserPublicKey, browser_binding: string,
   remember_me: boolean,
+  role?: 'root' | 'provider', partner?: AccountAccess['partner'],
 }
 type Session = CrmSession
 
@@ -42,14 +44,10 @@ const idleTimeout = (row: any) => row.remember_me === true ? rememberedIdleMs : 
 const emailRevisionFilter = (user: { email_revision?: unknown }) => user.email_revision === undefined ? { $exists: false } : user.email_revision
 const accountDisplayName = (user: { username: string, display_name?: unknown }) => typeof user.display_name === 'string' && user.display_name.trim() ? user.display_name.trim() : user.username
 
-/** These operations expose credentials, change privileges, or destroy CRM data. */
+/** Only saving CRM settings requires a separate, one-use password confirmation. */
 export function crmRequiresActionAuthorization(method: string, target: string) {
-  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false
   const path = target.split('?')[0]
-  if (method === 'DELETE') return true
-  if (path === '/api/crm/account' || path === '/api/crm/account/email/start') return true
-  if (/^\/api\/crm\/providers(?:\/|$)/.test(path)) return !/\/(?:check|ping)$/.test(path)
-  return /^\/api\/crm\/(?:websites|customers|settings|prices)(?:\/|$)/.test(path)
+  return method === 'PUT' && (path === '/api/crm/settings' || path === '/api/crm/settings/smtp')
 }
 
 /** Production rollout intentionally requires signing in again: never trust the legacy cookie. */
@@ -92,7 +90,12 @@ async function consumeAccountAttempt(db: Database, action: string, account: stri
   }
 }
 
-export function registerSessions(app: FastifyInstance, db: Database, config: Config, options: { sendOtp?: typeof sendCrmOtp } = {}) {
+export function registerSessions(app: FastifyInstance, db: Database, config: Config, options: {
+  sendOtp?: typeof sendCrmOtp,
+  identify?: (user: Record<string, any>) => Promise<AccountAccess>,
+  authorize?: (request: FastifyRequest, user: Record<string, any>) => Promise<AccountAccess>,
+  mailConfig?: () => Promise<Config['mail']>,
+} = {}) {
   const cookieName = crmSessionCookieName(config)
   const audience = config.origin || 'http://localhost'
   // __Host- cookies cannot carry Domain and must have Secure and Path=/, which
@@ -101,8 +104,10 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
   const sessions = new WeakMap<object, Session>()
   const rawBodies = new WeakMap<object, Buffer>()
   const loginProofs = new WeakSet<object>()
+  const mailConfig = options.mailConfig ?? (() => resolveCrmMailConfig(db, config))
+  const identify = options.identify ?? ((user: Record<string, any>) => accountAccess(db, user))
   const sendOtp = async (message: CrmOtpMessage) => (options.sendOtp ?? sendCrmOtp)({ ...config,
-    mail: await resolveCrmMailConfig(db, config) }, message)
+    mail: await mailConfig() }, message)
   const preauth = (request: FastifyRequest) => request.method === 'POST' && ['/api/crm/login', '/api/crm/login/verify', '/api/crm/login/resend'].includes(request.routeOptions.url || '')
   // Keep Fastify's protected JSON parsing, while signing the exact received bytes.
   // This parser is encapsulated to the CRM plugin and retains each route body limit.
@@ -125,7 +130,13 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
     activePasswordWork++
     try { return await task() } finally { activePasswordWork-- }
   }
-  async function newSession(source: MongoSource, userId: string, passwordHash: string, browserKey: BrowserPublicKey, remember = false, emailRevision = 0) {
+  async function newSession(source: MongoSource, userId: string, passwordHash: string, browserKey: BrowserPublicKey, remember = false, emailRevision = 0, partnerId?: string) {
+    if (partnerId) {
+      const admitted = await collection(source, 'partners').updateOne({ _id: partnerId, enabled: true }, {
+        $inc: { auth_revision: 1 },
+      }, { session: sessionOf(source) })
+      if (!admitted.matchedCount) throw new ApiError(403, 'partner_disabled', 'Nhóm đối tác đã bị khóa.')
+    }
     const token = issueToken(); const csrfToken = issueToken(); const browserBinding = issueToken()
     const now = new Date()
     await collection(source, 'sessions').insertOne({
@@ -137,7 +148,7 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
     }, { session: sessionOf(source) })
     return { token, csrfToken, browserBinding }
   }
-  function sessionResponse(reply: FastifyReply, username: string, displayName: string, token: string, csrfToken: string, browserBinding: string, remember = false) { return reply.setCookie(cookieName, token, { ...cookieOptions, ...(remember ? { maxAge: rememberedMaxAge } : {}) }).send({ username, display_name: displayName, csrf_token: csrfToken, browser_binding: browserBinding, server_time: Date.now(), remember_me: remember }) }
+  function sessionResponse(reply: FastifyReply, username: string, displayName: string, token: string, csrfToken: string, browserBinding: string, remember = false, access: AccountAccess = { role: 'root', partner: null }) { return reply.setCookie(cookieName, token, { ...cookieOptions, ...(remember ? { maxAge: rememberedMaxAge } : {}) }).send({ username, display_name: displayName, csrf_token: csrfToken, browser_binding: browserBinding, server_time: Date.now(), remember_me: remember, ...access }) }
 
   async function admitProof(request: FastifyRequest, key: BrowserPublicKey, binding: string) {
     const proof = verifyBrowserProof(request.headers['x-crm-proof'], key, {
@@ -176,8 +187,9 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
     } catch { throw sessionRequired() }
     const user = await collection(db, 'users').findOne({ _id: row.user_id })
     if (!user || (row.credential_version && (!user.password_hash || row.credential_version !== digest(user.password_hash))) || (row.email_revision ?? 0) !== (user.email_revision ?? 0)) throw sessionRequired()
+    const access = await (options.authorize ? options.authorize(request, user) : identify(user))
     const session = { user_id: user._id, username: user.username, display_name: accountDisplayName(user), csrf_token: row.csrf_token, id: row._id,
-      browser_public_key: browserKey, browser_binding: row.browser_binding, remember_me: row.remember_me === true }
+      browser_public_key: browserKey, browser_binding: row.browser_binding, remember_me: row.remember_me === true, ...access }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       const provided = Buffer.from(String(request.headers['x-csrf-token'] ?? '')); const expected = Buffer.from(session.csrf_token)
       if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) throw new ApiError(403, 'csrf_invalid', 'Phiên bảo mật đã thay đổi. Hãy tải lại trang.')
@@ -242,6 +254,7 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
     const user = await collection<{ _id: string, password_hash: string }>(db, 'users').findOne({ username })
     const valid = await passwordWork(reply, () => verifyPassword(password, user?.password_hash ?? passwordPlaceholder))
     if (!user || !valid) throw invalidLogin()
+    const access = await identify(user)
     if (!verifiedAccountEmail(user)) throw new ApiError(403, 'account_email_setup_required', 'Tài khoản chưa có email nhận OTP đã xác minh. Hãy cập nhật email từ phiên CRM hiện tại hoặc liên hệ quản trị viên để cấu hình email tài khoản.')
     const thumbprint = browserKeyThumbprint(browserKey)
     const trusted = loginProofs.has(request) && await collection(db, 'crm_trusted_devices').findOne({
@@ -257,9 +270,9 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
         if (!admitted.matchedCount) throw invalidLogin()
         const previous = request.cookies[cookieName]
         if (previous && /^[A-Za-z0-9_-]{43}$/.test(previous)) await collection(source, 'sessions').deleteOne({ _id: digest(previous) }, tx)
-        return newSession(source, user._id, user.password_hash, browserKey, remember_me, user.email_revision ?? 0)
+        return newSession(source, user._id, user.password_hash, browserKey, remember_me, user.email_revision ?? 0, user.role === 'provider' ? user.partner_id : undefined)
       })
-      return sessionResponse(reply, username, accountDisplayName(user), session.token, session.csrfToken, session.browserBinding, remember_me)
+      return sessionResponse(reply, username, accountDisplayName(user), session.token, session.csrfToken, session.browserBinding, remember_me, access)
     }
     await consumeAccountAttempt(db, 'otp-send', user._id, 5, reply)
     const id = issueToken(); const code = createOtp(); const now = new Date()
@@ -298,6 +311,7 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
       const tx = { session: sessionOf(source) }
       const user = await collection(source, 'users').findOne({ _id: challenge.user_id }, tx)
       if (!user || digest(user.password_hash) !== challenge.credential_version || verifiedAccountEmail(user) !== challenge.email || (user.email_revision ?? 0) !== challenge.email_revision) throw otpInvalid()
+      const access = await identify(user)
       const updated = await collection(source, 'users').updateOne({ _id: user._id, password_hash: user.password_hash, email: user.email, email_revision: emailRevisionFilter(user) }, { $inc: { auth_revision: 1 } }, tx)
       if (!updated.matchedCount) throw otpInvalid()
       const consumed = await collection(source, 'crm_login_challenges').findOneAndDelete({ _id: challenge._id, code_hash: challenge.code_hash, send_revision: challenge.send_revision, expires_at: { $gt: new Date() }, attempts: { $lte: otpAttemptLimit } }, tx)
@@ -311,9 +325,9 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
         }, $setOnInsert: { created_at: now } }, { ...tx, upsert: true })
       }
       if (challenge.previous_session_id) await collection(source, 'sessions').deleteOne({ _id: challenge.previous_session_id }, tx)
-      return { username: user.username, display_name: accountDisplayName(user), session: await newSession(source, user._id, user.password_hash, parseBrowserPublicKey(challenge.browser_public_key), challenge.remember_me, user.email_revision ?? 0) }
+      return { username: user.username, display_name: accountDisplayName(user), access, session: await newSession(source, user._id, user.password_hash, parseBrowserPublicKey(challenge.browser_public_key), challenge.remember_me, user.email_revision ?? 0, user.role === 'provider' ? user.partner_id : undefined) }
     })
-    return sessionResponse(reply, result.username, result.display_name, result.session.token, result.session.csrfToken, result.session.browserBinding, challenge.remember_me)
+    return sessionResponse(reply, result.username, result.display_name, result.session.token, result.session.csrfToken, result.session.browserBinding, challenge.remember_me, result.access)
   })
   app.post('/login/resend', { bodyLimit: 4 * 1024, config: { rateLimit: { max: 5, timeWindow: '5 minutes' } } }, async (request, reply) => {
     const { challenge_id } = challengeSchema.parse(request.body)
@@ -326,6 +340,7 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
       const tx = { session: sessionOf(source) }
       const user = await collection(source, 'users').findOne({ _id: challenge.user_id }, tx)
       if (!user || digest(user.password_hash) !== challenge.credential_version || verifiedAccountEmail(user) !== challenge.email || (user.email_revision ?? 0) !== challenge.email_revision) throw otpInvalid()
+      await identify(user)
       const updated = await collection(source, 'users').updateOne({ _id: user._id, password_hash: user.password_hash, email: user.email, email_revision: emailRevisionFilter(user) }, { $inc: { auth_revision: 1 } }, tx)
       if (!updated.matchedCount) throw otpInvalid()
       // Share the user lock with fresh logins so switching challenges cannot
@@ -344,8 +359,8 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
   })
   app.get('/session/bootstrap', async request => ({ browser_binding: sessions.get(request)!.browser_binding, server_time: Date.now() }))
   app.get('/session', async request => {
-    const { username, display_name, csrf_token, remember_me } = sessions.get(request)!
-    return { username, display_name, csrf_token, remember_me }
+    const { username, display_name, csrf_token, remember_me, role, partner } = sessions.get(request)!
+    return { username, display_name, csrf_token, remember_me, role, partner }
   })
   app.post('/session/authorize', { bodyLimit: 8 * 1024, config: { rateLimit: { max: 5, timeWindow: '5 minutes' } } }, async (request, reply) => {
     const fields = actionSchema.parse(request.body); const current = sessions.get(request)!
@@ -397,11 +412,12 @@ export function registerSessions(app: FastifyInstance, db: Database, config: Con
       await collection(source, 'crm_trusted_devices').deleteMany({ user_id: current.user_id }, options)
       await collection(source, 'crm_login_challenges').deleteMany({ user_id: current.user_id }, options)
       await collection(source, 'crm_email_challenges').deleteMany({ user_id: current.user_id }, options)
-      return newSession(source, current.user_id, passwordHash, current.browser_public_key, current.remember_me, user!.email_revision ?? 0)
+      return newSession(source, current.user_id, passwordHash, current.browser_public_key, current.remember_me, user!.email_revision ?? 0, current.partner?.id)
     })
-    return sessionResponse(reply, current.username, current.display_name, session.token, session.csrfToken, session.browserBinding, current.remember_me)
+    return sessionResponse(reply, current.username, current.display_name, session.token, session.csrfToken, session.browserBinding, current.remember_me, { role: current.role!, partner: current.partner ?? null })
   })
-  registerCrmAccount(app, db, config, { sessions, sendOtp, consumeAttempt: (action, account, max, reply) => consumeAccountAttempt(db, action, account, max, reply) })
+  registerCrmAccount(app, db, config, { sessions, sendOtp, mailConfig, consumeAttempt: (action, account, max, reply) => consumeAccountAttempt(db, action, account, max, reply) })
+  return sessions
 }
 
 function deviceLabel(request: FastifyRequest): string {

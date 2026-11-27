@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import Fastify from 'fastify'
 import cookie from '@fastify/cookie'
-import { generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto'
+import { generateKeyPairSync, randomBytes, randomUUID, sign, type KeyObject } from 'node:crypto'
 import type { Config } from '../src/config.js'
 import type { Database } from '../src/db.js'
 import { crmSessionCookieName, registerSessions } from '../src/api/crm-session.js'
@@ -181,7 +181,14 @@ async function fixture(t: test.TestContext, store = memory(), overrides: Partial
     registerSessions(crm, store.db, { origin, secureCookies: true, encryptionKey: Buffer.alloc(32, 71), ...overrides } as Config,
       { sendOtp: async (effective, message) => { mailConfigs.push(structuredClone(effective.mail)); mailbox.push(message) } })
     registerCrmMailSettings(crm, store.db, { origin, secureCookies: true, encryptionKey: Buffer.alloc(32, 71), ...overrides } as Config)
-    for (const [method, url] of [['PUT', '/settings'], ['DELETE', '/jobs/:id'], ['POST', '/providers/:provider'], ['PATCH', '/customers/:id'], ['POST', '/jobs']] as const) {
+    for (const [method, url] of [
+      ['PUT', '/settings'], ['DELETE', '/jobs/:id'], ['POST', '/providers/:provider'], ['PATCH', '/customers/:id'], ['POST', '/jobs'],
+      ['POST', '/partners'], ['PATCH', '/partners/:id'], ['POST', '/partners/:id/password'],
+      ['POST', '/websites'], ['PATCH', '/websites/:id'], ['DELETE', '/websites/:id'],
+      ['POST', '/websites/:id/token'], ['DELETE', '/websites/:id/token'], ['PUT', '/websites/:id/signing-key'],
+      ['POST', '/websites/:id/webhook-secret'], ['POST', '/websites/:id/content-catalog/check'],
+      ['POST', '/prices'], ['POST', '/prices/sync-xai'], ['DELETE', '/deliveries/:id'],
+    ] as const) {
       crm.route({ method, url, handler: async () => { handled++; return { ok: true } } })
     }
   }, { prefix: '/api/crm' })
@@ -225,6 +232,42 @@ async function fixture(t: test.TestContext, store = memory(), overrides: Partial
 function authHeaders(response: any) {
   return { origin, cookie: response.cookies.map((value: any) => `${value.name}=${value.value}`).join('; '), 'x-csrf-token': response.json().csrf_token }
 }
+
+test('provider login and password rotation retain group access and disabled groups cannot use OTP or sessions', async t => {
+  const store = memory()
+  const partnerId = randomUUID()
+  store.tables.partners = [{ _id: partnerId, name: 'Fixture partner', enabled: true }]
+  Object.assign(store.tables.users[0], { role: 'provider', partner_id: partnerId })
+  const f = await fixture(t, store)
+  const login = await f.login()
+  assert.equal(login.statusCode, 200, login.body)
+  assert.equal(login.json().role, 'provider')
+  assert.deepEqual(login.json().partner, { id: partnerId, name: 'Fixture partner' })
+  const changed = await f.app.inject({ method: 'POST', url: '/api/crm/password', headers: authHeaders(login),
+    payload: { current_password: password, new_password: 'New-fixture-partner-password' } })
+  assert.equal(changed.statusCode, 200, changed.body)
+  assert.equal(changed.json().role, 'provider')
+  assert.equal(changed.json().partner.id, partnerId)
+  store.tables.partners[0].enabled = false
+  const denied = await f.app.inject({ url: '/api/crm/session', headers: authHeaders(changed) })
+  assert.equal(denied.statusCode, 403)
+  const disabledLogin = await f.beginLogin('admin', 'New-fixture-partner-password')
+  assert.equal(disabledLogin.statusCode, 403)
+  assert.equal(disabledLogin.json().error.code, 'partner_disabled')
+})
+
+test('disabling a partner while an OTP is pending prevents session creation', async t => {
+  const store = memory()
+  const partnerId = randomUUID()
+  store.tables.partners = [{ _id: partnerId, name: 'Fixture partner', enabled: true }]
+  Object.assign(store.tables.users[0], { role: 'provider', partner_id: partnerId })
+  const f = await fixture(t, store)
+  const challenge = await f.beginLogin()
+  assert.equal(challenge.statusCode, 200)
+  store.tables.partners[0].enabled = false
+  assert.equal((await f.verifyOtp(challenge)).statusCode, 403)
+  assert.equal(store.tables.sessions.length, 0)
+})
 
 test('password verification accepts generated hashes and safely rejects malformed or oversized inputs', async () => {
   assert.equal(await verifyPassword(password, passwordHash), true)
@@ -639,7 +682,7 @@ async function authorize(f: Awaited<ReturnType<typeof fixture>>, response: any, 
   } })
 }
 
-test('sensitive mutations require one-time password authorization scoped to exact action and session', async t => {
+test('saving settings requires one-time password authorization scoped to exact action and session', async t => {
   const f = await fixture(t)
   const loggedIn = await f.login()
   const action = { method: 'PUT', url: '/api/crm/settings', headers: authHeaders(loggedIn), payload: { key: 'value' } }
@@ -655,7 +698,7 @@ test('sensitive mutations require one-time password authorization scoped to exac
   const authorized = { ...action, headers: { ...action.headers, 'x-crm-action-token': permitted.json().action_token } }
   assert.equal((await f.app.inject({ ...authorized, payload: { key: 'changed' } })).statusCode, 403)
   assert.equal((await f.app.inject({ ...authorized, url: '/api/crm/settings?different=1' })).statusCode, 403)
-  assert.equal((await f.app.inject({ ...authorized, method: 'DELETE', url: '/api/crm/jobs/example' })).statusCode, 403)
+  assert.equal((await f.app.inject({ ...authorized, url: '/api/crm/settings/smtp' })).statusCode, 403)
   const second = await f.login()
   assert.equal((await f.app.inject({ ...authorized, headers: { ...authHeaders(second), 'x-crm-action-token': permitted.json().action_token } })).statusCode, 403)
   assert.equal((await f.app.inject(authorized)).statusCode, 200)
@@ -666,14 +709,12 @@ test('sensitive mutations require one-time password authorization scoped to exac
   assert.equal((await f.app.inject({ ...action, headers: { ...action.headers, 'x-crm-action-token': expiring.json().action_token } })).statusCode, 403)
 })
 
-test('sensitive action gate covers canonical routes and query spelling before mutation', async t => {
+test('settings password confirmation covers canonical routes and query spelling before mutation', async t => {
   const f = await fixture(t)
   const loggedIn = await f.login()
   for (const [method, url] of [
-    ['POST', '/api/crm/providers/test'], ['POST', '/api/crm/%70roviders/test'],
-    ['POST', '/api/crm/providers/test?'], ['PUT', '/api/crm/settings?'],
-    ['PUT', '/api/crm/settings/smtp'], ['POST', '/api/crm/settings/smtp/test'],
-    ['PATCH', '/api/crm/customers/example'], ['DELETE', '/api/crm/jobs/example'],
+    ['PUT', '/api/crm/settings'], ['PUT', '/api/crm/%73ettings'], ['PUT', '/api/crm/settings?'],
+    ['PUT', '/api/crm/settings/smtp'], ['PUT', '/api/crm/%73ettings/smtp?revision=0'],
   ]) {
     const request = { method, url, headers: authHeaders(loggedIn), payload: {} }
     // light-my-request drops an empty final query delimiter before dispatch.
@@ -683,6 +724,28 @@ test('sensitive action gate covers canonical routes and query spelling before mu
   }
   assert.equal(f.getHandled(), 0)
   assert.equal((await f.app.inject({ method: 'POST', url: '/api/crm/jobs', headers: authHeaders(loggedIn), payload: {} })).statusCode, 200)
+})
+
+test('other CRM actions use session, browser proof and CSRF without asking for a settings password', async t => {
+  const f = await fixture(t)
+  const loggedIn = await f.login()
+  for (const [method, url] of [
+    ['POST', '/api/crm/providers/test'], ['POST', '/api/crm/%70roviders/test'],
+    ['PATCH', '/api/crm/customers/example'], ['POST', '/api/crm/jobs'], ['DELETE', '/api/crm/jobs/example'],
+    ['POST', '/api/crm/partners'], ['PATCH', '/api/crm/partners/example'], ['POST', '/api/crm/partners/example/password'],
+    ['POST', '/api/crm/websites'], ['PATCH', '/api/crm/websites/example'], ['DELETE', '/api/crm/websites/example'],
+    ['POST', '/api/crm/websites/example/token'], ['DELETE', '/api/crm/websites/example/token'],
+    ['PUT', '/api/crm/websites/example/signing-key'], ['POST', '/api/crm/websites/example/webhook-secret'],
+    ['POST', '/api/crm/websites/example/content-catalog/check'], ['POST', '/api/crm/prices'],
+    ['POST', '/api/crm/prices/sync-xai'], ['DELETE', '/api/crm/deliveries/example'],
+  ]) {
+    const request = { method, url, headers: authHeaders(loggedIn), payload: {} }
+    assert.equal((await f.rawInject(request)).statusCode, 401, 'cookie alone must still be rejected')
+    assert.equal((await f.app.inject({ ...request, headers: { ...request.headers, 'x-csrf-token': '' } })).statusCode, 403)
+    const response = await f.app.inject(request)
+    assert.equal(response.statusCode, 200, `${method} ${url}: ${response.body}`)
+  }
+  assert.equal((f.tables.crm_action_tokens ?? []).length, 0)
 })
 
 test('SMTP settings require signed reads and scoped reauthentication, then apply to account status and subsequent OTPs', async t => {
@@ -703,8 +766,9 @@ test('SMTP settings require signed reads and scoped reauthentication, then apply
   assert.equal(permission.statusCode, 200, permission.body)
   const actionHeaders = { ...headers, 'x-crm-action-token': permission.json().action_token }
   const verify = { method: 'POST', url: '/api/crm/settings/smtp/test', headers, payload: { revision: 1 } }
-  assert.equal((await f.app.inject(verify)).statusCode, 403, 'SMTP connection verification is also a sensitive action')
-  assert.equal((await f.app.inject({ ...verify, headers: actionHeaders })).statusCode, 403, 'save authorization cannot authorize an outbound connection')
+  const unsaved = await f.app.inject(verify)
+  assert.equal(unsaved.statusCode, 409, 'connection checks reach revision validation without a password or outbound connection')
+  assert.equal(unsaved.json().error.code, 'settings_conflict')
   const saved = await f.app.inject({ ...save, headers: actionHeaders })
   assert.equal(saved.statusCode, 200, saved.body)
   assert.equal(saved.json().source, 'database')
@@ -1015,7 +1079,7 @@ test('revoking a session during password verification cannot recreate that sessi
   assert.equal(f.tables.sessions.length, 0, 'a session revoked during the password work cannot mint a fresh authenticated session')
 })
 
-test('account profile updates require one-use authorization and cannot write authentication internals', async t => {
+test('account profile updates need no settings password and cannot write authentication internals', async t => {
   const f = await fixture(t)
   const loggedIn = await f.login()
   const headers = authHeaders(loggedIn)
@@ -1026,10 +1090,7 @@ test('account profile updates require one-use authorization and cannot write aut
   assert.equal(profile.json().email_verified, true)
   for (const forbidden of ['password_hash', 'credential_version', 'browser_public_key', 'key_thumbprint']) assert.ok(!profile.body.includes(forbidden))
   const update = { method: 'PATCH', url: '/api/crm/account', headers, payload: { display_name: 'Synthetic operator' } }
-  assert.equal((await f.app.inject(update)).statusCode, 403)
-  const authorization = await authorize(f, loggedIn, update)
-  assert.equal(authorization.statusCode, 200, authorization.body)
-  const updated = await f.app.inject({ ...update, headers: { ...headers, 'x-crm-action-token': authorization.json().action_token } })
+  const updated = await f.app.inject(update)
   assert.equal(updated.statusCode, 200, updated.body)
   assert.equal(f.tables.users[0].username, 'admin')
   assert.equal(f.tables.users[0].display_name, 'Synthetic operator')
@@ -1038,22 +1099,18 @@ test('account profile updates require one-use authorization and cannot write aut
   assert.equal(reloaded.json().username, 'admin')
   assert.equal(reloaded.json().display_name, 'Synthetic operator', 'a reload retains the saved profile name without logging in again')
   const usernameChange = { ...update, payload: { ...update.payload, username: 'updated-admin' } }
-  const usernameAuthorization = await authorize(f, loggedIn, usernameChange)
-  assert.equal(usernameAuthorization.statusCode, 200, usernameAuthorization.body)
-  const usernameResponse = await f.app.inject({ ...usernameChange, headers: { ...headers, 'x-crm-action-token': usernameAuthorization.json().action_token } })
+  const usernameResponse = await f.app.inject(usernameChange)
   assert.equal(usernameResponse.statusCode, 400, usernameResponse.body)
-  assert.equal(f.tables.users[0].username, 'admin', 'even an authorized profile request cannot change the login username')
+  assert.equal(f.tables.users[0].username, 'admin', 'profile requests cannot change the login username')
   assert.equal(f.tables.users[0].display_name, 'Synthetic operator')
   assert.equal((await f.app.inject({ url: '/api/crm/session', headers })).json().username, 'admin')
   const tamper = { ...update, payload: { ...update.payload, email: 'unverified@example.test', email_verified_at: new Date(), password_hash: 'fake' } }
-  const tamperAuthorization = await authorize(f, loggedIn, tamper)
-  assert.equal(tamperAuthorization.statusCode, 200, tamperAuthorization.body)
-  assert.equal((await f.app.inject({ ...tamper, headers: { ...headers, 'x-crm-action-token': tamperAuthorization.json().action_token } })).statusCode, 400)
+  assert.equal((await f.app.inject(tamper)).statusCode, 400)
   assert.equal(f.tables.users[0].email, 'synthetic-admin@example.test')
   assert.equal(f.tables.users[0].password_hash, passwordHash)
 })
 
-test('trusted devices are listed without key material and revocation needs account reauthentication', async t => {
+test('trusted devices are listed without key material and revoked without a settings password', async t => {
   const f = await fixture(t)
   const challenge = await f.beginLogin()
   const loggedIn = await f.verifyOtp(challenge, undefined, true)
@@ -1067,10 +1124,7 @@ test('trusted devices are listed without key material and revocation needs accou
   assert.ok(!response.body.includes(f.keys.publicKey.x))
   assert.ok(!response.body.includes('key_thumbprint'))
   const revoke = { method: 'DELETE', url: `/api/crm/account/devices/${device.id}`, headers }
-  assert.equal((await f.app.inject(revoke)).statusCode, 403)
-  assert.equal(f.tables.crm_trusted_devices.length, 1)
-  const authorization = await authorize(f, loggedIn, revoke)
-  const revoked = await f.app.inject({ ...revoke, headers: { ...headers, 'x-crm-action-token': authorization.json().action_token } })
+  const revoked = await f.app.inject(revoke)
   assert.ok([200, 204].includes(revoked.statusCode), revoked.body)
   assert.equal(f.tables.crm_trusted_devices.length, 0)
   assert.equal((await f.beginLogin()).json().otp_required, true)
@@ -1085,9 +1139,7 @@ test('changing the verified account email needs codes from both mailboxes and re
   assert.equal(pendingLogin.json().otp_required, true)
   const headers = authHeaders(loggedIn)
   const start = { method: 'POST', url: '/api/crm/account/email/start', headers, payload: { email: 'changed-address@example.test' } }
-  assert.equal((await f.app.inject(start)).statusCode, 403, 'changing the email requires fresh password authorization')
-  const authorization = await authorize(f, loggedIn, start)
-  const started = await f.app.inject({ ...start, headers: { ...headers, 'x-crm-action-token': authorization.json().action_token } })
+  const started = await f.app.inject(start)
   assert.equal(started.statusCode, 200, started.body)
   assert.equal(started.json().requires_current_code, true)
   const emailChallenge = started.json().challenge_id
@@ -1122,8 +1174,7 @@ test('an existing bound session can verify its first email without trusting an u
   delete user.email_verified_at
   const headers = authHeaders(loggedIn)
   const start = { method: 'POST', url: '/api/crm/account/email/start', headers, payload: { email: 'verified-first@example.test' } }
-  const authorization = await authorize(f, loggedIn, start)
-  const started = await f.app.inject({ ...start, headers: { ...headers, 'x-crm-action-token': authorization.json().action_token } })
+  const started = await f.app.inject(start)
   assert.equal(started.statusCode, 200, started.body)
   assert.equal(started.json().requires_current_code, false)
   assert.equal(f.mailbox.filter(message => message.purpose === 'email_current').length, 0)
@@ -1149,8 +1200,7 @@ test('revoking a trusted device also removes its other sessions and pending logi
   const device = f.tables.crm_trusted_devices[0]
   const headers = authHeaders(loggedIn)
   const revoke = { method: 'DELETE', url: `/api/crm/account/devices/${device._id}`, headers }
-  const authorization = await authorize(f, loggedIn, revoke)
-  const revoked = await f.app.inject({ ...revoke, headers: { ...headers, 'x-crm-action-token': authorization.json().action_token } })
+  const revoked = await f.app.inject(revoke)
   assert.equal(revoked.statusCode, 204, revoked.body)
   assert.equal(f.tables.crm_trusted_devices.length, 0)
   assert.equal(f.tables.crm_login_challenges.length, 0)

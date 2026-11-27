@@ -3,6 +3,32 @@ import { browserBodyHash, getBrowserSessionGeneration, prepareBrowserLogin, setB
 
 let csrfToken = '';
 let loginChallenge: { id: string; clockOffset: number } | undefined;
+let workspaceId: string | undefined;
+let workspaceGeneration = 0;
+
+export function setWorkspace(id?: string) {
+  if (workspaceId === id) return;
+  workspaceId = id;
+  workspaceGeneration++;
+}
+
+function workspaceScope(path: string) {
+  const scoped = !/^\/(?:login|logout|password|session|account|partners)(?:[/?]|$)/.test(path);
+  return { id: scoped ? workspaceId : undefined, generation: workspaceGeneration, scoped };
+}
+
+function workspacePath(path: string, scope: ReturnType<typeof workspaceScope>) {
+  if (!scope.id) return path;
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set('workspace', scope.id);
+  return url.pathname + url.search;
+}
+
+function assertWorkspace(scope: ReturnType<typeof workspaceScope>) {
+  if (scope.scoped && scope.generation !== workspaceGeneration) {
+    throw new ApiError(409, 'workspace_changed', 'Nhóm quản lý đã thay đổi. Hãy thực hiện lại trong nhóm đang chọn.');
+  }
+}
 
 export function cancelLoginChallenge() {
   loginChallenge = undefined;
@@ -34,10 +60,11 @@ export function setReauthenticationHandler(handler?: ReauthenticationHandler) {
 }
 
 /** Also used by SSE so every reconnect carries a fresh proof in a header. */
-export async function signedFetch(path: string, options: RequestInit = {}, generation = getBrowserSessionGeneration()): Promise<Response> {
+export async function signedFetch(path: string, options: RequestInit = {}, generation = getBrowserSessionGeneration(), scope = workspaceScope(path)): Promise<Response> {
   assertSessionGeneration(generation);
+  assertWorkspace(scope);
   if (!path.startsWith('/') || path.startsWith('//')) throw new Error('Địa chỉ CRM không hợp lệ.');
-  const target = `/api/crm${path}`;
+  const target = `/api/crm${workspacePath(path, scope)}`;
   const method = (options.method ?? 'GET').toUpperCase();
   if (options.body !== undefined && options.body !== null && typeof options.body !== 'string') throw new Error('CRM chỉ hỗ trợ nội dung JSON.');
   const headers = new Headers(options.headers);
@@ -57,15 +84,18 @@ export async function signedFetch(path: string, options: RequestInit = {}, gener
   }
   // Key lookup/bootstrap/signing may yield while another request rotates the session.
   assertSessionGeneration(generation);
+  assertWorkspace(scope);
   const response = await fetch(target, { ...options, method, headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error' });
-  if (generation !== getBrowserSessionGeneration()) {
+  if (generation !== getBrowserSessionGeneration() || (scope.scoped && scope.generation !== workspaceGeneration)) {
     // A stale SSE response may otherwise leave its network stream running.
     void response.body?.cancel().catch(() => {});
   }
   assertSessionGeneration(generation);
+  assertWorkspace(scope);
   if (!response.ok) {
     const content = await response.json().catch(() => null);
     assertSessionGeneration(generation);
+    assertWorkspace(scope);
     if (response.status === 401 && !preSession && path !== '/session') {
       window.dispatchEvent(new Event('crm-session-expired'));
     }
@@ -91,18 +121,19 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
 }
 
 async function requestInSession<T>(path: string, options: RequestInit, generation: number): Promise<T> {
+  const scope = workspaceScope(path);
   let effective = options;
   if (path === '/login' && (options.method ?? 'GET').toUpperCase() === 'POST') {
     loginChallenge = undefined;
     effective = { ...options, body: JSON.stringify({ ...JSON.parse(String(options.body)), browser_public_key: await prepareBrowserLogin() }) };
   }
   let response: Response;
-  try { response = await signedFetch(path, effective, generation); }
+  try { response = await signedFetch(path, effective, generation, scope); }
   catch (error) {
     if (!(error instanceof ApiError) || error.code !== 'reauthentication_required' || !reauthenticate) throw error;
     const handler = reauthenticate;
     const method = (effective.method ?? 'GET').toUpperCase();
-    const targetUrl = new URL(`/api/crm${path}`, window.location.origin);
+    const targetUrl = new URL(`/api/crm${workspacePath(path, scope)}`, window.location.origin);
     const target = targetUrl.pathname + targetUrl.search;
     // Request-specific, one-use authorization: never cache a password or unlock the whole session.
     let release!: () => void;
@@ -112,9 +143,11 @@ async function requestInSession<T>(path: string, options: RequestInit, generatio
     try {
       await previous;
       assertSessionGeneration(generation);
+      assertWorkspace(scope);
       effective.signal?.throwIfAborted();
       const password = await handler({ method, target });
       assertSessionGeneration(generation);
+      assertWorkspace(scope);
       if (!password) throw new ApiError(403, 'reauthentication_canceled', 'Đã hủy thao tác.');
       effective.signal?.throwIfAborted();
       const authorization = await signedFetch('/session/authorize', {
@@ -128,10 +161,11 @@ async function requestInSession<T>(path: string, options: RequestInit, generatio
     } finally { release(); }
     const headers = new Headers(effective.headers);
     headers.set('X-CRM-Action-Token', actionToken);
-    response = await signedFetch(path, { ...effective, headers }, generation);
+    response = await signedFetch(path, { ...effective, headers }, generation, scope);
   }
   const content = response.status === 204 ? undefined : await response.json();
   assertSessionGeneration(generation);
+  assertWorkspace(scope);
   if (path === '/login' && content?.otp_required === true) {
     if (typeof content.challenge_id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(content.challenge_id)) throw new Error('Không nhận được yêu cầu xác minh hợp lệ.');
     loginChallenge = { id: content.challenge_id, clockOffset: typeof content.server_time === 'number' ? content.server_time - Date.now() : 0 };

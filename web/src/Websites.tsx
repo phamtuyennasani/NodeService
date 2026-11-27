@@ -50,7 +50,7 @@ export function Websites({ query }: { query: URLSearchParams }) {
         ...values,
         name: values.name.trim(),
         domain: values.domain.trim(),
-        webhook_url: values.webhook_url?.trim(),
+        webhook_url: values.webhook_url?.trim() || null,
         content_catalog_url: values.content_catalog_url?.trim() || null,
       });
       if (customerId && customerId !== values.customer_id) setCustomerId(values.customer_id);
@@ -228,7 +228,10 @@ export function Websites({ query }: { query: URLSearchParams }) {
         </Form.Item>
         <Form.Item name="name" label="Tên hiển thị" rules={[{ required: true, whitespace: true, message: 'Nhập tên website.' }]}><Input /></Form.Item>
         <Form.Item name="domain" label="Tên miền" rules={[{ required: true, whitespace: true, message: 'Nhập tên miền website.' }]}><Input placeholder="example.vn" /></Form.Item>
-        <Form.Item name="webhook_url" label="URL webhook nhận bài" rules={[{ required: true, whitespace: true, message: 'Nhập URL webhook.' }, { pattern: /^https?:\/\//i, message: 'Nhập URL hợp lệ.' }]}><Input placeholder="https://example.vn/api/webhooks/ai-articles" /></Form.Item>
+        <Form.Item name="webhook_url" label="URL webhook nhận bài" extra="Chỉ cần khi website nhận bài tự động theo lịch."
+          rules={[{ pattern: /^https?:\/\//i, transform: (value: string | null | undefined) => value?.trim() || undefined, message: 'Nhập URL hợp lệ.' }]}>
+          <Input placeholder="https://example.vn/api/webhooks/ai-articles" maxLength={2048} />
+        </Form.Item>
         <Form.Item name="content_catalog_url" label="URL danh mục liên kết" extra="URL HTTPS cùng tên miền website, trả JSON {items: [{id, url, title, summary, categories?}]}. CRM đọc danh mục này để chọn liên kết khi viết bài. Để trống nếu chưa sử dụng."
           rules={[{ type: 'url', transform: (value: string | null | undefined) => value?.trim() || undefined, message: 'Nhập URL HTTPS hợp lệ.' }, { pattern: /^https:\/\//i, transform: (value: string | null | undefined) => value?.trim() || undefined, message: 'Nhập URL HTTPS hợp lệ.' }]}>
           <Input placeholder="https://example.vn/api/ai/content-catalog" maxLength={2048} />

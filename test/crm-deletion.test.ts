@@ -151,6 +151,49 @@ test('CRM supports multiple websites without tokens under the sparse unique toke
   assert.equal('token_hash' in tables.sites[0], false)
 })
 
+test('CRM creates websites with an omitted, null or blank webhook URL', async t => {
+  const { app, tables, customerId } = await fixture(t)
+  for (const webhook_url of [undefined, null, '', '   ']) {
+    const response = await app.inject({ method: 'POST', url: '/websites', payload: {
+      customer_id: customerId, name: 'Website xem trước', domain: 'example.org',
+      ...(webhook_url === undefined ? {} : { webhook_url }),
+    } })
+    assert.equal(response.statusCode, 201, response.body)
+    assert.equal(tables.sites.find(row => row._id === response.json().id)!.webhook_url, null)
+  }
+})
+
+test('CRM preserves an omitted webhook URL on edit and clears an explicitly blank value', async t => {
+  const { app, tables, siteId } = await fixture(t)
+  const url = `/websites/${siteId}`
+  const renamed = await app.inject({ method: 'PATCH', url, payload: { name: 'Tên mới' } })
+  assert.equal(renamed.statusCode, 200, renamed.body)
+  assert.equal(tables.sites[0].webhook_url, 'https://example.com/webhook')
+  for (const webhook_url of [null, '', '   ']) {
+    const configured = await app.inject({ method: 'PATCH', url, payload: { webhook_url: '  https://example.com/new-webhook  ' } })
+    assert.equal(configured.statusCode, 200, configured.body)
+    assert.equal(tables.sites[0].webhook_url, 'https://example.com/new-webhook')
+    const cleared = await app.inject({ method: 'PATCH', url, payload: { webhook_url } })
+    assert.equal(cleared.statusCode, 200, cleared.body)
+    assert.equal(tables.sites[0].webhook_url, null)
+  }
+  const edited = await app.inject({ method: 'PATCH', url, payload: { name: 'Chưa cấu hình webhook' } })
+  assert.equal(edited.statusCode, 200, edited.body)
+  assert.equal(tables.sites[0].webhook_url, null)
+})
+
+test('CRM still validates nonempty webhook URLs on create and edit', async t => {
+  const { app, tables, customerId, siteId } = await fixture(t)
+  const before = structuredClone(tables)
+  for (const webhook_url of ['not-a-url', 'file:///etc/passwd', 'https://127.0.0.1/hook', 123]) {
+    const created = await app.inject({ method: 'POST', url: '/websites', payload: { customer_id: customerId, name: 'URL sai', domain: 'example.org', webhook_url } })
+    assert.equal(created.statusCode, 400, created.body)
+    const edited = await app.inject({ method: 'PATCH', url: `/websites/${siteId}`, payload: { webhook_url } })
+    assert.equal(edited.statusCode, 400, edited.body)
+    assert.deepEqual(tables, before)
+  }
+})
+
 test('CRM article deletion retains consumed allowance and releases unused reservations', async t => {
   const { app, db, tables, customerId, jobId } = await fixture(t)
   const when = new Date('2026-11-21T03:00:00Z')

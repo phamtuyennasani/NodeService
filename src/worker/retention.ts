@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { collection, sessionOf, transaction, type Database, type TransactionContext } from '../db.js'
-import { jobEvents } from '../job-events.js'
+import { publishJobEvent } from '../job-events.js'
 
 const dayMs = 86_400_000
 const leaseMs = 5 * 60_000
@@ -128,7 +128,7 @@ export async function runRetentionOnce(db: Database, settings: RetentionSettings
         if (removed) {
           result.jobs += 1
           result.deliveries += removed.deliveries
-          jobEvents.publish({ type: 'job.deleted', job_id: removed.id, deleted: true })
+          publishJobEvent(db, { type: 'job.deleted', job_id: removed.id, deleted: true })
         }
       }
     }
@@ -153,7 +153,7 @@ export async function runRetentionOnce(db: Database, settings: RetentionSettings
         if (removed === false) break
         if (removed) {
           result.deliveries += 1
-          if (typeof removed.jobId === 'string') jobEvents.publish({ type: 'job.updated', job_id: removed.jobId })
+          if (typeof removed.jobId === 'string') publishJobEvent(db, { type: 'job.updated', job_id: removed.jobId })
         }
       }
     }

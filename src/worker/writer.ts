@@ -14,7 +14,7 @@ import {
 } from './provider.js'
 import { researchTopic, type ResearchContext, type ResearchConfig } from './research.js'
 import { evaluateSeo, type SeoReport } from './seo.js'
-import { jobEvents } from '../job-events.js'
+import { publishJobEvent } from '../job-events.js'
 import { foldSearchText, refreshInternalLinkCandidates, selectInternalLinkCandidates, type InternalLinkCandidate } from '../site-content.js'
 import { enforceInternalLinks, extractArticleLinks } from './internal-links.js'
 import { syncSiteContentCatalog, type CatalogSyncOptions } from '../site-content-pull.js'
@@ -97,7 +97,7 @@ async function checkpoint(db: Database, claim: Claim, stage: WritingStage, value
     $set: { ...values, writing_stage: stage, updated_at: updatedAt },
   })
   if (!updated.matchedCount) throw new WorkerError('AI_LEASE_LOST', 'Công việc đã được tiến trình khác tiếp quản.', false)
-  jobEvents.publish({ type: 'job.updated', job_id: claim.job._id, status: 'writing', writing_stage: stage, updated_at: updatedAt.toISOString() })
+  publishJobEvent(db, { type: 'job.updated', job_id: claim.job._id, status: 'writing', writing_stage: stage, updated_at: updatedAt.toISOString() })
 }
 
 /** The job, quota and delivery must commit together; collection() does not attach sessions. */
@@ -153,7 +153,7 @@ async function transition(
     }
     return true
   })
-  if (committed && updateEvent) jobEvents.publish(updateEvent as any)
+  if (committed && updateEvent) publishJobEvent(db, updateEvent as any)
   return committed
 }
 
@@ -232,7 +232,7 @@ async function claimWriter(db: Database, config: Config, provider: Provider, dep
     error_code: null, error_message: null, result: null,
     seo_report: null, seo_repair_status: null, updated_at: now,
   }, $inc: { attempt_count: 1 } }, { sort: { available_at: 1, _id: 1 }, returnDocument: 'after' })
-  if (job) jobEvents.publish({ type: 'job.updated', job_id: job._id, status: 'writing', writing_stage: 'research', updated_at: now.toISOString(), started_at: now.toISOString() })
+  if (job) publishJobEvent(db, { type: 'job.updated', job_id: job._id, status: 'writing', writing_stage: 'research', updated_at: now.toISOString(), started_at: now.toISOString() })
   return job ? { job, lease } : false
 }
 
@@ -576,7 +576,7 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
         error_code: failure.code, error_message: failure.message,
         writing_stage: null, capacity_deferred: false, lease_token: null, lease_expires_at: null,
       }, $inc: { attempt_count: -1 } })
-      if (deferred.matchedCount) jobEvents.publish({
+      if (deferred.matchedCount) publishJobEvent(db, {
         type: 'job.updated', job_id: job._id, status: 'queued', writing_stage: null,
         error_code: failure.code, error_message: failure.message, updated_at: now.toISOString(),
       })
@@ -589,7 +589,7 @@ async function writeClaim(db: Database, config: Config, claim: Claim, deps: Writ
         available_at: new Date(now + failure.retryInMs), updated_at: new Date(now),
         writing_stage: null, lease_token: null, lease_expires_at: null,
       }, $inc: { attempt_count: -1 } })
-      if (deferred.matchedCount) jobEvents.publish({
+      if (deferred.matchedCount) publishJobEvent(db, {
         type: 'job.updated', job_id: job._id, status: 'queued', writing_stage: null,
         updated_at: new Date(now).toISOString(),
       })

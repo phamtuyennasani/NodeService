@@ -35,7 +35,7 @@ try {
   await migrate(db);
   const result = await collection(db, 'users').updateOne(
     { username },
-    { $setOnInsert: { _id: randomUUID(), username, password_hash: await hashPassword(password), created_at: new Date(),
+    { $setOnInsert: { _id: randomUUID(), username, role: 'root', password_hash: await hashPassword(password), created_at: new Date(),
       ...(email ? { email, email_verified_at: new Date(), email_revision: 1 } : {}),
     } },
     { upsert: true },

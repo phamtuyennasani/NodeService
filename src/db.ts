@@ -3,14 +3,32 @@ import { MongoClient, type ClientSession, type Collection, type Db, type Documen
 export interface Database {
   client: MongoClient
   db: Db
+  root?: Database
+  partnerId?: string
+  resolve?: () => Database
 }
 
 export interface TransactionContext {
   db: Db
   session: ClientSession
+  root?: Database
+  partnerId?: string
 }
 
 export type MongoSource = Database | TransactionContext
+
+export function resolveDatabase(db: Database): Database {
+  return db.resolve ? db.resolve() : db
+}
+
+export function rootDatabase(db: Database): Database {
+  const resolved = resolveDatabase(db)
+  return resolved.root ?? resolved
+}
+
+export function workspaceId(db: Database): string | undefined {
+  return resolveDatabase(db).partnerId
+}
 
 export function connect(uri: string, databaseName = 'node_service', maxPoolSize = 20): Database {
   // Bound connection and pool waits so request floods or an unavailable database
@@ -34,10 +52,11 @@ export function sessionOf(source: MongoSource): ClientSession | undefined {
 }
 
 export async function transaction<T>(db: Database, fn: (context: TransactionContext) => Promise<T>): Promise<T> {
+  db = resolveDatabase(db)
   await db.client.connect()
   const session = db.client.startSession()
   try {
-    return await session.withTransaction(() => fn({ db: db.db, session }))
+    return await session.withTransaction(() => fn({ db: db.db, session, root: db.root, partnerId: db.partnerId }))
   } finally {
     await session.endSession()
   }

@@ -93,7 +93,7 @@ test('real browser login binds the session to a persistent nonextractable signin
   await app.register(async crm => {
     registerSessions(crm, store.db, settings, { sendOtp: async (_config, message) => { mailbox.push(message); } });
     crm.get('/test-read', async () => ({ ok: true }));
-    crm.patch('/providers/fixture', async () => ({ mutations: ++mutations }));
+    crm.put('/settings', async () => ({ mutations: ++mutations }));
   }, { prefix: '/api/crm' });
   app.get('/', async (_request, reply) => reply.type('text/html').send('<!doctype html><meta charset="utf-8"><script src="/fixture.js"></script>'));
   app.get('/fixture.js', async (_request, reply) => reply.type('text/javascript').send(outputFiles[0].text));
@@ -167,17 +167,17 @@ test('real browser login binds the session to a persistent nonextractable signin
         assert.equal(await secondTab.evaluate(async () => (await (window as any).fixture.request('/session')).username), 'fixture-admin');
       } finally { await secondTab.close(); }
     });
-    await t.test('sensitive changes prompt once and authorize exactly one matching request', async () => {
+    await t.test('saving settings prompts once and authorizes exactly one matching request', async () => {
       const result = await page.evaluate(async password => {
         const f = (window as any).fixture;
         f.setCsrfToken((await f.request('/session')).csrf_token);
         let prompts = 0;
         f.setReauthenticationHandler(async () => { prompts++; return password; });
-        const first = await f.mutate('/providers/fixture', 'PATCH', { display_name: 'Fixture' });
-        const second = await f.mutate('/providers/fixture', 'PATCH', { display_name: 'Fixture again' });
+        const first = await f.mutate('/settings', 'PUT', { usd_to_vnd: 25000 });
+        const second = await f.mutate('/settings', 'PUT', { usd_to_vnd: 26000 });
         f.setReauthenticationHandler(async () => null);
         let canceled = '';
-        try { await f.mutate('/providers/fixture', 'PATCH', { display_name: 'Canceled' }); } catch (error) { canceled = (error as any).code; }
+        try { await f.mutate('/settings', 'PUT', { usd_to_vnd: 27000 }); } catch (error) { canceled = (error as any).code; }
         return { first: first.mutations, second: second.mutations, prompts, canceled };
       }, password);
       assert.deepEqual(result, { first: 1, second: 2, prompts: 2, canceled: 'reauthentication_canceled' });

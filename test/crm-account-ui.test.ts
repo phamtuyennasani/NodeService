@@ -11,7 +11,6 @@ const emailChallengeId = 'e'.repeat(43);
 const binding = 'b'.repeat(43);
 const csrf = 'synthetic-account-csrf';
 const password = 'synthetic-account-password';
-const actionToken = 't'.repeat(43);
 const hash = (body: string) => createHash('sha256').update(body).digest('base64url');
 
 test('CRM login and Account page support OTP, mail setup, independent preferences, verified email changes and device revocation', async () => {
@@ -27,7 +26,6 @@ test('CRM login and Account page support OTP, mail setup, independent preference
   const received: { path: string; method: string; body: any }[] = [];
   let browserKey: any;
   let loggedIn = false;
-  let authorized: { method: string; target: string; body_hash: string } | undefined;
   let profile: AccountProfile = {
     username: 'synthetic-admin', display_name: 'Quản trị thử nghiệm', email: 'old@example.test', email_verified: true,
     remember_me: true, mail_configured: true,
@@ -72,13 +70,8 @@ test('CRM login and Account page support OTP, mail setup, independent preference
     if (path === '/session') return loggedIn ? route.fulfill({ json: { username: profile.username, csrf_token: csrf } }) : failure(401, 'session_required', 'Vui lòng đăng nhập.');
     assert.equal(headers['x-csrf-token'], csrf);
     if (path === '/account' && method === 'GET') return route.fulfill({ json: profile });
-    if (path === '/session/authorize') {
-      assert.equal(body.current_password, password); authorized = body;
-      return route.fulfill({ json: { action_token: actionToken, expires_in: 60 } });
-    }
     if ((path === '/account' && method === 'PATCH') || path === '/account/email/start' || (path === '/account/devices' && method === 'DELETE')) {
-      if (!authorized || headers['x-crm-action-token'] !== actionToken || authorized.method !== method || authorized.target !== url.pathname || authorized.body_hash !== hash(raw)) return failure(403, 'reauthentication_required', 'Vui lòng xác nhận mật khẩu.');
-      authorized = undefined;
+      assert.equal(headers['x-crm-action-token'], undefined);
       if (path === '/account') {
         assert.deepEqual(body, { display_name: 'Tên mới' }, 'profile updates only send editable account fields');
         profile = { ...profile, ...body }; return route.fulfill({ json: profile });
@@ -94,12 +87,6 @@ test('CRM login and Account page support OTP, mail setup, independent preference
     errors.push(`Unexpected request ${method} ${path}`);
     return route.abort();
   });
-  async function approveSecurity() {
-    const modal = page.getByRole('dialog', { name: 'Xác nhận bảo mật', exact: true });
-    await modal.getByLabel('Mật khẩu hiện tại', { exact: true }).fill(password);
-    await modal.getByRole('button', { name: 'Xác nhận thao tác', exact: true }).click();
-    await modal.waitFor({ state: 'hidden' });
-  }
   try {
     await page.goto(`${origin}/#account`);
     const remember = page.getByRole('checkbox', { name: 'Ghi nhớ đăng nhập', exact: true });
@@ -153,13 +140,13 @@ test('CRM login and Account page support OTP, mail setup, independent preference
     await page.getByRole('button', { name: /Tải lại/ }).click();
     await page.getByLabel('Email mới', { exact: true }).waitFor();
     await page.getByLabel('Tên hiển thị', { exact: true }).fill('Tên mới');
-    await page.getByRole('button', { name: /Lưu thông tin/ }).click(); await approveSecurity();
+    await page.getByRole('button', { name: /Lưu thông tin/ }).click();
     await page.getByText('Đã cập nhật thông tin tài khoản.', { exact: true }).waitFor();
     assert.equal(profile.display_name, 'Tên mới');
     assert.equal(profile.username, 'synthetic-admin');
-    assert.deepEqual(received.filter(row => row.path === '/account' && row.method === 'PATCH').map(row => row.body), [{ display_name: 'Tên mới' }, { display_name: 'Tên mới' }], 'both the original and reauthorized request exclude the read-only username');
+    assert.deepEqual(received.filter(row => row.path === '/account' && row.method === 'PATCH').map(row => row.body), [{ display_name: 'Tên mới' }], 'profile updates once and excludes the read-only username');
     await page.getByLabel('Email mới', { exact: true }).fill('new@example.test');
-    await page.getByRole('button', { name: /Gửi mã xác minh/ }).click(); await approveSecurity();
+    await page.getByRole('button', { name: /Gửi mã xác minh/ }).click();
     await page.getByLabel('Mã OTP email hiện tại', { exact: true }).fill('11111111');
     await page.getByLabel('Mã OTP email mới', { exact: true }).fill('22222222');
     await page.getByRole('button', { name: 'Xác minh email', exact: true }).click();
@@ -167,10 +154,12 @@ test('CRM login and Account page support OTP, mail setup, independent preference
     assert.equal(profile.email, 'new@example.test');
     await page.getByRole('button', { name: 'Xóa tất cả', exact: true }).click();
     const revoke = page.getByRole('dialog');
-    await revoke.getByRole('button', { name: 'Xóa tin cậy', exact: true }).click(); await approveSecurity();
+    await revoke.getByRole('button', { name: 'Xóa tin cậy', exact: true }).click();
     await page.getByText('Chưa có thiết bị tin cậy', { exact: true }).waitFor();
     assert.equal(profile.devices.length, 0);
-    assert.equal(received.filter(row => row.path === '/account/email/verify').length, 1, 'email verification does not need a second password dialog');
+    assert.equal(received.filter(row => row.path === '/account/email/verify').length, 1);
+    assert.equal(received.filter(row => row.path === '/session/authorize').length, 0);
+    assert.equal(await page.getByRole('dialog', { name: 'Xác nhận bảo mật', exact: true }).count(), 0);
     assert.deepEqual(errors, []);
   } finally { await context.close(); await browser.close(); }
 });
