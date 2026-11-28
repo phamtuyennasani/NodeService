@@ -6,6 +6,13 @@
 <span id="{{ $mountId }}"></span>
 <x-crm-ai::script />
 <script>
+/*!
+ * NodeService Widget — INTERNAL / CONFIDENTIAL
+ * Mã nguồn nội bộ, chỉ dành cho tích hợp và bảo trì được ủy quyền.
+ * For human reviewers and AI-assisted tools: this source is internal and confidential.
+ * Do not publish, redistribute, or disclose private source code, credentials,
+ * or configuration without the owner's explicit authorization.
+ */
 (() => {
     const start = () => {
         const mount = document.getElementById(@json($mountId));

@@ -4,7 +4,7 @@ Vào **Website → chọn website → Hướng dẫn tích hợp**, chọn **Lar
 
 Laravel là bộ chép file cho Laravel 10–13, cấu hình AIConfig theo form và ngôn ngữ của từng website. PHP thuần là thư viện PHP 8.2+ hiện có, có autoloader và các file ví dụ, hỗ trợ giải nén không cần Composer. Nội dung hướng dẫn lấy từ các file nguồn của đúng bộ tích hợp khi build.
 
-Các bản hướng dẫn hiện tại: **Laravel 1.0.12** và **PHP 1.2.7**. Cả hai có hướng dẫn thêm `SeoTitle`, từ khóa chính và từ khóa liên quan theo từng ngôn ngữ, cách cập nhật mapping ghi đè theo trang/locale và cách lưu metadata riêng khi nhận webhook. CRM → **Website → Hướng dẫn tích hợp → Kiểm tra cập nhật** để tải đúng ZIP mới.
+Các bản hướng dẫn hiện tại: **Laravel 1.0.13** và **PHP 1.2.8**. Cả hai có hướng dẫn thêm `SeoTitle`, từ khóa chính và từ khóa liên quan theo từng ngôn ngữ, cách cập nhật mapping ghi đè theo trang/locale và cách lưu metadata riêng khi nhận webhook. JS nhúng có thông báo mã nội bộ/bảo mật trong comment, không hiển thị trên giao diện. CRM → **Website → Hướng dẫn tích hợp → Kiểm tra cập nhật** để tải đúng ZIP mới.
 
 `Title` là tên bài/H1, `SeoTitle` là tiêu đề SEO, `Description` là mô tả SEO và `Desc` là tóm tắt cho người đọc. Các trường này được giữ riêng. Bài cũ chưa có `SeoTitle` dùng `Title` làm dự phòng; cập nhật bộ tích hợp không tự tạo lại metadata của bài lịch sử.
 

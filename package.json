@@ -10,7 +10,7 @@
     "build": "npm run build:integrations && npm run build:laravel-guide && tsc -p tsconfig.server.json && vite build && npm run build:widget && npm run build:seo",
     "build:integrations": "python scripts/build-integration-packages.py",
     "build:laravel-guide": "tsx scripts/generate-laravel-guide.ts",
-    "build:widget": "esbuild widget/ai-writer.ts --bundle --format=iife --target=es2022 --loader:.css=text --minify --outfile=dist/widget/v1/ai-writer.js",
+    "build:widget": "esbuild widget/ai-writer.ts --bundle --format=iife --target=es2022 --loader:.css=text --minify --outfile=dist/widget/v1/ai-writer.js --banner:js=\"/* NodeService Widget — INTERNAL / CONFIDENTIAL. For authorized integration and maintenance only. */\"",
     "build:widget-preview": "esbuild scripts/widget-preview-editor.ts --bundle --format=iife --target=es2022 --minify --outfile=dist/widget-preview/editor.js",
     "build:vercel:crm": "node scripts/build-vercel.mjs crm",
     "build:vercel:widget": "node scripts/build-vercel.mjs widget",

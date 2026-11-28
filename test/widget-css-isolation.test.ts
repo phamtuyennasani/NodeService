@@ -186,6 +186,7 @@ test('widget isolates form, progress and article CSS from host resets, inherited
 
           releasePost();
           await dialog.getByRole('heading', { name: article.Title, exact: true }).waitFor();
+          await dialog.locator('.metadata-details > summary').click();
           await assertIsolated(page, dialog, ['.preview .title', '.metadata', '.body', '.body h2', '.body p', '.body td', '.accept']);
           await assertOpenDialogResizes(page, dialog, 'article preview');
           const inline = await appearance(dialog.locator('.body p'), false);

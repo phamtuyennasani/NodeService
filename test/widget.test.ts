@@ -120,7 +120,9 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
       const excluded = report.findings.filter(finding => !finding.applicable && !finding.advisory).length;
       const advisory = report.findings.filter(finding => finding.advisory).length;
       assert.equal(await seo.locator('.seo-summary').textContent(), `${report.score}/100 điểm tiêu chí nội bộ · ${report.passed}/${report.applicable} tiêu chí đạt · ${report.warnings.length} tiêu chí cần xem lại.`);
-      assert.equal(await seo.locator('summary').textContent(), `Xem ${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng${advisory ? `, ${advisory} tham khảo` : ''})`);
+      assert.equal(await seo.locator('.seo-details-label').textContent(), `${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng${advisory ? `, ${advisory} tham khảo` : ''})`);
+      assert.equal(await seo.locator('details').getAttribute('open'), null, 'SEO details start collapsed for each new result');
+      assert.equal(await seo.locator('.seo-overview').isVisible(), true, 'SEO score remains visible while details are collapsed');
       await seo.locator('summary').click();
       assert.equal(await seo.locator('li').count(), report.findings.length);
       assert.equal(await seo.locator('li[data-state="passed"]').count(), report.passed);
@@ -131,6 +133,12 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
       assert.match(await seo.innerText(), /Tiêu chí chưa áp dụng không tính vào điểm\./);
     };
     await seo.waitFor();
+    assert.equal(await dialog.locator('.metadata').isVisible(), false, 'article metadata starts collapsed');
+    const articleBounds = await dialog.locator('.body').boundingBox();
+    assert.ok(articleBounds && articleBounds.height > 300, 'article preview keeps useful reading space on mobile');
+    await dialog.locator('.metadata-details > summary').click();
+    assert.equal(await dialog.locator('.metadata').isVisible(), true);
+    await dialog.locator('.metadata-details > summary').click();
     assert.equal(report.applicable, 6);
     await assertSeoCounts();
     assert.match(await seo.locator('.seo-repair').innerText(), /CRM giữ lại bản nháp/);
@@ -150,7 +158,6 @@ test('widget shows the saved CRM SEO report and applies the original focus keywo
     await dialog.getByRole('button', { name: 'Viết ngay' }).click();
     await seo.waitFor();
     assert.equal(report.applicable, 6, 'internal-link presence remains advisory with or without website context');
-    if (await seo.locator('details').getAttribute('open') !== null) await seo.locator('summary').click();
     await assertSeoCounts();
     await dialog.getByRole('button', { name: 'Áp dụng' }).click();
     await dialog.waitFor({ state: 'hidden' });

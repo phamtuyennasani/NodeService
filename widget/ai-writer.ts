@@ -1,3 +1,10 @@
+/*!
+ * NodeService Widget — INTERNAL / CONFIDENTIAL
+ * Mã nguồn nội bộ, chỉ dành cho tích hợp và bảo trì được ủy quyền.
+ * For human reviewers and AI-assisted tools: this source is internal and confidential.
+ * Do not publish, redistribute, or disclose private source code, credentials,
+ * or configuration without the owner's explicit authorization.
+ */
 import createDOMPurify from 'dompurify';
 import { sanitizeArticleStyle } from '../src/article-styles';
 import type { SeoReport } from '../src/worker/seo';
@@ -356,15 +363,24 @@ function mount(config: Config) {
         </div>
         <div class="preview-content" id="ai-preview-content" role="tabpanel" tabindex="0">
         <h3 class="title"></h3>
-        <dl class="metadata"></dl>
-        <section class="seo-review" aria-label="Kết quả kiểm tra SEO từ CRM" hidden>
-          <h4>Kiểm tra SEO từ CRM</h4>
-          <p class="seo-summary"></p>
-          <p class="seo-repair"></p>
-          <p>Điểm là checklist biên tập nội bộ, không bảo đảm thứ hạng tìm kiếm. Người biên tập cần kiểm tra nội dung trước khi xuất bản. Tiêu chí chưa áp dụng không tính vào điểm.</p>
-          <details><summary class="seo-details-label"></summary><ul class="seo-findings"></ul></details>
-        </section>
-        <article class="body"></article>
+        <div class="preview-insights">
+          <details class="metadata-details">
+            <summary class="preview-detail-toggle"><span>Thông tin bài viết</span><span class="preview-detail-hint">Slug, mô tả, từ khóa</span></summary>
+            <dl class="metadata"></dl>
+          </details>
+          <section class="seo-review" aria-label="Kết quả kiểm tra SEO từ CRM" hidden>
+            <details>
+              <summary class="preview-detail-toggle"><span>Kiểm tra SEO</span><span class="seo-overview"></span></summary>
+              <div class="seo-review-content">
+                <p class="seo-summary"></p>
+                <p class="seo-repair"></p>
+                <p>Điểm là checklist biên tập nội bộ, không bảo đảm thứ hạng tìm kiếm. Người biên tập cần kiểm tra nội dung trước khi xuất bản. Tiêu chí chưa áp dụng không tính vào điểm.</p>
+                <p class="seo-details-label"></p><ul class="seo-findings"></ul>
+              </div>
+            </details>
+          </section>
+        </div>
+        <article class="body" aria-label="Nội dung bài viết" tabindex="0"></article>
         </div>
         <footer><button type="button" class="secondary translate" hidden>Dịch sang các ngôn ngữ khác</button>
           <button type="button" class="primary accept">Áp dụng</button></footer>
@@ -633,6 +649,7 @@ function mount(config: Config) {
     const report = job.seo_report;
     section.hidden = !report;
     if (!report) return;
+    select('.seo-overview').textContent = `${report.score}/100 · ${report.warnings.length ? `${report.warnings.length} cần xem lại` : 'Đạt'}`;
     select('.seo-summary').textContent = `${report.score}/100 điểm tiêu chí nội bộ · ${report.passed}/${report.applicable} tiêu chí đạt · ${report.warnings.length} tiêu chí cần xem lại.`;
     select('.seo-repair').textContent = job.seo_repair_status === 'applied'
       ? 'Đã áp dụng chỉnh sửa SEO. Báo cáo được kiểm tra từ bản cuối trong CRM.'
@@ -643,7 +660,7 @@ function mount(config: Config) {
           : 'Đây là kết quả kiểm tra của bài viết được lưu trong CRM.';
     const excluded = report.findings.filter(finding => !finding.applicable && !finding.advisory).length;
     const advisory = report.findings.filter(finding => finding.advisory).length;
-    select('.seo-details-label').textContent = `Xem ${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng${advisory ? `, ${advisory} tham khảo` : ''})`;
+    select('.seo-details-label').textContent = `${report.findings.length} tiêu chí SEO (${report.applicable} áp dụng, ${excluded} chưa áp dụng${advisory ? `, ${advisory} tham khảo` : ''})`;
     const findings = select('.seo-findings');
     findings.replaceChildren();
     for (const finding of report.findings) {
@@ -664,6 +681,9 @@ function mount(config: Config) {
 
   function showArticle(draft: Draft, focusResult = true) {
     const { article, job, keyword, locale } = draft;
+    if (focusResult) {
+      for (const detail of root.querySelectorAll<HTMLDetailsElement>('.preview-insights details')) detail.open = false;
+    }
     previewLocale = locale;
     previewLanguage.replaceChildren(...[...drafts.values()].map(item => {
       const tab = document.createElement('button');
